@@ -628,6 +628,12 @@ Builds use a **dated cache** (`build_YYYY-MM-DD/`) under `.cache/`. Same-day reb
 ./build-iso.sh --no-cache
 ```
 
+Custom packages such as `nemo-smpl` resolve the latest GitHub release on each
+build. Cached package selection uses pacman's version ordering, including
+epochs and package revisions, rather than filename order. Older archives can
+remain cached without being selected by the ISO's offline repository or
+installer. Do not use `--skip-aur` when building an ISO with `nemo-smpl`.
+
 ### Troubleshooting
 
 | Problem | Solution |

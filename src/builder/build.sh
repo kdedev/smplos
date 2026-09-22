@@ -6,6 +6,8 @@
 #
 set -euo pipefail
 
+source "$(dirname "${BASH_SOURCE[0]}")/../shared/lib/smplos-packages.sh"
+
 ###############################################################################
 # Configuration
 ###############################################################################
@@ -567,16 +569,13 @@ process_aur_packages() {
         # Check for prebuilt package first
         local found=0
         if [[ -d "$PREBUILT_DIR" ]]; then
-            shopt -s nullglob
-            for prebuilt_file in "$PREBUILT_DIR"/${pkg}-[0-9]*.pkg.tar.{zst,xz}; do
-                if [[ -f "$prebuilt_file" && ! "$prebuilt_file" == *"-debug-"* ]]; then
-                    log_info "Using prebuilt: $(basename "$prebuilt_file")"
-                    cp "$prebuilt_file" "$OFFLINE_MIRROR_DIR/"
-                    found=1
-                    break
-                fi
-            done
-            shopt -u nullglob
+            local prebuilt_file
+            prebuilt_file=$(smplos_latest_package "$PREBUILT_DIR" "$pkg") || return 1
+            if [[ -n "$prebuilt_file" ]]; then
+                log_info "Using prebuilt: $(basename "$prebuilt_file")"
+                cp "$prebuilt_file" "$OFFLINE_MIRROR_DIR/"
+                found=1
+            fi
         fi
         
         if [[ $found -eq 0 ]]; then
@@ -716,7 +715,8 @@ create_repo_database() {
         log_error "No .pkg.tar.zst or .pkg.tar.xz files found!"
         exit 1
     fi
-    repo-add --new "$OFFLINE_MIRROR_DIR/offline.db.tar.gz" "${pkg_files[@]}" || {
+    # Retain cached archives, but never let their glob order downgrade the repo.
+    repo-add --new --prevent-downgrade "$OFFLINE_MIRROR_DIR/offline.db.tar.gz" "${pkg_files[@]}" || {
         log_error "Failed to create repo database"
         exit 1
     }
@@ -2217,4 +2217,6 @@ main() {
     log_info "Build completed successfully!"
 }
 
-main "$@"
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+    main "$@"
+fi

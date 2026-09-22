@@ -14,6 +14,7 @@ export PATH="$SMPLOS_PATH/bin:$PATH"
 
 # Load helpers
 source "$SMPLOS_INSTALL/helpers/all.sh"
+source "$SMPLOS_PATH/lib/smplos-packages.sh"
 
 # Start install timer
 SMPLOS_START_EPOCH=$(date +%s)
@@ -36,14 +37,7 @@ if [[ -d /var/cache/smplos/mirror/offline ]]; then
   aur_list="$HOME/.local/share/smplos/packages-aur.txt"
   if [[ -f "$aur_list" ]]; then
     echo "==> Installing AUR packages from offline mirror..."
-    while IFS= read -r pkg; do
-      [[ "$pkg" =~ ^#.*$ || -z "$pkg" ]] && continue
-      local_pkg=$(find /var/cache/smplos/mirror/offline -name "${pkg}-[0-9]*.pkg.tar.*" ! -name "*-debug-*" 2>/dev/null | head -1)
-      if [[ -n "$local_pkg" ]]; then
-        echo "    Installing: $(basename "$local_pkg")"
-        sudo pacman -U --noconfirm --needed "$local_pkg" 2>/dev/null || true
-      fi
-    done < "$aur_list"
+    smplos_install_offline_packages "$aur_list" || exit 1
   fi
 fi
 
