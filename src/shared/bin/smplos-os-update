@@ -805,7 +805,13 @@ post_deploy() {
     local current_theme
     current_theme=$(theme-current 2>/dev/null || echo "catppuccin")
     log "Reapplying theme ($current_theme)..."
-    theme-set "$current_theme" 2>/dev/null || warn "theme-set failed"
+    # Running theme-set as root leaves current/theme undeletable by the user,
+    # so later switches update only theme.name and keep deploying the old colors.
+    if smplos_have_session; then
+        smplos_run_as_user theme-set "$current_theme" || warn "theme-set failed"
+    else
+        as_invoker theme-set "$current_theme" || warn "theme-set failed"
+    fi
 
     # Restart updated app binaries BEFORE reloading Hyprland — if any restarted
     # app also had a windowrule change, the reload below picks that up too and

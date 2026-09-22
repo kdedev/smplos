@@ -3,16 +3,26 @@
 # Sets the active theme and regenerates all configs
 # Usage: theme-set <theme-name>
 
-if [[ -z $1 ]]; then
+if [[ -z ${1:-} ]]; then
   echo "Usage: theme-set <theme-name>"
   exit 1
 fi
 
 SMPLOS_PATH="${SMPLOS_PATH:-$HOME/.local/share/smplos}"
-CURRENT_THEME_PATH="$HOME/.config/smplos/current/theme"
-NEXT_THEME_PATH="$HOME/.config/smplos/current/next-theme"
+CURRENT_PATH="$HOME/.config/smplos/current"
+CURRENT_THEME_PATH="$CURRENT_PATH/theme"
 USER_THEMES_PATH="$HOME/.config/smplos/themes"
 STOCK_THEMES_PATH="$SMPLOS_PATH/themes"
+
+die() {
+  echo "theme-set: $*" >&2
+  exit 1
+}
+
+# An elevated updater must drop privileges before writing the user's configs.
+if [[ $EUID -eq 0 && "$(stat -c %u "$HOME")" != 0 ]]; then
+  die "Refusing to write root-owned theme files in $HOME. Run theme-set as the desktop user."
+fi
 
 resolve_theme_path() {
   local name="$1"
@@ -39,25 +49,54 @@ if ! THEME_PATH="$(resolve_theme_path "$THEME_NAME")"; then
   exit 1
 fi
 
-# Setup clean next-theme directory (atomic swap)
-rm -rf "$NEXT_THEME_PATH"
-mkdir -p "$NEXT_THEME_PATH"
+# Serialize the entire switch, including app reloads. Explicit unlock prevents
+# long-lived child processes from keeping the lock after this script exits.
+mkdir -p "$CURRENT_PATH" || die "Cannot create $CURRENT_PATH"
+exec 9>"$CURRENT_PATH/.theme-set.lock" || die "Cannot open theme lock"
+flock 9 || die "Cannot lock theme state"
+trap 'flock -u 9' EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
-# Copy all theme files (colors, configs, backgrounds, etc.)
-# Each theme ships pre-baked configs — no template expansion needed
-cp -r "$THEME_PATH/"* "$NEXT_THEME_PATH/" 2>/dev/null
+[[ -s "$THEME_PATH/colors.toml" ]] || die "Theme '$THEME_NAME' has no colors.toml"
+NEXT_THEME_PATH=$(mktemp -d "$CURRENT_PATH/.theme-set.XXXXXX") || die "Cannot stage theme"
+PREVIOUS_THEME_PATH="${NEXT_THEME_PATH}.previous"
+if ! cp -r "$THEME_PATH/." "$NEXT_THEME_PATH/theme"; then
+  rm -rf -- "$NEXT_THEME_PATH"
+  die "Cannot copy theme '$THEME_NAME'; active theme is unchanged"
+fi
+printf '%s\n' "$THEME_NAME" > "$NEXT_THEME_PATH/theme.name" || die "Cannot stage theme name"
 
-# Atomic swap: next-theme -> current theme
-rm -rf "$CURRENT_THEME_PATH"
-mv "$NEXT_THEME_PATH" "$CURRENT_THEME_PATH"
-
-# Store theme name for reference
-echo "$THEME_NAME" > "$HOME/.config/smplos/current/theme.name"
+# A same-parent rename needs no write access to the old directory itself.
+# Moving it inside the staging directory would fail on its protected ".." entry.
+if [[ -e "$CURRENT_THEME_PATH" || -L "$CURRENT_THEME_PATH" ]]; then
+  mv -T "$CURRENT_THEME_PATH" "$PREVIOUS_THEME_PATH" \
+    || die "Cannot move old theme; active theme is unchanged"
+fi
+if ! mv -T "$NEXT_THEME_PATH/theme" "$CURRENT_THEME_PATH"; then
+  if [[ -e "$PREVIOUS_THEME_PATH" || -L "$PREVIOUS_THEME_PATH" ]]; then
+    mv -T "$PREVIOUS_THEME_PATH" "$CURRENT_THEME_PATH" \
+      || die "Cannot restore old theme; recovery copy is $PREVIOUS_THEME_PATH"
+  fi
+  die "Cannot activate theme '$THEME_NAME'"
+fi
+mv -fT "$NEXT_THEME_PATH/theme.name" "$CURRENT_PATH/theme.name" \
+  || die "Cannot record active theme name"
+if [[ -e "$PREVIOUS_THEME_PATH" ]] && {
+  [[ ! -O "$PREVIOUS_THEME_PATH" ]] ||
+    [[ -n "$(find "$PREVIOUS_THEME_PATH" -type d ! -writable -print -quit)" ]]
+}; then
+  echo "theme-set: Preserved old theme at $PREVIOUS_THEME_PATH" >&2
+else
+  rm -rf -- "$PREVIOUS_THEME_PATH" || die "Cannot clean previous theme"
+fi
+rm -rf -- "$NEXT_THEME_PATH" || die "Cannot clean theme staging directory"
 
 # Link EWW theme colors into EWW config dir
 if [[ -f "$CURRENT_THEME_PATH/eww-colors.scss" ]]; then
   mkdir -p "$HOME/.config/eww"
-  cp "$CURRENT_THEME_PATH/eww-colors.scss" "$HOME/.config/eww/theme-colors.scss"
+  cp "$CURRENT_THEME_PATH/eww-colors.scss" "$HOME/.config/eww/theme-colors.scss" \
+    || die "Cannot deploy EWW theme"
 fi
 
 # Bake theme colors into SVG icon templates
@@ -160,8 +199,9 @@ fi
 # Use atomic rename so the monitor never sees a truncated file.
 if [[ -f "$CURRENT_THEME_PATH/nemo.css" ]]; then
   mkdir -p "$HOME/.config/smplos"
-  cp "$CURRENT_THEME_PATH/nemo.css" "$HOME/.config/smplos/nemo-theme.css.tmp"
-  mv -f "$HOME/.config/smplos/nemo-theme.css.tmp" "$HOME/.config/smplos/nemo-theme.css"
+  cp "$CURRENT_THEME_PATH/nemo.css" "$HOME/.config/smplos/nemo-theme.css.tmp" \
+    && mv -f "$HOME/.config/smplos/nemo-theme.css.tmp" "$HOME/.config/smplos/nemo-theme.css" \
+    || die "Cannot deploy Nemo theme"
 fi
 
 # Link fish theme colors
@@ -176,24 +216,16 @@ if [[ -f "$CURRENT_THEME_PATH/tide.theme" ]] && command -v fish &>/dev/null; the
 fi
 
 # Set wallpaper from theme backgrounds
-theme-bg-next
+theme-bg-next || die "Cannot apply theme background"
 
 # =========================================================================
 # RESTART COMPONENTS — apply new theme live
 # All guarded: only runs if the app is actually present/running
 # =========================================================================
 
-# EWW bar (kill + restart so new SCSS is compiled)
-if pgrep -x eww >/dev/null; then
-  eww --config "$HOME/.config/eww" kill 2>/dev/null
-  sleep 0.3
-  killall -9 eww 2>/dev/null  # ensure no zombies
-  # Kill orphaned listener scripts — eww kill only stops the daemon,
-  # deflisten child processes get reparented to PID 1 and leak
-  pkill -f "scripts/(volume|network|bluetooth|notification|brightness|workspaces|active-workspace|window-title|sysmenu|notif-hub)-?listener?\.sh" 2>/dev/null
-  pkill -f "scripts/(workspaces|active-workspace|window-title)\.sh" 2>/dev/null
-  sleep 0.2
-  bar-ctl start &
+# Reload recompiles SCSS without killing the bar or its listeners.
+if pgrep -u "$UID" -x eww >/dev/null; then
+  bar-ctl reload || die "Cannot reload EWW theme"
 fi
 
 # Hyprland (reload config to pick up new border colors -- runtime only)
@@ -209,15 +241,16 @@ if [[ -n "${NIRI_SOCKET:-}" ]] && command -v niri &>/dev/null; then
 fi
 
 # st / st-wl -- apply colors via OSC escape sequences to all running instances
-theme-set-st 2>/dev/null &
+terminal_status=0
+theme-set-st || terminal_status=$?
 
 # Double Commander — regenerate colors.json from theme palette
 # theme-set-dc removed — DC replaced by Nemo (GTK3, live-reloads via gtk.css)
 
 # Foot terminal — reload via SIGUSR1 (if running)
-if pgrep -x foot >/dev/null; then
-  killall -SIGUSR1 foot 2>/dev/null
-fi
+while read -r pid; do
+  kill -SIGUSR1 "$pid"
+done < <(pgrep -u "$UID" -x foot)
 
 # Dunst notification daemon
 if pgrep -x dunst >/dev/null; then
@@ -225,9 +258,9 @@ if pgrep -x dunst >/dev/null; then
 fi
 
 # btop — SIGUSR2 triggers config reload
-if pgrep -x btop >/dev/null; then
-  killall -USR2 btop 2>/dev/null
-fi
+while read -r pid; do
+  kill -USR2 "$pid"
+done < <(pgrep -u "$UID" -x btop)
 
 # =========================================================================
 # APP-SPECIFIC THEMES — optional integrations
@@ -613,4 +646,7 @@ EOJSON
   fi
 fi
 
+if (( terminal_status != 0 )); then
+  die "Theme '$THEME_NAME' applied, but terminal refresh failed; see errors above"
+fi
 echo "Theme set to: $THEME_NAME"

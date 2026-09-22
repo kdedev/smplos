@@ -818,7 +818,7 @@ The generator provides three variants of each color variable:
 When you run `theme-set <name>`, it:
 
 1. Resolves the theme (user themes in `~/.config/smplos/themes/` take precedence over stock themes)
-2. Atomically swaps the active theme directory at `~/.config/smplos/current/theme/`
+2. Stages a complete theme, replaces `~/.config/smplos/current/theme/`, and only then records the selected name. Switches are serialized; an old root-owned theme is preserved in a recovery directory rather than blocking the switch.
 3. Copies pre-baked configs to their target locations:
    - `eww-colors.scss` -> `~/.config/eww/theme-colors.scss`
    - `hyprland.conf` -> `~/.config/hypr/theme.conf`
@@ -833,7 +833,7 @@ When you run `theme-set <name>`, it:
 4. Bakes accent/fg colors into SVG icon templates for the EWW bar
 5. Sets the wallpaper from `backgrounds/`
 6. Restarts/reloads all running apps:
-   - EWW bar: kill + restart (re-compiles SCSS)
+   - EWW bar: `bar-ctl reload` (re-compiles SCSS without killing the bar)
    - Hyprland: `hyprctl reload`
    - st/st-wl: OSC escape sequences (live, no restart)
    - Foot: `SIGUSR1`

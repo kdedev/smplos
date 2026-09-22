@@ -75,6 +75,9 @@ Write a migration. See section 5 below.
 
 Theme files in `src/shared/themes/` are automatically reapplied after
 every update via `theme-set <current-theme>` in the post-deploy hook.
+The hook must run as the desktop user (with their graphical session environment),
+not as root with the user's `HOME`: root-owned active theme directories prevent
+subsequent theme changes. `theme-set` rejects that elevated invocation.
 
 **Steps:**
 1. Edit the theme template(s) in `src/shared/themes/<name>/`

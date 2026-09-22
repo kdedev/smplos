@@ -18,43 +18,55 @@ get_color() {
 # Build the full OSC sequence payload (all colors in one string for efficiency)
 osc=""
 
+append_osc() {
+  osc+=$'\033]'"$1"$'\033\\'
+}
+
 # OSC 4: set palette colors 0-15
 for i in $(seq 0 15); do
   color=$(get_color "color${i}")
-  [[ -n "$color" ]] && osc+="\033]4;${i};${color}\033\\"
+  [[ -n "$color" ]] && append_osc "4;${i};${color}"
 done
 
 # OSC 10: foreground
 fg=$(get_color "foreground")
-[[ -n "$fg" ]] && osc+="\033]10;${fg}\033\\"
+[[ -n "$fg" ]] && append_osc "10;${fg}"
 
 # OSC 11: background
 bg=$(get_color "background")
-[[ -n "$bg" ]] && osc+="\033]11;${bg}\033\\"
+[[ -n "$bg" ]] && append_osc "11;${bg}"
 
 # OSC 12: cursor color
 cursor=$(get_color "cursor")
-[[ -n "$cursor" ]] && osc+="\033]12;${cursor}\033\\"
+[[ -n "$cursor" ]] && append_osc "12;${cursor}"
 
 [[ -z "$osc" ]] && exit 0
 
-# Send to all running st / st-wl instances by writing to their PTY
-for proc in /proc/[0-9]*/; do
-  pid="${proc#/proc/}"
-  pid="${pid%/}"
-
-  # Check if this is an st or st-wl process
-  comm=$(cat "/proc/$pid/comm" 2>/dev/null)
-  [[ "$comm" == "st" || "$comm" == "st-wl" ]] || continue
-
-  # Find the PTY master fd — st's fd/0 points to the pty slave
-  pty=$(readlink "/proc/$pid/fd/0" 2>/dev/null)
-  [[ "$pty" == /dev/pts/* ]] || continue
+# The terminal's stdin belongs to its launcher (often /dev/tty2), not its
+# child shell. Linux exposes the slave's index on the PTY master's fdinfo.
+status=0
+while read -r pid; do
+  comm=$(cat "/proc/$pid/comm" 2>/dev/null) || continue
+  pty_index=$(awk '$1 == "tty-index:" { print $2; exit }' "/proc/$pid"/fdinfo/* 2>/dev/null)
+  if [[ ! "$pty_index" =~ ^[0-9]+$ ]]; then
+    [[ -d "/proc/$pid" ]] || continue
+    echo "theme-set-st: Cannot find PTY for $comm ($pid)" >&2
+    status=1
+    continue
+  fi
+  pty="/dev/pts/$pty_index"
 
   # Write OSC sequences to the pty (palette + fg/bg/cursor colors)
-  printf "$osc" > "$pty" 2>/dev/null
+  # A Ctrl-S/flow-stopped PTY can block writes indefinitely. Open it inside the
+  # timed child as well, so a paused terminal cannot stall the whole switch.
+  if ! timeout --kill-after=1s 1s bash -c 'printf "%s" "$1" > "$2"' _ "$osc" "$pty"; then
+    echo "theme-set-st: Cannot update $pty for $comm ($pid)" >&2
+    status=1
+    continue
+  fi
 
   # Signal st-wl to reload theme alpha from colors.toml immediately.
-  # SIGUSR1 is handled inside st-wl; st (X11) ignores it gracefully.
+  # Do not signal X11 st: its default SIGUSR1 handler terminates the process.
   [[ "$comm" == "st-wl" ]] && kill -USR1 "$pid" 2>/dev/null || true
-done
+done < <(pgrep -u "$UID" -x 'st|st-wl')
+exit "$status"
