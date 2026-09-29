@@ -240,6 +240,11 @@ Nemo windows on other workspaces are left in place. Repeated presses while a
 window is opening do not launch duplicates. The floating-file-manager shortcut
 and other apps' global focus-or-launch behavior are unchanged.
 
+On Hyprland, messenger shortcuts such as <kbd>Super</kbd>+<kbd>Shift</kbd>+<kbd>S</kbd>
+for Signal open on the keyboard-focused monitor, even if the mouse is elsewhere.
+Hiding the messenger returns focus to the previous window if it still exists on
+that workspace; it does not bring back a window you moved or closed.
+
 ### Themes
 
 Switch the system theme (terminal, bar, borders, lock screen, editor) with a single command:
