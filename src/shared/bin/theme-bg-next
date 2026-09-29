@@ -11,7 +11,9 @@ CURRENT_BG_LINK="$HOME/.config/smplos/current/background"
 
 set_wallpaper() {
   if [[ -n "${WAYLAND_DISPLAY:-}" ]]; then
-    pkill swaybg 2>/dev/null
+    while read -r pid; do
+      kill "$pid"
+    done < <(pgrep -u "$UID" -x swaybg)
     sleep 0.1
     setsid swaybg "$@" &>/dev/null &
   elif [[ -n "${DISPLAY:-}" ]]; then

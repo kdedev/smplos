@@ -99,7 +99,7 @@ eww_toggle() {
     eww --config "$EWW_CONFIG" open --toggle "$BAR_NAME"
 }
 eww_reload() {
-    eww --config "$EWW_CONFIG" reload
+    eww --config "$EWW_CONFIG" reload || return
     # eww reload resets all defvar to defaults — re-apply saved settings
     sleep 0.3
     eww_apply

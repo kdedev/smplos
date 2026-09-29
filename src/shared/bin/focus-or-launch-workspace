@@ -1,0 +1,194 @@
+#!/bin/bash
+# Workspace-local implementation of focus-or-launch --current-workspace.
+set -Eeuo pipefail
+
+die() {
+  echo "focus-or-launch: $*" >&2
+  if command -v notify-send >/dev/null; then
+    notify-send -u critical "Open application" "$*" || :
+  fi
+  exit 1
+}
+trap 'die "Workspace-local launch failed at line $LINENO"' ERR
+
+[[ $# -ge 2 ]] || die "Usage: focus-or-launch --current-workspace <class> <command...>"
+CLASS="$1"
+shift
+
+ipc() { timeout --kill-after=1s 3s "$@"; }
+
+if [[ -n "${NIRI_SOCKET:-}" ]]; then
+  backend=niri
+elif [[ -n "${HYPRLAND_INSTANCE_SIGNATURE:-}" ]]; then
+  backend=hyprland
+elif [[ -z "${WAYLAND_DISPLAY:-}" && -n "${DISPLAY:-}" ]]; then
+  backend=x11
+else
+  die "No supported graphical session found"
+fi
+
+current_workspace() {
+  case "$backend" in
+    hyprland)
+      ipc hyprctl -j monitors | jq -er '
+        first(.[] | select(.focused))
+        | (if (.specialWorkspace.id // 0) != 0 then .specialWorkspace else .activeWorkspace end)
+        | .id | numbers'
+      ;;
+    niri)
+      ipc niri msg --json workspaces | jq -er 'first(.[] | select(.is_focused)) | .id | numbers'
+      ;;
+    x11) ipc wmctrl -d | awk '$2 == "*" { print $1 }' ;;
+  esac
+}
+
+matching_windows() {
+  case "$backend" in
+    hyprland)
+      ipc hyprctl -j clients | jq -c --arg c "$CLASS" '
+        [.[] | select(.mapped != false)
+          | select((.class // "" | test($c; "i")) or (.initialClass // "" | test($c; "i")))
+          | {id: .address, workspace: .workspace.id,
+             rank: (if (.focusHistoryID // -1) >= 0 then .focusHistoryID else 2147483647 end)}]
+        | sort_by(.rank)'
+      ;;
+    niri)
+      ipc niri msg --json windows | jq -c --arg c "$CLASS" '
+        [.[] | select(.app_id // "" | test($c; "i"))
+          | {id: (.id | tostring), workspace: .workspace_id,
+             rank: [(if .is_focused then 0 else 1 end),
+                    -(.focus_timestamp.secs // 0), -(.focus_timestamp.nanos // 0)]}]
+        | sort_by(.rank)'
+      ;;
+    x11)
+      local stacking
+      stacking=$(ipc xprop -root _NET_CLIENT_LIST_STACKING)
+      ipc wmctrl -lx | jq -Rsc --arg c "$CLASS" --arg stacking "$stacking" '
+        def xid: ascii_downcase | sub("^0x0*"; "0x");
+        [$stacking | scan("0x[0-9a-fA-F]+") | xid] as $order
+        | [split("\n")[] | select(length > 0)
+          | capture("^(?<id>0x[0-9a-fA-F]+)\\s+(?<workspace>-?[0-9]+)\\s+(?<class>\\S+)")
+          | select(.class | test($c; "i"))
+          | (.id | xid) as $id
+          | {id: .id, workspace: (.workspace | tonumber),
+             rank: -($order | index($id) // -1)}]
+        | sort_by(.rank)'
+      ;;
+  esac
+}
+
+validate_window_id() {
+  case "$backend" in
+    hyprland|x11) [[ "$1" =~ ^0x[[:xdigit:]]+$ ]] ;;
+    niri) [[ "$1" =~ ^[0-9]+$ ]] ;;
+  esac
+}
+
+hypr_dispatch() {
+  local reply
+  reply=$(ipc hyprctl dispatch "$1")
+  [[ "$reply" == ok ]] || die "Hyprland rejected the window action: $reply"
+}
+
+move_window() {
+  local id="$1" workspace="$2"
+  case "$backend" in
+    hyprland)
+      hypr_dispatch "hl.dsp.window.move({window='address:$id', workspace=$workspace, silent=true})"
+      ;;
+    niri)
+      # CLI workspace indices are per-monitor and can change. IPC accepts the
+      # stable workspace ID, including when the new window maps on another output.
+      local request reply
+      request=$(jq -cn --argjson id "$id" --argjson ws "$workspace" '
+        {Action: {MoveWindowToWorkspace: {window_id: $id, reference: {Id: $ws}, focus: false}}}')
+      reply=$(printf '%s\n' "$request" | ipc socat -t 1 - "UNIX-CONNECT:$NIRI_SOCKET")
+      jq -e 'has("Ok")' <<< "$reply" >/dev/null || die "niri rejected the window move: $reply"
+      ;;
+    x11) ipc wmctrl -ir "$id" -t "$workspace" ;;
+  esac
+}
+
+focus_window() {
+  case "$backend" in
+    hyprland) hypr_dispatch "hl.dsp.focus({window='address:$1'})" ;;
+    niri) ipc niri msg action focus-window --id "$1" ;;
+    x11) ipc wmctrl -ia "$1" ;;
+  esac
+}
+
+focus_if_current() {
+  local id="$1" windows workspace
+  # Recheck both sides: neither a user workspace change nor a window moved
+  # during discovery should send the user to another workspace.
+  workspace=$(current_workspace)
+  [[ "$workspace" == "$target_workspace" ]] || return 0
+  windows=$(matching_windows)
+  jq -e --arg id "$id" --argjson ws "$target_workspace" \
+    'any(.[]; .id == $id and .workspace == $ws)' <<< "$windows" >/dev/null \
+    || die "The requested window moved or closed; press the shortcut again"
+  validate_window_id "$id" || die "Invalid window ID from compositor"
+  focus_window "$id"
+}
+
+lock_dir="${XDG_RUNTIME_DIR:-${XDG_CACHE_HOME:-$HOME/.cache}}/smplos"
+mkdir -p "$lock_dir"
+lock_key=$(printf '%s\n' "$backend" "${HYPRLAND_INSTANCE_SIGNATURE:-}" \
+  "${NIRI_SOCKET:-}" "${DISPLAY:-}" "$CLASS" | sha256sum | cut -d' ' -f1)
+exec 9>"$lock_dir/focus-workspace-$lock_key.lock"
+# Ignore repeat keypresses while this app is still creating its window.
+if flock -E 75 -n 9; then
+  :
+else
+  status=$?
+  [[ "$status" == 75 ]] && exit 0
+  die "Cannot lock workspace-local application launch"
+fi
+
+target_workspace=$(current_workspace)
+[[ "$target_workspace" =~ ^-?[0-9]+$ ]] || die "Cannot determine the current workspace"
+windows=$(matching_windows)
+existing=$(jq -r --argjson ws "$target_workspace" \
+  'first(.[] | select(.workspace == $ws)) | .id // empty' <<< "$windows")
+if [[ -n "$existing" ]]; then
+  focus_if_current "$existing"
+  exit 0
+fi
+
+command -v "$1" >/dev/null || die "Application command not found: $1"
+before=$(jq -c '[.[].id]' <<< "$windows")
+log="${XDG_CACHE_HOME:-$HOME/.cache}/smplos/focus-or-launch.log"
+mkdir -p "$(dirname "$log")"
+# Nemo creates additional windows in its existing process through D-Bus.
+# A child PID cannot identify the new window, and must not inherit our lock.
+setsid "$@" >> "$log" 2>&1 9>&- &
+launch_pid=$!
+
+for ((attempt = 0; attempt < 80; attempt++)); do
+  windows=$(matching_windows)
+  created=$(jq -c --argjson before "$before" \
+    '[.[] | .id as $id | select($before | index($id) | not)]' <<< "$windows")
+  count=$(jq 'length' <<< "$created")
+  if (( count > 1 )); then
+    die "Several new $CLASS windows appeared; leaving them in place rather than guessing"
+  elif (( count == 1 )); then
+    id=$(jq -r '.[0].id' <<< "$created")
+    validate_window_id "$id" || die "Invalid window ID from compositor"
+    workspace=$(jq -r '.[0].workspace' <<< "$created")
+    if [[ "$workspace" != "$target_workspace" ]]; then
+      move_window "$id" "$target_workspace"
+      windows=$(matching_windows)
+      jq -e --arg id "$id" --argjson ws "$target_workspace" \
+        'any(.[]; .id == $id and .workspace == $ws)' <<< "$windows" >/dev/null \
+        || die "The new window did not reach workspace $target_workspace"
+    fi
+    focus_if_current "$id"
+    exit 0
+  fi
+  if [[ -n "$launch_pid" ]] && ! kill -0 "$launch_pid" 2>/dev/null; then
+    wait "$launch_pid" || die "Application launch failed; see $log"
+    launch_pid=""
+  fi
+  sleep 0.1
+done
+die "Timed out waiting for a new $CLASS window; see $log"

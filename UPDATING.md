@@ -52,6 +52,19 @@ on every update. No migration needed.
 
 **That's it.** On next `smplos-update --mode full`, the script syncs.
 
+For example, Super+K search behavior lives in `src/shared/bin/keybind-help`, not
+in the user's Rofi configuration. Script updates replace `/usr/local/bin/keybind-help`;
+the next invocation rebuilds its per-user cached list when the script is newer.
+No config refresh, migration, logout, or ISO rebuild is needed once the change
+reaches `main`.
+
+The workspace-local Nemo shortcut also changes `bindings.conf`, which is
+user-managed and normally preserved during updates. Migration
+`20260929-143800-nemo-current-workspace.sh` backs up and changes only the stock
+Super+Shift+F command in existing Hyprland/shared bindings and niri configs;
+custom commands and other shortcuts remain untouched. New ISO builds ship the
+updated binding and both launcher scripts through the existing shared-file copy.
+
 ---
 
 ## 2. Updating Configs (EWW, Hyprland, foot, etc.)
@@ -75,6 +88,9 @@ Write a migration. See section 5 below.
 
 Theme files in `src/shared/themes/` are automatically reapplied after
 every update via `theme-set <current-theme>` in the post-deploy hook.
+The hook must run as the desktop user (with their graphical session environment),
+not as root with the user's `HOME`: root-owned active theme directories prevent
+subsequent theme changes. `theme-set` rejects that elevated invocation.
 
 **Steps:**
 1. Edit the theme template(s) in `src/shared/themes/<name>/`

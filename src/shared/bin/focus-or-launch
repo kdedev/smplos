@@ -15,6 +15,15 @@
 #     <name> is a desktop-entry name (e.g. "signal-desktop", "brave-browser")
 #     or an appname. Tries to focus an existing window, then launches via
 #     gtk-launch (compositor-agnostic) or runs <name> directly.
+#
+#   focus-or-launch --current-workspace <class> <command...>
+#     Focus only on the current workspace, or create a new window there.
+#     The explicit command must create a window even if the app is running.
+
+if [[ "${1:-}" == "--current-workspace" ]]; then
+  shift
+  exec "$(dirname "$(readlink -f "$0")")/focus-or-launch-workspace" "$@"
+fi
 
 CLASS="$1"; shift
 

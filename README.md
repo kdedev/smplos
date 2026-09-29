@@ -230,6 +230,15 @@ On first boot, a notification shows the essential keybindings. Here they are for
 | <kbd>Super</kbd>+<kbd>Escape</kbd> | Power menu |
 
 Press <kbd>Super</kbd>+<kbd>K</kbd> anytime to see all bindings in an overlay.
+Search matches case-insensitive substrings in shortcuts and descriptions; multiple
+words must all match. Shorter shortcuts come first, so `Super+S` appears before
+`Super+Shift` variants. The app launcher and theme picker still use fuzzy matching.
+
+<kbd>Super</kbd>+<kbd>Shift</kbd>+<kbd>F</kbd> focuses the most recently used Nemo
+window on the focused monitor's current workspace, or opens a new window there.
+Nemo windows on other workspaces are left in place. Repeated presses while a
+window is opening do not launch duplicates. The floating-file-manager shortcut
+and other apps' global focus-or-launch behavior are unchanged.
 
 ### Themes
 
@@ -824,7 +833,7 @@ The generator provides three variants of each color variable:
 When you run `theme-set <name>`, it:
 
 1. Resolves the theme (user themes in `~/.config/smplos/themes/` take precedence over stock themes)
-2. Atomically swaps the active theme directory at `~/.config/smplos/current/theme/`
+2. Stages a complete theme, replaces `~/.config/smplos/current/theme/`, and only then records the selected name. Switches are serialized; an old root-owned theme is preserved in a recovery directory rather than blocking the switch.
 3. Copies pre-baked configs to their target locations:
    - `eww-colors.scss` -> `~/.config/eww/theme-colors.scss`
    - `hyprland.conf` -> `~/.config/hypr/theme.conf`
@@ -839,7 +848,7 @@ When you run `theme-set <name>`, it:
 4. Bakes accent/fg colors into SVG icon templates for the EWW bar
 5. Sets the wallpaper from `backgrounds/`
 6. Restarts/reloads all running apps:
-   - EWW bar: kill + restart (re-compiles SCSS)
+   - EWW bar: `bar-ctl reload` (re-compiles SCSS without killing the bar)
    - Hyprland: `hyprctl reload`
    - st/st-wl: OSC escape sequences (live, no restart)
    - Foot: `SIGUSR1`
