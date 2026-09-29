@@ -52,6 +52,12 @@ on every update. No migration needed.
 
 **That's it.** On next `smplos-update --mode full`, the script syncs.
 
+For example, Super+K search behavior lives in `src/shared/bin/keybind-help`, not
+in the user's Rofi configuration. Script updates replace `/usr/local/bin/keybind-help`;
+the next invocation rebuilds its per-user cached list when the script is newer.
+No config refresh, migration, logout, or ISO rebuild is needed once the change
+reaches `main`.
+
 ---
 
 ## 2. Updating Configs (EWW, Hyprland, foot, etc.)

@@ -230,6 +230,9 @@ On first boot, a notification shows the essential keybindings. Here they are for
 | <kbd>Super</kbd>+<kbd>Escape</kbd> | Power menu |
 
 Press <kbd>Super</kbd>+<kbd>K</kbd> anytime to see all bindings in an overlay.
+Search matches case-insensitive substrings in shortcuts and descriptions; multiple
+words must all match. Shorter shortcuts come first, so `Super+S` appears before
+`Super+Shift` variants. The app launcher and theme picker still use fuzzy matching.
 
 ### Themes
 

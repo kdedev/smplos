@@ -9,11 +9,16 @@ CONF="$HOME/.config/smplos/bindings.conf"
 # Messenger bindings (auto-generated, same bindd format)
 MESSENGER_CONF="$HOME/.config/hypr/messenger-bindings.conf"
 
-CACHE="/tmp/smplos-keybinds.cache"
+CACHE="${XDG_CACHE_HOME:-$HOME/.cache}/smplos/keybinds.cache"
+if ! mkdir -p "${CACHE%/*}"; then
+  notify-send "Keybind Help" "Cannot create keybinding cache directory"
+  exit 1
+fi
 
-# Rebuild cache when any source changes
+# Rebuild when bindings or this script's formatting/order changes.
 cache_stale=false
 [[ ! -f "$CACHE" ]] && cache_stale=true
+[[ "$cache_stale" == false && "$0" -nt "$CACHE" ]] && cache_stale=true
 [[ "$cache_stale" == false && "$CONF" -nt "$CACHE" ]] && cache_stale=true
 [[ "$cache_stale" == false && -f "$MESSENGER_CONF" && "$MESSENGER_CONF" -nt "$CACHE" ]] && cache_stale=true
 
@@ -23,13 +28,6 @@ if [[ "$cache_stale" == true ]]; then
   [[ -f "$MESSENGER_CONF" ]] && CONF_FILES="$CONF $MESSENGER_CONF"
 
   awk -F, '
-  /^# ===/ { next }
-  /^# [A-Z][A-Z ]/ {
-    sub(/^# */, "")
-    gsub(/[[:space:]]+$/, "")
-    section = $0
-    next
-  }
   /^bind[a-z]*d[[:space:]]*=/ {
     sub(/^bind[a-z]*d[[:space:]]*=[[:space:]]*/, "")
 
@@ -72,15 +70,10 @@ if [[ "$cache_stale" == true ]]; then
     gsub(/mouse_down/, "Scroll Down", combo); gsub(/mouse_up/, "Scroll Up", combo)
     gsub(/mouse:272/, "LMB", combo); gsub(/mouse:273/, "RMB", combo)
 
-    # Print section header if new category
-    if (section != "" && section != last_section) {
-      if (NR > 1) print ""
-      printf "--- %s ---\n", section
-      last_section = section
-    }
-    printf "%-28s %s\n", combo, desc
+    # Shorter chords precede longer substring matches (Super+S vs Super+Shift).
+    printf "%d\t%-28s %s\n", length(combo), combo, desc
   }
-  ' $CONF_FILES > "$CACHE"
+  ' $CONF_FILES | LC_ALL=C sort -s -t $'\t' -k1,1n -k2,2f | cut -f2- > "$CACHE"
 fi
 
 [[ -s "$CACHE" ]] || { notify-send "Keybind Help" "No keybindings found"; exit 1; }
@@ -90,8 +83,8 @@ fi
 # (layer surfaces all share namespace "rofi" = launcher's slide-left)
 ROFI_THEME="$HOME/.config/rofi/smplos-launcher.rasi"
 CENTER_STR='window { location: center; anchor: center; width: 560px; }'
-rofi_args=(-dmenu -i -p "Keys" -matching fuzzy -sorting-method fzf -normal-window -steal-focus)
-rofi_args+=(-mesg "Super+K  Keybindings  --  type to filter")
+rofi_args=(-dmenu -i -p "Keys" -matching normal -tokenize -no-sort -normal-window -steal-focus)
+rofi_args+=(-mesg "Super+K  Keybindings  --  type words or shortcuts to filter")
 [[ -f "$ROFI_THEME" ]] && rofi_args+=(-theme "$ROFI_THEME" -theme-str "$CENTER_STR")
 
 rofi "${rofi_args[@]}" < "$CACHE" >/dev/null 2>&1
