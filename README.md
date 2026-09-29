@@ -234,6 +234,12 @@ Search matches case-insensitive substrings in shortcuts and descriptions; multip
 words must all match. Shorter shortcuts come first, so `Super+S` appears before
 `Super+Shift` variants. The app launcher and theme picker still use fuzzy matching.
 
+<kbd>Super</kbd>+<kbd>Shift</kbd>+<kbd>F</kbd> focuses the most recently used Nemo
+window on the focused monitor's current workspace, or opens a new window there.
+Nemo windows on other workspaces are left in place. Repeated presses while a
+window is opening do not launch duplicates. The floating-file-manager shortcut
+and other apps' global focus-or-launch behavior are unchanged.
+
 ### Themes
 
 Switch the system theme (terminal, bar, borders, lock screen, editor) with a single command:

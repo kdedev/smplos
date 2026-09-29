@@ -58,6 +58,13 @@ the next invocation rebuilds its per-user cached list when the script is newer.
 No config refresh, migration, logout, or ISO rebuild is needed once the change
 reaches `main`.
 
+The workspace-local Nemo shortcut also changes `bindings.conf`, which is
+user-managed and normally preserved during updates. Migration
+`20260929-143800-nemo-current-workspace.sh` backs up and changes only the stock
+Super+Shift+F command in existing Hyprland/shared bindings and niri configs;
+custom commands and other shortcuts remain untouched. New ISO builds ship the
+updated binding and both launcher scripts through the existing shared-file copy.
+
 ---
 
 ## 2. Updating Configs (EWW, Hyprland, foot, etc.)
