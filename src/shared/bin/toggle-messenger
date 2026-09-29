@@ -159,6 +159,23 @@ hypr_dispatch() {
   [[ "$reply" == ok ]] || fail "Hyprland rejected the window action: $reply"
 }
 
+evacuate_workspace_aliens() {
+  local target_addr="${1:-}" cur_ws addrs addr
+  cur_ws=$(hyprctl activeworkspace -j | jq -er '.id | numbers') \
+    || fail "Cannot determine a workspace for recovered windows"
+
+  addrs=$(hyprctl -j clients \
+    | jq -r --arg ws "special:${WS_NAME}" --arg target "$target_addr" \
+      '.[] | select(.workspace.name == $ws and .address != $target) | .address') \
+    || fail "Cannot query stashed windows"
+
+  while IFS= read -r addr; do
+    [[ -n "$addr" ]] || continue
+    [[ "$addr" =~ ^0x[[:xdigit:]]+$ ]] || fail "Invalid stashed window address"
+    hypr_dispatch "hl.dsp.window.move({window='address:${addr}', workspace='${cur_ws}', silent=true})"
+  done <<< "$addrs"
+}
+
 calc_position() {
   local mon_json
   # The pointer can remain on another output after keyboard focus changes.
@@ -264,6 +281,7 @@ if [[ -n "$window_json" ]]; then
     # drive the window via the hl.dsp.* lua dispatchers instead.
     calc_position
     remember_focus
+    evacuate_workspace_aliens "$addr"
     hypr_dispatch "hl.dsp.window.move({window='address:${addr}', workspace='${TARGET_WORKSPACE}', silent=false})"
     hypr_dispatch "hl.dsp.window.float({window='address:${addr}', action='enable'})"
     hypr_dispatch "hl.dsp.window.resize({window='address:${addr}', x=${WIDTH}, y=${HEIGHT}, exact=true})"
@@ -274,6 +292,7 @@ if [[ -n "$window_json" ]]; then
     # Focus the background window before moving Signal away, so the scrolling
     # layout need not choose an unrelated column as its fallback.
     restore_focus "$return_target"
+    evacuate_workspace_aliens "$addr"
     # Visible → hide to special workspace.
     # In Hyprland 0.55 lua mode, moving a window into a special workspace
     # auto-reveals that special workspace on its monitor (the `silent` flag
@@ -297,6 +316,7 @@ else
   # Not running → launch with float rules
   calc_position
   remember_focus
+  evacuate_workspace_aliens
   if [[ ${#LAUNCH_CMD[@]} -gt 0 ]]; then
     hypr_dispatch "hl.dsp.exec_cmd([[${LAUNCH_CMD[*]}]], {float=true, size='${WIDTH} ${HEIGHT}', move='${POS_X} ${POS_Y}'})"
   else

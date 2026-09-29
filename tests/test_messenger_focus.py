@@ -207,6 +207,32 @@ class MessengerFocusTests(unittest.TestCase):
         self.assertEqual(json.loads(self.focus_state.read_text())["address"], "0x10")
         self.assertTrue(any(c[0] == "dispatch" and "hl.dsp.exec_cmd" in c[1] for c in self.calls()))
 
+    def add_stashed_browser(self):
+        state = self.state()
+        state["clients"].append({
+            "address": "0x40", "class": "brave-private", "mapped": True, "monitor": 1,
+            "workspace": {"id": -97, "name": "special:messenger_signal"},
+        })
+        self.save(state)
+
+    def assert_browser_recovered_and_focus_preserved(self):
+        recovered = next(w for w in self.state()["clients"] if w["address"] == "0x40")
+        self.assertEqual(recovered["workspace"]["id"], 2)
+        self.assertEqual(self.state()["active"], "0x10")
+
+    def test_recovering_stashed_window_on_show_preserves_return_focus(self):
+        self.add_stashed_browser()
+        self.toggle()
+        self.assertEqual(json.loads(self.focus_state.read_text())["address"], "0x10")
+        self.toggle()
+        self.assert_browser_recovered_and_focus_preserved()
+
+    def test_recovering_stashed_window_on_hide_preserves_return_focus(self):
+        self.toggle()
+        self.add_stashed_browser()
+        self.toggle()
+        self.assert_browser_recovered_and_focus_preserved()
+
 
 if __name__ == "__main__":
     unittest.main()
