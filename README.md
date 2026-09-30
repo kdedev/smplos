@@ -247,8 +247,8 @@ that workspace; it does not bring back a window you moved or closed.
 
 #### Monitor-owned workspaces
 
-Hyprland gives numbered workspaces monitor homes without switching all monitors
-as a set. OS updates and first login on new installs enable automatic spatial
+Supported Hyprland Lua configurations give numbered workspaces monitor homes
+without switching all monitors as a set. OS updates and first login enable automatic spatial
 assignment when no saved workspace preference exists. Existing mappings and
 explicit opt-outs are preserved; niri and X11 keep their existing behavior.
 

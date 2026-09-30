@@ -136,6 +136,13 @@ class WorkspacePolicyTests(unittest.TestCase):
         self.assertEqual(self.policy.load(), profile)
         self.assertEqual(self.backend.actions, actions)
 
+    def test_unsupported_setup_does_not_leave_partial_default_enrollment(self):
+        self.backend.ensure_setup = lambda: (_ for _ in ()).throw(RuntimeError("unsupported API"))
+        with self.assertRaises(RuntimeError):
+            self.policy.init(only_new=True)
+        self.assertFalse(self.policy.path.exists())
+        self.assertFalse(self.policy.marker.exists())
+
     def test_default_enrollment_preserves_fixed_homes_and_disabled_preferences(self):
         profile = self.enable()
         self.assertFalse(self.policy.init(only_new=True))

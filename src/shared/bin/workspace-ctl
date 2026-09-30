@@ -70,8 +70,9 @@ class Hyprland:
         return command("hyprctl", "repl", "return smplos_workspace_overview_escape_ready == true") == "true"
 
     def ensure_setup(self):
-        if command("hyprctl", "repl", "return smplos_workspace_policy_loaded == true") != "true":
-            raise RuntimeError("Install and reload the workspace_policy.lua module before enabling the trial")
+        ready = 'return smplos_workspace_policy_loaded == true and type(hl.workspace_rule) == "function"'
+        if command("hyprctl", "repl", ready) != "true":
+            raise RuntimeError("Install and reload workspace_policy.lua on a compatible Hyprland version before enabling")
 
     def reload(self):
         response = command("hyprctl", "reload", "config-only")
