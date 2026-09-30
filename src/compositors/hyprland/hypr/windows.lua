@@ -12,7 +12,7 @@ local theme = require("theme")
 -- Apply the same blur profile to every smplOS EWW layer surface.
 local eww_namespaces = {
     "eww-bar", "eww-calendar-popup", "eww-quick-settings",
-    "eww-notification-hub", "eww-usb-popup",
+    "eww-notification-hub", "eww-usb-popup", "eww-workspace-overview",
 }
 for _, ns in ipairs(eww_namespaces) do
     hl.layer_rule({ match = { namespace = ns }, blur = true })

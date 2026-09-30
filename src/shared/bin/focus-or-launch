@@ -54,13 +54,17 @@ focus_existing() {
   local cls="$1"
   if $IS_HYPRLAND; then
     # Find the workspace ID of the first matching window.
-    local ws_id
-    ws_id=$(hyprctl -j clients 2>/dev/null \
-      | jq -r --arg c "$cls" \
+    local ws_id window
+    window=$(hyprctl -j clients 2>/dev/null \
+      | jq -c --arg c "$cls" \
         '[.[] | select((.class//"" | test($c;"i")) or (.initialClass//"" | test($c;"i")))]
-         | first | .workspace.id // empty' \
+         | first // {}' \
       2>/dev/null)
+    ws_id=$(jq -r '.workspace.id // empty' <<< "$window")
     if [[ -n "$ws_id" && "$ws_id" =~ ^[0-9]+$ ]]; then
+      if [[ -f "$HOME/.config/smplos/workspace-policy.enabled" ]]; then
+        exec workspace-ctl focus-window "$(jq -r '.address' <<< "$window")"
+      fi
       # Sync ALL monitors to the same workspace group (Windows-style virtual desktop).
       # Group = ((workspace_id - 1) % 10) + 1
       local group=$(( (ws_id - 1) % 10 + 1 ))

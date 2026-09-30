@@ -180,9 +180,13 @@ calc_position() {
   local mon_json
   # The pointer can remain on another output after keyboard focus changes.
   # Derive both placement and workspace from the same focused monitor.
-  mon_json=$(hyprctl -j monitors 2>/dev/null | jq -e '
-    first(.[] | select(.focused))' 2>/dev/null) \
-    || fail "Cannot determine the focused monitor"
+  if [[ -f "$HOME/.config/smplos/workspace-policy.enabled" ]]; then
+    mon_json=$(workspace-ctl monitor) || fail "Cannot determine the keyboard-focused monitor"
+  else
+    mon_json=$(hyprctl -j monitors 2>/dev/null | jq -e '
+      first(.[] | select(.focused))' 2>/dev/null) \
+      || fail "Cannot determine the focused monitor"
+  fi
   TARGET_WORKSPACE=$(jq -er '.activeWorkspace.id | numbers' <<< "$mon_json") \
     || fail "Cannot determine the focused workspace"
   local mon_w mon_h mon_x mon_y scale transform

@@ -17,6 +17,11 @@
 
 set -euo pipefail
 
+if [[ -n "${HYPRLAND_INSTANCE_SIGNATURE:-}" && -z "${NIRI_SOCKET:-}" \
+      && -f "$HOME/.config/smplos/workspace-policy.enabled" ]]; then
+    exec workspace-ctl select "${1:-1}"
+fi
+
 # ---------------------------------------------------------------------------
 # Read workspace limit from bar.conf (default 10 = no limit)
 # ---------------------------------------------------------------------------

@@ -1,0 +1,12 @@
+#!/bin/bash
+# Restore policy without moving keyboard focus to a different monitor.
+set -euo pipefail
+
+if [[ -n "${HYPRLAND_INSTANCE_SIGNATURE:-}" && -z "${NIRI_SOCKET:-}" ]]; then
+    if [[ -f "$HOME/.config/smplos/workspace-policy.enabled" ]]; then
+        exec workspace-ctl apply
+    elif [[ ! -e "$HOME/.config/smplos/workspace-policy.json" ]]; then
+        exec workspace-ctl enroll
+    fi
+fi
+exec workspace-group 1

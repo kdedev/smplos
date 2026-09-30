@@ -1,0 +1,761 @@
+#!/usr/bin/env python3
+"""Monitor-owned workspaces and compositor-neutral bar state."""
+
+import argparse
+from contextlib import contextmanager
+import copy
+import fcntl
+import json
+import os
+from pathlib import Path
+import re
+import select
+import socket
+import subprocess
+import sys
+import tempfile
+import time
+
+
+LAYOUT_POLL_INTERVAL = 2.0
+
+
+def atomic_write(path, content):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.NamedTemporaryFile(mode="w", dir=path.parent, delete=False) as stream:
+        temporary = Path(stream.name)
+        try:
+            stream.write(content)
+            stream.flush()
+            os.fsync(stream.fileno())
+        except OSError:
+            temporary.unlink()
+            raise
+    try:
+        temporary.replace(path)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def command(*args):
+    result = subprocess.run(args, capture_output=True, text=True, timeout=5, check=True)
+    return result.stdout.strip()
+
+
+def lua_string(value):
+    return json.dumps(value, ensure_ascii=False)
+
+
+class Hyprland:
+    @staticmethod
+    def available():
+        return bool(os.environ.get("HYPRLAND_INSTANCE_SIGNATURE")) and not os.environ.get("NIRI_SOCKET")
+
+    def snapshot(self):
+        return {
+            "monitors": json.loads(command("hyprctl", "-j", "monitors")),
+            "workspaces": json.loads(command("hyprctl", "-j", "workspaces")),
+            "active": json.loads(command("hyprctl", "-j", "activewindow")),
+        }
+
+    def dispatch(self, expression):
+        response = command("hyprctl", "dispatch", expression)
+        if response != "ok":
+            raise RuntimeError(f"Hyprland rejected action: {response}")
+
+    def clients(self):
+        return json.loads(command("hyprctl", "-j", "clients"))
+
+    def escape_available(self):
+        return command("hyprctl", "repl", "return smplos_workspace_overview_escape_ready == true") == "true"
+
+    def ensure_setup(self):
+        if command("hyprctl", "repl", "return smplos_workspace_policy_loaded == true") != "true":
+            raise RuntimeError("Install and reload the workspace_policy.lua module before enabling the trial")
+
+    def reload(self):
+        response = command("hyprctl", "reload", "config-only")
+        if response != "ok":
+            raise RuntimeError(f"Hyprland rejected workspace rules: {response}")
+        errors = [str(error) for error in json.loads(command("hyprctl", "-j", "configerrors"))
+                  if str(error).strip()]
+        if errors:
+            raise RuntimeError("Hyprland configuration errors: " + "; ".join(errors))
+        if (Path.home() / ".config/smplos/workspace-policy.enabled").exists():
+            if command("hyprctl", "repl", "return smplos_workspace_policy_active == true") != "true":
+                raise RuntimeError("Hyprland could not load the generated workspace rules")
+
+
+def logical_monitors(snapshot):
+    result = []
+    for item in snapshot["monitors"]:
+        width, height = item["width"], item["height"]
+        if item.get("transform", 0) % 2:
+            width, height = height, width
+        scale = item["scale"]
+        if scale <= 0 or width <= 0 or height <= 0:
+            raise ValueError("Invalid monitor dimensions")
+        result.append({
+            "connector": item["name"], "runtime_id": item["id"],
+            "hardware": [item.get("make", ""), item.get("model", ""), item.get("serial", "")],
+            "description": item.get("description", item["name"]),
+            "x": item["x"], "y": item["y"], "width": width / scale, "height": height / scale,
+            "focused": item.get("focused", False),
+            "active_workspace": item["activeWorkspace"]["id"],
+            "special_workspace": item.get("specialWorkspace", {}).get("id", 0),
+        })
+    return result
+
+
+def focused_monitor(monitors, active):
+    # A non-focusable bar can change Hyprland's monitor focus without changing
+    # keyboard focus. Prefer the active application's output when there is one.
+    if active.get("address"):
+        match = next((m for m in monitors if m["runtime_id"] == active.get("monitor")), None)
+        if match:
+            return match
+    return next((m for m in monitors if m["focused"]), monitors[0] if monitors else None)
+
+
+def spatial_order(monitors):
+    return sorted(monitors, key=lambda m: (m["x"], m["y"], int(m["id"][1:])))
+
+
+def neighbor(monitors, current, direction):
+    """Choose a physical neighbor, preferring aligned over diagonal outputs."""
+    cx, cy = current["x"] + current["width"] / 2, current["y"] + current["height"] / 2
+    candidates = []
+    for monitor in monitors:
+        if monitor["id"] == current["id"]:
+            continue
+        dx = monitor["x"] + monitor["width"] / 2 - cx
+        dy = monitor["y"] + monitor["height"] / 2 - cy
+        if direction in ("left", "right"):
+            if dx * (-1 if direction == "left" else 1) <= 0:
+                continue
+            gap = max(0, monitor["y"] - current["y"] - current["height"],
+                      current["y"] - monitor["y"] - monitor["height"])
+            distance = abs(dx)
+        else:
+            if dy * (-1 if direction == "up" else 1) <= 0:
+                continue
+            gap = max(0, monitor["x"] - current["x"] - current["width"],
+                      current["x"] - monitor["x"] - monitor["width"])
+            distance = abs(dy)
+        candidates.append(((gap > 0, distance + 2 * gap, dx * dx + dy * dy), monitor))
+    return min(candidates, key=lambda item: item[0])[1] if candidates else None
+
+
+def empty_state(error=""):
+    return {
+        "enabled": False, "error": error, "focused_monitor": "", "focused_label": "",
+        "focused_workspace": 0, "current": [], "monitors": [], "disconnected": [],
+        "map_width": 560, "map_height": 260, "assignment": "preserve", "escape_available": False,
+    }
+
+
+def new_profile(automatic=False, enabled=True):
+    return {
+        "version": 1, "enabled": enabled, "monitors": [], "homes": {}, "defaults": {},
+        "assignment": "spatial-round-robin" if automatic else "preserve",
+    }
+
+
+class Policy:
+    def __init__(self, backend=None, config_dir=None, runtime_dir=None):
+        if config_dir is None and os.geteuid() == 0 and Path.home().stat().st_uid != 0:
+            raise RuntimeError("Run workspace-ctl as the desktop user, not root with their HOME")
+        self.backend = backend or Hyprland()
+        self.config_dir = Path(config_dir or Path.home() / ".config/smplos")
+        self.path = self.config_dir / "workspace-policy.json"
+        self.marker = self.config_dir / "workspace-policy.enabled"
+        self.rules = self.config_dir / "workspace-rules.lua"
+        self.runtime = Path(runtime_dir or os.environ.get("XDG_RUNTIME_DIR",
+                            str(Path.home() / ".cache"))) / "smplos"
+        self.pending_rules = self.runtime / "workspace-rules.pending"
+
+    @contextmanager
+    def lock(self):
+        self.config_dir.mkdir(parents=True, exist_ok=True)
+        with (self.config_dir / ".workspace-policy.lock").open("a") as stream:
+            fcntl.flock(stream, fcntl.LOCK_EX)
+            yield
+
+    def load(self):
+        profile = json.loads(self.path.read_text())
+        if not isinstance(profile, dict) or profile.get("version") != 1 \
+                or not isinstance(profile.get("monitors"), list):
+            raise ValueError(f"Unsupported workspace policy in {self.path}")
+        if type(profile.get("enabled")) is not bool or any(
+            not isinstance(m, dict) for m in profile["monitors"]
+        ):
+            raise ValueError("Invalid workspace policy fields")
+        ids = [m.get("id", "") for m in profile["monitors"]]
+        if any(not isinstance(i, str) or not re.fullmatch(r"m[1-9][0-9]*", i) for i in ids) \
+                or len(ids) != len(set(ids)):
+            raise ValueError("Invalid monitor IDs in workspace policy")
+        if any(m.get("label") != "M" + m["id"][1:] or not isinstance(m.get("connector"), str)
+               or not isinstance(m.get("hardware"), list) or len(m["hardware"]) != 3
+               for m in profile["monitors"]):
+            raise ValueError("Invalid monitor identity in workspace policy")
+        if not isinstance(profile.get("defaults"), dict):
+            raise ValueError("Invalid workspace defaults in workspace policy")
+        if profile.get("assignment", "preserve") not in ("preserve", "spatial-round-robin"):
+            raise ValueError("Invalid workspace assignment mode")
+        if not isinstance(profile.get("homes"), dict) or any(
+            not re.fullmatch(r"[1-9][0-9]*", i) or not isinstance(home, str) or home not in ids
+            for i, home in profile["homes"].items()
+        ):
+            raise ValueError("Invalid workspace homes in workspace policy")
+        return profile
+
+    def save(self, profile):
+        atomic_write(self.path, json.dumps(profile, indent=2, sort_keys=True) + "\n")
+
+    def enabled(self):
+        if not self.marker.exists() or not self.backend.available():
+            return False
+        return self.load().get("enabled") is True
+
+    def configured_count(self):
+        path = self.config_dir / "bar.conf"
+        if path.exists():
+            for line in path.read_text().splitlines():
+                if line.startswith("ws_count="):
+                    count = int(line.split("=", 1)[1])
+                    if not 1 <= count <= 100:
+                        raise ValueError("Workspace count must be between 1 and 100")
+                    return count
+        return 4
+
+    def match_monitors(self, profile, snapshot, add=False):
+        monitors = logical_monitors(snapshot)
+        matched = set()
+        for monitor in sorted(monitors, key=lambda m: (m["y"], m["x"], m["connector"])):
+            candidates = [m for m in profile["monitors"]
+                          if m["hardware"] == monitor["hardware"] and m["id"] not in matched]
+            record = next((m for m in candidates if m["connector"] == monitor["connector"]), None)
+            # Identical displays without unique serials must not trade identities
+            # just because IPC enumerated them in a different order.
+            if record is None and len(candidates) == 1 and sum(
+                m["hardware"] == monitor["hardware"] for m in monitors
+            ) == 1:
+                record = candidates[0]
+            if record is None:
+                if not add:
+                    continue
+                number = max((int(m["id"][1:]) for m in profile["monitors"]), default=0) + 1
+                record = {"id": f"m{number}", "label": f"M{number}",
+                          "connector": monitor["connector"], "hardware": monitor["hardware"]}
+                profile["monitors"].append(record)
+            matched.add(record["id"])
+            if add:
+                record["connector"] = monitor["connector"]
+            monitor.update(id=record["id"], label=record["label"])
+        return [m for m in monitors if "id" in m]
+
+    @staticmethod
+    def effective_home(profile, monitors, workspace):
+        connected = {m["id"]: m for m in monitors}
+        home = profile["homes"][str(workspace)]
+        if home in connected:
+            return connected[home]
+        return min(monitors, key=lambda m: int(m["id"][1:]))
+
+    @staticmethod
+    def new_home(profile, monitors, workspace, preferred=None):
+        if profile.get("assignment") == "spatial-round-robin":
+            return spatial_order(monitors)[(int(workspace) - 1) % len(monitors)]["id"]
+        if preferred is not None:
+            return preferred["id"]
+        return min(monitors, key=lambda m: (
+            list(profile["homes"].values()).count(m["id"]), int(m["id"][1:])))["id"]
+
+    def reconcile(self, profile, snapshot):
+        before = copy.deepcopy(profile)
+        monitors = self.match_monitors(profile, snapshot, add=True)
+        if not monitors:
+            raise RuntimeError("No connected monitors")
+        by_connector = {m["connector"]: m for m in monitors}
+        count = self.configured_count()
+        automatic = profile.get("assignment") == "spatial-round-robin"
+        slots = max(count, len(monitors)) if automatic else count
+        visible = {m["active_workspace"] for m in monitors}
+        normal = {w["id"]: w for w in snapshot["workspaces"] if w["id"] > 0}
+        # Adopt existing locations first, including occupied legacy IDs above 10.
+        for workspace, info in normal.items():
+            if str(workspace) not in profile["homes"] and (
+                workspace <= slots or info["windows"] > 0 or (workspace in visible and not automatic)
+            ):
+                monitor = by_connector.get(info["monitor"])
+                if monitor:
+                    profile["homes"][str(workspace)] = self.new_home(
+                        profile, monitors, workspace, preferred=monitor)
+        for workspace in range(1, slots + 1):
+            if str(workspace) not in profile["homes"]:
+                profile["homes"][str(workspace)] = self.new_home(profile, monitors, workspace)
+        if count < profile.get("count", count):
+            for workspace in list(profile["homes"]):
+                number = int(workspace)
+                if number > slots and number not in visible and not normal.get(number, {}).get("windows", 0):
+                    del profile["homes"][workspace]
+        profile["count"] = count
+        if profile.get("assignment") == "spatial-round-robin":
+            layout = [[m["id"], m["x"], m["y"], m["width"], m["height"]]
+                      for m in spatial_order(monitors)]
+            # Explicit workspace transfers remain valid until the display layout
+            # changes again; ordinary focus events must not undo a manual move.
+            if profile.get("spatial_layout") != layout:
+                for workspace in profile["homes"]:
+                    profile["homes"][workspace] = self.new_home(profile, monitors, workspace)
+                profile["spatial_layout"] = layout
+        for monitor in monitors:
+            default = str(monitor["active_workspace"])
+            old = str(profile["defaults"].get(monitor["id"], ""))
+            if automatic or profile["homes"].get(old) != monitor["id"]:
+                owned = sorted(int(w) for w, home in profile["homes"].items() if home == monitor["id"])
+                if automatic and owned:
+                    profile["defaults"][monitor["id"]] = owned[0]
+                elif profile["homes"].get(default) == monitor["id"]:
+                    profile["defaults"][monitor["id"]] = int(default)
+                elif owned:
+                    profile["defaults"][monitor["id"]] = owned[0]
+                else:
+                    profile["defaults"].pop(monitor["id"], None)
+        return monitors, profile != before
+
+    def render_rules(self, profile, monitors):
+        lines = ["-- Generated by workspace-ctl. Edit workspace-policy.json, not this file."]
+        for workspace in sorted(map(int, profile["homes"])):
+            monitor = self.effective_home(profile, monitors, workspace)
+            default = profile["defaults"].get(monitor["id"]) == workspace
+            lines.append("hl.workspace_rule({ workspace = %s, monitor = %s, persistent = true%s })" % (
+                lua_string(str(workspace)), lua_string(monitor["connector"]),
+                ", default = true" if default else ""))
+        return "\n".join(lines) + "\n"
+
+    def restore_views(self, before, profile, monitors, snapshot):
+        desired = {}
+        for monitor in before["monitors"]:
+            workspace = monitor["activeWorkspace"]["id"]
+            if str(workspace) not in profile["homes"]:
+                continue
+            owner = self.effective_home(profile, monitors, workspace)
+            if owner["id"] not in desired or owner["connector"] == monitor["name"]:
+                desired[owner["id"]] = workspace
+        active = before["active"]
+        context = focused_monitor(logical_monitors(before), active)
+        workspace = context["active_workspace"] if context else None
+        original_workspace = workspace
+        if str(workspace) in profile["homes"]:
+            desired[self.effective_home(profile, monitors, workspace)["id"]] = workspace
+        changes = []
+        for monitor in spatial_order(monitors):
+            workspace = desired.get(monitor["id"], profile["defaults"].get(monitor["id"]))
+            if workspace is not None and monitor["active_workspace"] != workspace:
+                changes.append(workspace)
+        address = active.get("address", "")
+        restore = changes or address != snapshot["active"].get("address", "")
+        valid_focus = restore and re.fullmatch(r"0x[0-9a-fA-F]+", address) and any(
+            w.get("address") == address and w.get("workspace", {}).get("id") == active.get("workspace", {}).get("id")
+            for w in self.backend.clients()
+        )
+        for workspace in changes:
+            self.backend.dispatch(f"hl.dsp.focus({{workspace={workspace}}})")
+        if valid_focus:
+            self.backend.dispatch("hl.dsp.focus({window=%s})" % lua_string("address:" + address))
+        elif not address and changes and str(original_workspace) in profile["homes"]:
+            self.backend.dispatch(f"hl.dsp.focus({{workspace={original_workspace}}})")
+        return self.backend.snapshot() if changes or valid_focus else snapshot
+
+    def sync(self, snapshot=None, enforce=False, restore_views=False):
+        snapshot = snapshot or self.backend.snapshot()
+        before = snapshot
+        with self.lock():
+            profile = self.load()
+            old_layout = profile.get("spatial_layout")
+            monitors, changed = self.reconcile(profile, snapshot)
+            layout_changed = profile.get("assignment") == "spatial-round-robin" \
+                and old_layout != profile.get("spatial_layout")
+            if changed:
+                self.save(profile)
+            content = self.render_rules(profile, monitors)
+            rules_changed = not self.rules.exists() or self.rules.read_text() != content
+            reload_needed = rules_changed or enforce or self.pending_rules.exists()
+            if reload_needed:
+                # File equality is not evidence that the compositor accepted it.
+                # Keep a retry marker until reload succeeds, including after a crash.
+                atomic_write(self.pending_rules, "")
+                atomic_write(self.rules, content)
+                self.backend.reload()
+                self.pending_rules.unlink()
+            moved = {}
+            for workspace in snapshot["workspaces"]:
+                if str(workspace["id"]) not in profile["homes"]:
+                    continue
+                target = self.effective_home(profile, monitors, workspace["id"])
+                if workspace["monitor"] != target["connector"]:
+                    self.backend.dispatch("hl.dsp.workspace.move({workspace=%d, monitor=%s})" % (
+                        workspace["id"], lua_string(target["connector"])))
+                    moved[workspace["id"]] = target["connector"]
+        if reload_needed or moved:
+            snapshot = self.backend.snapshot()
+            monitors = self.match_monitors(profile, snapshot)
+            for workspace in snapshot["workspaces"]:
+                if workspace["id"] in moved and workspace["monitor"] != moved[workspace["id"]]:
+                    raise RuntimeError(f"Workspace {workspace['id']} did not reach its assigned monitor")
+        if restore_views or layout_changed or moved:
+            snapshot = self.restore_views(before, profile, monitors, snapshot)
+            monitors = self.match_monitors(profile, snapshot)
+        return profile, monitors, snapshot
+
+    def init(self, preserve=False, only_new=False):
+        with self.lock():
+            if only_new and (self.path.exists() or self.marker.exists()):
+                return False
+            if not self.backend.available():
+                raise RuntimeError("Monitor-owned workspaces require Hyprland")
+            self.backend.ensure_setup()
+            snapshot = self.backend.snapshot()
+            profile = self.load() if self.path.exists() else new_profile(automatic=only_new)
+            profile["enabled"] = True
+            if preserve:
+                profile["assignment"] = "preserve"
+                profile.pop("spatial_layout", None)
+            monitors, _ = self.reconcile(profile, snapshot)
+            self.save(profile)
+            atomic_write(self.rules, self.render_rules(profile, monitors))
+            atomic_write(self.marker, "")
+        self.sync(snapshot, enforce=True)
+        return True
+
+    def arrange(self, automatic=False):
+        snapshot = self.backend.snapshot()
+        with self.lock():
+            profile = self.load()
+            profile["assignment"] = "spatial-round-robin"
+            profile.pop("spatial_layout", None)
+            self.reconcile(profile, snapshot)
+            if not automatic:
+                profile["assignment"] = "preserve"
+                profile.pop("spatial_layout", None)
+            self.save(profile)
+        self.sync(snapshot, enforce=True, restore_views=True)
+
+    def disable(self):
+        with self.lock():
+            self.marker.unlink(missing_ok=True)
+            if self.path.exists():
+                try:
+                    profile = self.load()
+                except ValueError as error:
+                    print(f"workspace-ctl: disabled; leaving invalid saved profile unchanged: {error}",
+                          file=sys.stderr)
+                else:
+                    profile["enabled"] = False
+                    self.save(profile)
+            else:
+                # An opt-out made before first login must survive enrollment.
+                self.save(new_profile(automatic=True, enabled=False))
+            self.pending_rules.unlink(missing_ok=True)
+        if self.backend.available():
+            self.backend.reload()
+
+    def select(self, value):
+        if not self.enabled():
+            raise RuntimeError("Stable workspace policy is not enabled")
+        profile, monitors, snapshot = self.sync()
+        current = focused_monitor(monitors, snapshot["active"])
+        history_path = self.runtime / "workspace-history.json"
+        history = json.loads(history_path.read_text()) if history_path.exists() else {}
+        if value == "previous":
+            workspace = history.get(current["id"])
+            if workspace is None or str(workspace) not in profile["homes"] \
+                    or self.effective_home(profile, monitors, workspace)["id"] != current["id"]:
+                return
+        elif value in ("+1", "-1"):
+            local = sorted(int(w) for w in profile["homes"]
+                           if self.effective_home(profile, monitors, w)["id"] == current["id"])
+            if not local:
+                return
+            active = current["active_workspace"]
+            index = local.index(active) if active in local else 0
+            workspace = local[(index + int(value)) % len(local)]
+        elif re.fullmatch(r"[1-9][0-9]*", value):
+            workspace = int(value)
+        else:
+            raise ValueError(f"Unsupported workspace selector: {value}")
+        if str(workspace) not in profile["homes"]:
+            with self.lock():
+                profile = self.load()
+                profile["homes"][str(workspace)] = self.new_home(
+                    profile, monitors, workspace, preferred=current)
+                self.save(profile)
+            profile, monitors, snapshot = self.sync()
+        owner = self.effective_home(profile, monitors, workspace)
+        if owner["active_workspace"] != workspace:
+            history[owner["id"]] = owner["active_workspace"]
+            atomic_write(history_path, json.dumps(history) + "\n")
+        self.backend.dispatch(f"hl.dsp.focus({{workspace={workspace}}})")
+
+    def focus_monitor(self, identity):
+        _, monitors, _ = self.sync()
+        monitor = next((m for m in monitors if m["id"] == identity), None)
+        if monitor is None:
+            raise ValueError(f"Monitor {identity} is not connected")
+        self.backend.dispatch(f"hl.dsp.focus({{workspace={monitor['active_workspace']}}})")
+
+    def focus_window(self, address):
+        if not re.fullmatch(r"0x[0-9a-fA-F]+", address):
+            raise ValueError("Invalid window address")
+        window = next((w for w in self.backend.clients() if w["address"] == address), None)
+        if window is None:
+            raise RuntimeError("The requested window no longer exists")
+        if window["workspace"]["id"] > 0:
+            self.select(str(window["workspace"]["id"]))
+        self.backend.dispatch("hl.dsp.focus({window=%s})" % json.dumps("address:" + address))
+
+    def current_workspace(self):
+        monitor = self.current_monitor()
+        return monitor.get("specialWorkspace", {}).get("id", 0) or monitor["activeWorkspace"]["id"]
+
+    def current_monitor(self):
+        snapshot = self.backend.snapshot()
+        monitor = focused_monitor(logical_monitors(snapshot), snapshot["active"])
+        if monitor is None:
+            raise RuntimeError("No connected monitor")
+        return next(m for m in snapshot["monitors"] if m["id"] == monitor["runtime_id"])
+
+    def send(self, value, silent=False):
+        if not re.fullmatch(r"[1-9][0-9]*", value):
+            raise ValueError("A positive workspace ID is required")
+        profile, monitors, snapshot = self.sync()
+        address = snapshot["active"].get("address", "")
+        if not address:
+            return
+        if not re.fullmatch(r"0x[0-9a-fA-F]+", address):
+            raise ValueError("Invalid focused window address")
+        if value not in profile["homes"]:
+            current = focused_monitor(monitors, snapshot["active"])
+            with self.lock():
+                profile = self.load()
+                profile["homes"][value] = self.new_home(profile, monitors, value, preferred=current)
+                self.save(profile)
+            self.sync()
+        self.backend.dispatch("hl.dsp.window.move({window=%s, workspace=%d, silent=true})" % (
+            json.dumps("address:" + address), int(value)))
+        if not silent:
+            self.backend.dispatch("hl.dsp.focus({window=%s})" % json.dumps("address:" + address))
+
+    def move(self, target, whole_workspace=False):
+        profile, monitors, snapshot = self.sync()
+        current = focused_monitor(monitors, snapshot["active"])
+        destination = (neighbor(monitors, current, target) if target in ("left", "right", "up", "down")
+                       else next((m for m in monitors if m["id"] == target), None))
+        if destination is None:
+            if target in ("left", "right", "up", "down"):
+                return
+            raise ValueError(f"Monitor {target} is not connected")
+        if whole_workspace:
+            workspace = current["active_workspace"]
+            with self.lock():
+                profile = self.load()
+                profile["homes"][str(workspace)] = destination["id"]
+                self.save(profile)
+            self.sync(enforce=True)
+            self.backend.dispatch(f"hl.dsp.focus({{workspace={workspace}}})")
+        else:
+            address = snapshot["active"].get("address", "")
+            if not address:
+                return
+            if not re.fullmatch(r"0x[0-9a-fA-F]+", address):
+                raise ValueError("Invalid focused window address")
+            self.backend.dispatch("hl.dsp.window.move({window=%s, workspace=%d, silent=true})" % (
+                json.dumps("address:" + address), destination["active_workspace"]))
+            self.backend.dispatch("hl.dsp.focus({window=%s})" % json.dumps("address:" + address))
+
+    def state(self):
+        if not self.enabled():
+            return empty_state()
+        profile, monitors, snapshot = self.sync()
+        current = focused_monitor(monitors, snapshot["active"])
+        normal = {w["id"]: w for w in snapshot["workspaces"] if w["id"] > 0}
+        by_connector = {m["connector"]: m for m in monitors}
+        visible = {m["active_workspace"] for m in monitors}
+        labels = {m["id"]: m["label"] for m in profile["monitors"]}
+        all_workspaces = []
+        for workspace in sorted(map(int, profile["homes"])):
+            home = profile["homes"][str(workspace)]
+            owner = self.effective_home(profile, monitors, workspace)
+            info = normal.get(workspace, {})
+            actual = by_connector.get(info.get("monitor"), {})
+            windows = info.get("windows", 0)
+            temporary = home != owner["id"]
+            all_workspaces.append({
+                "id": workspace, "home": home, "effective_monitor": owner["id"],
+                "current_monitor": actual.get("id", ""), "temporary": temporary,
+                "focused": workspace == current["active_workspace"],
+                "visible": workspace in visible, "occupied": windows > 0, "windows": windows,
+                "tooltip": f"Workspace {workspace} - {labels[home]} - {windows} window(s)"
+                           + (f" - temporarily on {owner['label']} (home disconnected)" if temporary else ""),
+            })
+        min_x, min_y = min(m["x"] for m in monitors), min(m["y"] for m in monitors)
+        width = max(m["x"] + m["width"] for m in monitors) - min_x
+        height = max(m["y"] + m["height"] for m in monitors) - min_y
+        scale = min(560 / width, 260 / height)
+        for monitor in monitors:
+            monitor["focused"] = monitor["id"] == current["id"]
+            monitor["map_x"] = round((monitor["x"] - min_x) * scale)
+            monitor["map_y"] = round((monitor["y"] - min_y) * scale)
+            monitor["map_width"] = max(1, round(monitor["width"] * scale))
+            monitor["map_height"] = max(1, round(monitor["height"] * scale))
+            monitor["tooltip"] = f"{monitor['label']} - {monitor['connector']} - {monitor['description']}"
+            monitor["workspaces"] = [w for w in all_workspaces if w["effective_monitor"] == monitor["id"]]
+        connected = {m["id"] for m in monitors}
+        return {
+            "enabled": True, "error": "", "focused_monitor": current["id"],
+            "assignment": profile.get("assignment", "preserve"),
+            "escape_available": self.backend.escape_available(),
+            "focused_label": current["label"], "focused_workspace": current["active_workspace"],
+            "current": [w for w in all_workspaces if w["effective_monitor"] == current["id"]],
+            "monitors": spatial_order(monitors),
+            "disconnected": [
+                {"id": m["id"], "label": m["label"],
+                 "workspace_ids": sorted(int(w) for w, home in profile["homes"].items() if home == m["id"])}
+                for m in profile["monitors"] if m["id"] not in connected
+            ],
+            "map_width": max(1, round(width * scale)), "map_height": max(1, round(height * scale)),
+        }
+
+    def watch(self):
+        connection = None
+        buffer = b""
+        previous = None
+        stamp = None
+        dirty = True
+        last_refresh = 0
+        while True:
+            paths = (self.path, self.marker, self.config_dir / "bar.conf")
+            current_stamp = tuple(p.stat().st_mtime_ns if p.exists() else None for p in paths)
+            # Some monitor-position changes do not emit an IPC event.
+            dirty = dirty or current_stamp != stamp or time.monotonic() - last_refresh >= LAYOUT_POLL_INTERVAL
+            stamp = current_stamp
+            if dirty and time.monotonic() - last_refresh >= 0.12:
+                try:
+                    state = self.state()
+                    if state["enabled"] and connection is None:
+                        path = (Path(os.environ.get("XDG_RUNTIME_DIR", f"/run/user/{os.getuid()}")) / "hypr"
+                                / os.environ["HYPRLAND_INSTANCE_SIGNATURE"] / ".socket2.sock")
+                        connection = socket.socket(socket.AF_UNIX)
+                        connection.connect(str(path))
+                        buffer = b""
+                    if not state["enabled"] and connection is not None:
+                        connection.close()
+                        connection = None
+                except (OSError, ValueError, RuntimeError, subprocess.SubprocessError) as error:
+                    print(f"workspace-ctl: {error}", file=sys.stderr)
+                    state = empty_state(str(error))
+                    state["enabled"] = self.marker.exists() and self.backend.available()
+                    state["focused_label"] = "Workspaces"
+                    if connection is not None:
+                        connection.close()
+                        connection = None
+                output = json.dumps(state, separators=(",", ":"))
+                if output != previous:
+                    print(output, flush=True)
+                    previous = output
+                last_refresh = time.monotonic()
+                dirty = False
+            if connection is None:
+                time.sleep(1)
+                dirty = True
+            else:
+                try:
+                    if not select.select([connection], [], [], 0.5)[0]:
+                        continue
+                    data = connection.recv(65536)
+                except OSError as error:
+                    print(f"workspace-ctl: event stream disconnected: {error}", file=sys.stderr)
+                    data = b""
+                if not data:
+                    connection.close()
+                    connection = None
+                    dirty = True
+                else:
+                    buffer += data
+                    lines = buffer.split(b"\n")
+                    buffer = lines.pop()
+                    if any(line.split(b">>", 1)[0] in (
+                        b"workspace", b"workspacev2", b"focusedmon", b"activewindowv2",
+                        b"openwindow", b"closewindow", b"movewindow", b"movewindowv2",
+                        b"monitoradded", b"monitoraddedv2", b"monitorremoved",
+                        b"moveworkspace", b"moveworkspacev2", b"configreloaded",
+                    ) for line in lines):
+                        dirty = True
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("action", choices=("enabled", "init", "enroll", "arrange", "disable", "apply", "current", "monitor", "status", "watch",
+                                          "select", "send", "focus-monitor", "focus-window",
+                                          "move-window", "move-workspace"))
+    parser.add_argument("target", nargs="?")
+    parser.add_argument("--preserve", action="store_true", help="keep saved homes instead of automatic reassignment")
+    parser.add_argument("--auto", action="store_true", help="reassign spatially whenever the monitor layout changes")
+    parser.add_argument("--silent", action="store_true", help="do not follow a window sent to a workspace")
+    args = parser.parse_args()
+    if args.auto and args.action != "arrange":
+        parser.error("--auto requires the arrange action")
+    if args.preserve and args.action != "init":
+        parser.error("--preserve requires the init action")
+    if args.silent and args.action != "send":
+        parser.error("--silent requires the send action")
+    policy = Policy()
+    if args.action == "enabled":
+        return 0 if policy.enabled() else 1
+    if args.action in ("select", "send", "focus-monitor", "focus-window", "move-window", "move-workspace") and not args.target:
+        parser.error("this action requires a target")
+    if args.action not in ("init", "enroll", "disable", "status", "watch") and not policy.enabled():
+        raise RuntimeError("Stable workspace policy is not enabled")
+    if args.action == "init":
+        policy.init(preserve=args.preserve)
+    elif args.action == "enroll":
+        if policy.init(only_new=True):
+            print("Enabled automatic spatial workspaces")
+        else:
+            print("Preserved existing workspace preference")
+    elif args.action == "arrange":
+        policy.arrange(automatic=args.auto)
+    elif args.action == "disable":
+        policy.disable()
+    elif args.action == "apply":
+        policy.sync(enforce=True)
+    elif args.action == "current":
+        print(policy.current_workspace())
+    elif args.action == "monitor":
+        print(json.dumps(policy.current_monitor(), separators=(",", ":")))
+    elif args.action == "status":
+        print(json.dumps(policy.state(), separators=(",", ":")))
+    elif args.action == "watch":
+        policy.watch()
+    elif args.action == "select":
+        policy.select(args.target)
+    elif args.action == "send":
+        policy.send(args.target, args.silent)
+    elif args.action == "focus-monitor":
+        policy.focus_monitor(args.target)
+    elif args.action == "focus-window":
+        policy.focus_window(args.target)
+    else:
+        policy.move(args.target, whole_workspace=args.action == "move-workspace")
+    return 0
+
+
+if __name__ == "__main__":
+    try:
+        sys.exit(main())
+    except BrokenPipeError:
+        sys.exit(0)
+    except (OSError, ValueError, RuntimeError, subprocess.SubprocessError) as error:
+        print(f"workspace-ctl: {error}", file=sys.stderr)
+        sys.exit(1)

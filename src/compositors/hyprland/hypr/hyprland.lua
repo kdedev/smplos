@@ -18,6 +18,7 @@ package.path = (os.getenv("HOME") or "") .. "/.config/hypr/?.lua;"
 hl.monitor({ output = "", mode = "preferred", position = "auto", scale = "auto" })
 -- User-saved overrides (written by Settings → Display)
 require("monitors_loader").load((os.getenv("HOME") or "") .. "/.config/hypr/monitors.conf")
+require("workspace_policy")
 
 -- ── Configuration modules ──────────────────────────────────────────────────
 require("envs")

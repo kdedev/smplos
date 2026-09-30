@@ -325,6 +325,17 @@ sync_libs() {
 }
 
 # ── Sync config files to ~/.config/ ───────────────────────────────────────────
+copy_user_config() {
+    local source="$1" destination="$2" temporary
+    temporary=$(as_invoker mktemp "${destination}.XXXXXX")
+    if as_invoker install -m644 "$source" "$temporary" \
+        && as_invoker mv -f "$temporary" "$destination"; then
+        return 0
+    fi
+    as_invoker rm -f -- "$temporary"
+    die "Could not update config: $destination"
+}
+
 sync_configs() {
     header ""
     header "── Syncing configs ──"
@@ -335,11 +346,12 @@ sync_configs() {
     local eww_src="$SMPLOS_REPO/src/shared/eww"
     local eww_dst="$HOME/.config/eww"
     if [[ -d "$eww_src" ]]; then
-        mkdir -p "$eww_dst"
-        # Sync core EWW files (but not theme-colors.scss — that's managed by theme-set)
-        for f in eww.yuck eww.scss; do
+        as_invoker mkdir -p "$eww_dst"
+        # Publish included fragments before the entry point so live reloads
+        # never see an include that has not reached disk yet.
+        for f in workspace-overview.yuck eww.scss eww.yuck; do
             if [[ -f "$eww_src/$f" ]] && ! cmp -s "$eww_src/$f" "$eww_dst/$f" 2>/dev/null; then
-                cp "$eww_src/$f" "$eww_dst/$f"
+                copy_user_config "$eww_src/$f" "$eww_dst/$f"
                 ((n_updated++)) || true
             fi
         done
@@ -668,44 +680,46 @@ sync_hypr_configs() {
         return 1
     }
 
-    mkdir -p "$hypr_dst"
+    as_invoker mkdir -p "$hypr_dst"
     local n_updated=0 n_new=0 n_total=0
 
-    # Top-level .conf and .lua files
-    for src in "$hypr_repo"/*.conf "$hypr_repo"/*.lua; do
-        [[ -f "$src" ]] || continue
-        local name; name=$(basename "$src")
-        _is_protected "$name" && continue
+    _sync_hypr_file() {
+        local src="$1" dst="$2" protect="${3:-true}" name
+        [[ -f "$src" ]] || return 0
+        name=$(basename "$src")
+        if [[ "$protect" == true ]] && _is_protected "$name"; then
+            return 0
+        fi
         ((n_total++)) || true
-        local dst="$hypr_dst/$name"
         if [[ ! -f "$dst" ]]; then
-            cp "$src" "$dst"
+            copy_user_config "$src" "$dst"
             ((n_new++)) || true
             log "  + $name (new)"
         elif ! cmp -s "$src" "$dst"; then
-            cp "$src" "$dst"
+            copy_user_config "$src" "$dst"
             ((n_updated++)) || true
         fi
+    }
+
+    # Modules must exist before a new entry point can require them.
+    local entrypoints=()
+    for src in "$hypr_repo"/*.conf "$hypr_repo"/*.lua; do
+        case "${src##*/}" in
+            hyprland.conf|hyprland.lua) entrypoints+=("$src") ;;
+            *) _sync_hypr_file "$src" "$hypr_dst/${src##*/}" ;;
+        esac
     done
 
     # apps/ subdirectory — all files, none protected
     if [[ -d "$hypr_repo/apps" ]]; then
-        mkdir -p "$hypr_dst/apps"
+        as_invoker mkdir -p "$hypr_dst/apps"
         for src in "$hypr_repo/apps"/*; do
-            [[ -f "$src" ]] || continue
-            local name; name=$(basename "$src")
-            ((n_total++)) || true
-            local dst="$hypr_dst/apps/$name"
-            if [[ ! -f "$dst" ]]; then
-                cp "$src" "$dst"
-                ((n_new++)) || true
-                log "  + apps/$name (new)"
-            elif ! cmp -s "$src" "$dst"; then
-                cp "$src" "$dst"
-                ((n_updated++)) || true
-            fi
+            _sync_hypr_file "$src" "$hypr_dst/apps/${src##*/}" false
         done
     fi
+    for src in "${entrypoints[@]}"; do
+        _sync_hypr_file "$src" "$hypr_dst/${src##*/}"
+    done
 
     if [[ $((n_new + n_updated)) -gt 0 ]]; then
         ok "$n_updated config(s) updated, $n_new new config(s) synced ($n_total total)"

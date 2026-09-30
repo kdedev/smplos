@@ -21,7 +21,85 @@
 --   for a non-modded bind we pass "mouse:272" — passing ", mouse:272"
 --   trips "Unknown keysym" in the Lua parser.
 
-hl.bind("mouse:272", hl.dsp.exec_cmd("popup-click-check"), {
+smplos_workspace_overview_escape_ready = false
+
+local popup_click_bind = hl.bind("mouse:272", hl.dsp.exec_cmd("popup-click-check"), {
     non_consuming = true,
     description   = "_popup_click_check",  -- _-prefix marks as internal
 })
+
+local function escape_unavailable(reason)
+    print("[smplOS] Workspace overview Escape unavailable: " .. reason
+        .. "; keeping normal on-demand popup focus.")
+end
+
+-- Probe the harmless existing bind before creating any consuming Escape bind.
+local checked, compatible = pcall(function()
+    if type(hl.get_layers) ~= "function" or type(hl.on) ~= "function"
+        or type(hl.exec_cmd) ~= "function" or not popup_click_bind
+        or type(popup_click_bind.set_enabled) ~= "function" then
+        return false
+    end
+    popup_click_bind:set_enabled(true)
+    return type(hl.get_layers()) == "table"
+end)
+if not checked or not compatible then
+    escape_unavailable("requires working hl.get_layers and Keybind:set_enabled APIs")
+    return
+end
+
+-- EWW 0.6 has no key-event attribute. Scope a consuming Escape bind to the
+-- overview's mapped lifetime instead of entering a sticky submap.
+local overview_namespace = "eww-workspace-overview"
+local overview_escape
+
+local function overview_open(excluding_address)
+    for _, layer in ipairs(hl.get_layers()) do
+        if layer.namespace == overview_namespace and layer.mapped
+            and layer.address ~= excluding_address then
+            return true
+        end
+    end
+    return false
+end
+
+local function sync_overview_escape(excluding_address)
+    if overview_escape then
+        overview_escape:set_enabled(overview_open(excluding_address))
+    end
+end
+
+local registered, reason = pcall(function()
+    assert(hl.on("layer.opened", function(layer)
+        if layer.namespace == overview_namespace then
+            sync_overview_escape()
+        end
+    end), "layer.opened is unsupported")
+
+    assert(hl.on("layer.closed", function(layer)
+        if layer.namespace == overview_namespace then
+            -- Hyprland emits closed before clearing mapped, including on crashes.
+            sync_overview_escape(layer.address)
+        end
+    end), "layer.closed is unsupported")
+
+    assert(hl.on("config.reloaded", function()
+        sync_overview_escape()
+    end), "config.reloaded is unsupported")
+end)
+if not registered then
+    escape_unavailable(tostring(reason))
+    return
+end
+
+overview_escape = hl.bind("Escape", function()
+    if overview_open() then
+        hl.exec_cmd('eww --config "$HOME/.config/eww" close workspace-overview')
+    end
+end, {
+    description = "_workspace_overview_escape",
+    dont_inhibit = true,
+})
+overview_escape:set_enabled(false)
+sync_overview_escape()
+smplos_workspace_overview_escape_ready = true

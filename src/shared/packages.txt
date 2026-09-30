@@ -74,6 +74,7 @@ gnome-keyring
 libsecret
 
 # ── CLI Utilities ────────────────────────────────────────────
+python
 jq
 socat
 inotify-tools

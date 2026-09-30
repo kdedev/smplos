@@ -10,7 +10,7 @@
 EWW="eww --config $HOME/.config/eww"
 
 # All known popup windows (add new popups here)
-POPUPS=(calendar-popup quick-settings notification-hub usb-popup)
+POPUPS=(calendar-popup quick-settings notification-hub usb-popup workspace-overview)
 
 # After closing a layer-shell surface, Hyprland/Wayland doesn't synthesise a
 # fresh wl_pointer.enter for surfaces below until the cursor physically moves.
@@ -51,5 +51,14 @@ if is_window_open "$WINDOW"; then
   _reenter &
 else
   close_all
-  $EWW open "$WINDOW" 2>/dev/null
+  if [[ "$WINDOW" == workspace-overview ]]; then
+    # Window properties can read arguments, not EWW's listener variables.
+    if ! overview_state=$($EWW get workspace-state) || [[ -z "$overview_state" ]]; then
+      echo "popup-toggle: Cannot read workspace overview state; reload the bar and retry" >&2
+      exit 1
+    fi
+    $EWW open "$WINDOW" --arg "overview-state=$overview_state"
+  else
+    $EWW open "$WINDOW" 2>/dev/null
+  fi
 fi
