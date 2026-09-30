@@ -28,7 +28,7 @@ hl.on("hyprland.start", function()
     hl.exec_cmd("window-guard")
 
     -- Restore workspace-group monitor assignments
-    hl.exec_cmd("bash -c 'sleep 1 && workspace-group 1'")
+    hl.exec_cmd("bash -c 'sleep 1 && workspace-session-init'")
 
     -- Auto-mount USB, CD, HDD (notify on mount/unmount)
     hl.exec_cmd("automount")

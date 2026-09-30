@@ -65,6 +65,31 @@ Super+Shift+F command in existing Hyprland/shared bindings and niri configs;
 custom commands and other shortcuts remain untouched. New ISO builds ship the
 updated binding and both launcher scripts through the existing shared-file copy.
 
+### Monitor-owned workspace rollout
+
+`workspace-ctl` and the EWW monitor overview are OS-owned scripts/configs; they
+do not require a separate smpl-apps release. Python is an explicit shared
+package and is already a dependency of the shipped `archinstall` package.
+
+The updater publishes the overview fragment before `eww.yuck`, and Hyprland
+modules before the configuration entry points. These files are atomically
+replaced as the invoking user, avoiding partial includes and root-owned user
+configuration files during live reload.
+
+Migration `20260929-195600-monitor-owned-workspaces.sh` reconnects to the user's
+Hyprland session, reloads the complete configuration, and runs
+`workspace-ctl enroll`. Enrollment creates automatic left-to-right round-robin
+homes only when no saved preference exists. Existing mappings, fixed-home
+choices, and opt-outs are never overwritten. It reloads an already-running bar
+without killing it. Without a live Hyprland session, setup is deferred to login.
+
+`workspace-session-init` performs the same first-login enrollment on fresh
+ISOs, applies enabled saved mappings, and preserves disabled preferences.
+Niri/X11 do not enroll. The ISO builder already copies all shared scripts,
+EWW fragments, and Hyprland Lua modules into both the live system and installer
+payload. Monitor identities and workspace assignments are generated on the
+target machine; no developer profile is shipped.
+
 ---
 
 ## 2. Updating Configs (EWW, Hyprland, foot, etc.)

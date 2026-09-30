@@ -19,6 +19,15 @@ set -euo pipefail
 
 offset="${1:-+1}"
 
+if [[ -n "${HYPRLAND_INSTANCE_SIGNATURE:-}" && -z "${NIRI_SOCKET:-}" \
+      && -f "$HOME/.config/smplos/workspace-policy.enabled" ]]; then
+    case "$offset" in
+        -1) offset=left ;;
+        +1|1) offset=right ;;
+    esac
+    exec workspace-ctl move-window "$offset"
+fi
+
 # ---------------------------------------------------------------------------
 # Read monitors sorted rightmost-first (same order as workspace-group)
 # ---------------------------------------------------------------------------

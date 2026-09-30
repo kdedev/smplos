@@ -30,6 +30,10 @@ fi
 current_workspace() {
   case "$backend" in
     hyprland)
+      if [[ -f "$HOME/.config/smplos/workspace-policy.enabled" ]]; then
+        workspace-ctl current
+        return
+      fi
       ipc hyprctl -j monitors | jq -er '
         first(.[] | select(.focused))
         | (if (.specialWorkspace.id // 0) != 0 then .specialWorkspace else .activeWorkspace end)

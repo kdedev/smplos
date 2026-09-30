@@ -4,6 +4,7 @@
 ;; Widget panels
 (include "./quick-settings.yuck")
 (include "./notification-hub.yuck")
+(include "./workspace-overview.yuck")
 
 ;; ============================================================================
 ;; VARIABLES
@@ -88,13 +89,15 @@
     (image :path "icons/status/start.svg"
            :image-width 18 :image-height 18)))
 
-;; Workspaces widget -- switches between numbers and squares based on ws-style
+;; The opt-in trial never changes the saved legacy style or slot count.
 (defwidget workspaces-widget []
   (box :class "workspaces" :orientation "h" :space-evenly false
-    (box :visible {ws-style == "numbers"} :orientation "h" :space-evenly false :spacing ws-spacing
+    (box :visible {workspace-state.enabled}
+      (workspace-trial-bar))
+    (box :visible {!workspace-state.enabled && ws-style == "numbers"} :orientation "h" :space-evenly false :spacing ws-spacing
       (for entry in {jq("[1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20]", ".[0:${ws-total}]")}
         (workspace-dot :ws entry)))
-    (box :visible {ws-style == "squares"}
+    (box :visible {!workspace-state.enabled && ws-style == "squares"}
       (workspace-grid))))
 
 ;; Numbers mode dot
@@ -399,4 +402,3 @@
   :focusable false
   :geometry (geometry :x "0" :y "0" :width "380px" :height "140px" :anchor "center center")
   (mon-id-widget :label mon-id-label-3))
-

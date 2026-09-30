@@ -24,6 +24,7 @@
 --                     submap is entered)
 
 local M = {}
+local stable_workspaces = _G.smplos_workspace_policy_active == true
 
 local function trim(s) return (s:gsub("^%s+", ""):gsub("%s+$", "")) end
 
@@ -172,15 +173,27 @@ local function make_dispatcher(dispatcher, arg)
         return hl.dsp.layout(arg)
 
     elseif dispatcher == "workspace" then
+        if stable_workspaces and (arg:match("^[1-9]%d*$") or arg == "+1" or arg == "-1" or arg == "previous") then
+            return hl.dsp.exec_cmd("workspace-ctl select " .. arg)
+        end
         return hl.dsp.focus({ workspace = ws_arg(arg) })
 
     elseif dispatcher == "movetoworkspace" then
+        if stable_workspaces and arg:match("^[1-9]%d*$") then
+            return hl.dsp.exec_cmd("workspace-ctl send " .. arg)
+        end
         return hl.dsp.window.move({ workspace = ws_arg(arg) })
 
     elseif dispatcher == "movetoworkspacesilent" then
+        if stable_workspaces and arg:match("^[1-9]%d*$") then
+            return hl.dsp.exec_cmd("workspace-ctl send " .. arg .. " --silent")
+        end
         return hl.dsp.window.move({ workspace = ws_arg(arg), silent = true })
 
     elseif dispatcher == "movecurrentworkspacetomonitor" then
+        if stable_workspaces and DIR[arg] then
+            return hl.dsp.exec_cmd("workspace-ctl move-workspace " .. DIR[arg])
+        end
         return hl.dsp.workspace.move({ monitor = DIR[arg] or arg })
 
     elseif dispatcher == "movefocus" then

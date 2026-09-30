@@ -245,6 +245,70 @@ for Signal open on the keyboard-focused monitor, even if the mouse is elsewhere.
 Hiding the messenger returns focus to the previous window if it still exists on
 that workspace; it does not bring back a window you moved or closed.
 
+#### Monitor-owned workspaces
+
+Supported Hyprland Lua configurations give numbered workspaces monitor homes
+without switching all monitors as a set. OS updates and first login enable automatic spatial
+assignment when no saved workspace preference exists. Existing mappings and
+explicit opt-outs are preserved; niri and X11 keep their existing behavior.
+
+To choose fixed homes that preserve the current layout instead:
+
+```bash
+workspace-ctl init --preserve
+```
+
+Existing workspaces keep their current monitor. Unused slots from `bar.conf`
+are distributed across connected monitors. Monitor identities (`M1`, `M2`, ...)
+remain stable when their positions change; unique hardware identities also
+survive connector changes. Identical displays without unique identities use
+their connectors to avoid guessing.
+
+The single EWW bar shows the keyboard-focused monitor's numbered workspaces.
+Its monitor button opens a spatial overview of all displays, including rotated,
+stacked, and disconnected monitors. Filled chips indicate keyboard focus,
+outlines indicate visibility, and dots indicate occupied workspaces. Escape
+closes the overview on supported Hyprland versions without consuming Escape
+in other applications once the overview is closed.
+
+Keyboard workspace selection, bar clicks, and existing-app shortcuts follow a
+workspace to its home instead of swapping it onto another monitor. Local
+next/previous navigation stays within the focused monitor's homes. Window
+transfer uses physical monitor geometry and the destination's visible workspace;
+an explicit whole-workspace transfer changes that workspace's saved home.
+In fixed-home mode, disconnected homes fall back to a connected display without
+forgetting their ownership, and return when their home reconnects.
+
+Alternatively, assign workspaces in physical monitor order and keep that order
+automatic when displays move, connect, or disconnect:
+
+```bash
+workspace-ctl arrange --auto
+```
+
+Monitors are ordered left-to-right, then top-to-bottom when their horizontal
+positions match. Workspace 1 goes to the first monitor, 2 to the next, and so on,
+wrapping around for later numbers. With two monitors this puts odd numbers on
+the left and even numbers on the right. Existing workspaces and their windows
+move to the assigned screens; monitor identities themselves are not renumbered.
+Explicit workspace moves are retained until the next monitor-layout change.
+Automatic mode always supplies at least one workspace per connected monitor.
+Use `workspace-ctl arrange` without `--auto` for a one-time arrangement.
+
+The saved mapping is `~/.config/smplos/workspace-policy.json`. Generated
+`workspace-rules.lua` is not an editing surface. Inspect or disable the trial with:
+
+```bash
+workspace-ctl status
+workspace-ctl disable
+```
+
+Disabling restores the previous controls and saved bar style without closing
+windows or deleting the saved mapping. Re-enable with `workspace-ctl init`.
+Use `workspace-ctl init --preserve` to stop automatic reassignment and keep the
+current saved homes. An opt-out is preserved across updates and logins, even if
+`disable` is run before the first automatic setup.
+
 ### Themes
 
 Switch the system theme (terminal, bar, borders, lock screen, editor) with a single command:

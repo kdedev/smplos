@@ -177,6 +177,188 @@ window {
   background: $accent;
 }
 
+/* Stable-workspace trial; legacy number/square styles above stay untouched. */
+.workspace-trial-bar {
+  padding: 0 2px;
+}
+
+.workspace-overview-toggle {
+  padding: 0 2px;
+  border-radius: 4px;
+}
+
+.workspace-overview-toggle:hover,
+.workspace-overview-toggle:focus {
+  background: rgba($fg, 0.08);
+}
+
+.workspace-bar-error {
+  color: $warning;
+  font-weight: bold;
+  border: 1px dashed $warning;
+  border-radius: 3px;
+  padding: 0 3px;
+}
+
+.workspace-monitor-label {
+  font-weight: bold;
+  color: $accent;
+}
+
+.workspace-chip {
+  min-width: 18px;
+  padding: 1px 3px;
+  border: 1px solid transparent;
+  border-radius: 3px;
+  background: rgba($fg, 0.05);
+}
+
+.workspace-number {
+  font-size: 11px;
+  color: $fg-dim;
+}
+
+.workspace-chip.is-visible {
+  border-color: $fg;
+  background: transparent;
+}
+
+.workspace-chip.is-visible .workspace-number {
+  color: $fg;
+}
+
+.workspace-chip.is-focused {
+  background: $accent;
+  border-color: $fg;
+}
+
+.workspace-chip.is-focused .workspace-number {
+  color: $bg;
+  font-weight: bold;
+}
+
+.workspace-chip.is-temporary {
+  border-bottom-style: dashed;
+  border-bottom-color: $fg;
+}
+
+.workspace-occupied {
+  min-width: 3px;
+  min-height: 3px;
+  border-radius: 50%;
+  background: transparent;
+}
+
+.workspace-occupied.has-windows {
+  background: $fg;
+}
+
+.workspace-chip.is-focused .workspace-occupied.has-windows {
+  background: $bg;
+}
+
+.workspace-choice,
+.workspace-bar-choice {
+  border-radius: 3px;
+}
+
+.workspace-choice:hover,
+.workspace-choice:focus,
+.workspace-bar-choice:hover,
+.workspace-bar-choice:focus {
+  box-shadow: 0 0 0 1px $accent;
+}
+
+.workspace-choice .workspace-chip {
+  min-width: 28px;
+  padding: 3px 6px;
+}
+
+.workspace-choice .workspace-number {
+  font-size: 13px;
+}
+
+.workspace-map-monitor {
+  background: rgba($fg, 0.06);
+  border: 1px solid $fg-dim;
+  border-radius: 3px;
+}
+
+.workspace-map-monitor label {
+  font-size: 11px;
+  color: $fg;
+}
+
+.workspace-map-monitor.is-focused {
+  background: rgba($accent, 0.22);
+  border: 2px solid $accent;
+}
+
+.workspace-map-monitor.is-focused label {
+  font-weight: bold;
+}
+
+.workspace-monitor-row {
+  padding: 6px;
+  border: 1px solid rgba($fg, 0.15);
+  border-radius: 4px;
+}
+
+.workspace-monitor-heading {
+  padding: 3px 4px;
+  border-radius: 3px;
+}
+
+.workspace-monitor-heading:hover,
+.workspace-monitor-heading:focus {
+  background: rgba($fg, 0.1);
+}
+
+.workspace-monitor-heading.is-focused {
+  border-left: 3px solid $accent;
+}
+
+.workspace-monitor-current,
+.workspace-legend {
+  font-size: 11px;
+}
+
+.workspace-overview-hint,
+.workspace-disconnected label {
+  font-size: 10px;
+  color: $fg-dim;
+}
+
+.workspace-disconnected {
+  border-top: 1px dashed $fg-dim;
+  padding-top: 8px;
+}
+
+.workspace-overview-error {
+  border: 1px dashed $warning;
+  padding: 6px;
+}
+
+.workspace-overview-panel scrollbar {
+  background: rgba($fg, 0.04);
+  border-radius: 3px;
+}
+
+.workspace-overview-panel scrollbar slider {
+  background: rgba($fg, 0.45);
+  border-radius: 3px;
+  min-width: 4px;
+  min-height: 4px;
+}
+
+.workspace-overview-panel scrollbar.vertical slider {
+  min-height: 24px;
+}
+
+.workspace-overview-panel scrollbar.horizontal slider {
+  min-width: 24px;
+}
+
 /* Window title */
 .window-title {
   color: $fg-dim;
