@@ -8,6 +8,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
+source "$SCRIPT_DIR/shared/lib/smplos-app-bundle.sh"
 
 # Build log directory (persists across runs for debugging)
 LOG_DIR="$PROJECT_ROOT/.cache/logs"
@@ -683,7 +684,7 @@ download_prebuilt_apps() {
         remote_apps_ver=$(echo "$_gh_json" | grep -oP '"tag_name"\s*:\s*"\K[^"]+' || true)
 
         if [[ -n "$remote_apps_ver" ]]; then
-            if [[ -z "$cached_apps_ver" ]]; then
+            if [[ -z "$cached_apps_ver" ]] || ! smplos_app_bundle_valid "$cache_dir"; then
                 log_info "smpl-apps: no local cache, will download $remote_apps_ver"
                 need_apps_download=true
             elif _version_gt "$remote_apps_ver" "$cached_apps_ver"; then
@@ -702,36 +703,36 @@ download_prebuilt_apps() {
     if $need_apps_download; then
         local tarball_url
         tarball_url=$(echo "$_gh_json" \
-            | grep -oP '"browser_download_url"\s*:\s*"\K[^"]*smpl-apps-[^"]*x86_64\.tar\.gz')
+            | grep -oP '"browser_download_url"\s*:\s*"\K[^"]*smpl-apps-[^"]*x86_64\.tar\.gz' \
+            | head -1 || true)
         if [[ -n "$tarball_url" ]]; then
             log_info "Downloading $tarball_url"
-            if curl -fSL --connect-timeout 30 --retry 3 "$tarball_url" \
-                | tar -xz -C "$cache_dir"; then
+            if smplos_download_app_bundle "$tarball_url" "$cache_dir"; then
                 echo "$remote_apps_ver" > "$apps_ver_file"
                 log_info "smpl-apps $remote_apps_ver cached"
             else
-                log_warn "smpl-apps: download failed, falling back to cache"
+                die "smpl-apps: release $remote_apps_ver is incomplete or could not be downloaded; refusing to build with stale apps"
             fi
         else
-            log_warn "smpl-apps: no tarball asset in release $remote_apps_ver"
+            die "smpl-apps: no tarball asset in release $remote_apps_ver"
         fi
     fi
 
     # Verify we have the apps (either from download or cache)
     local have_apps=false
-    if [[ -f "$cache_dir/start-menu" ]]; then
+    if smplos_app_bundle_valid "$cache_dir"; then
         have_apps=true
     fi
 
     # Fallback: check user-provided directory
-    if ! $have_apps && [[ -d "$fallback_dir" ]] && ls "$fallback_dir"/start-menu &>/dev/null 2>&1; then
+    if ! $have_apps && smplos_app_bundle_valid "$fallback_dir"; then
         log_info "smpl-apps: using manually-provided binaries from build/prebuilt-apps/"
-        cp -a "$fallback_dir"/start-menu "$fallback_dir"/notif-center \
-              "$fallback_dir"/settings "$fallback_dir"/app-center \
-              "$fallback_dir"/webapp-center "$fallback_dir"/sync-center-daemon \
-              "$fallback_dir"/sync-center-gui \
-              "$fallback_dir"/smpl-calendar "$fallback_dir"/smpl-calendar-alertd \
-              "$cache_dir/" 2>/dev/null || true
+        local app
+        for app in "${SMPLOS_APP_BINS[@]}"; do
+            install -m755 "$fallback_dir/$app" "$cache_dir/$app"
+        done
+        # A manually supplied bundle has no verified release tag.
+        rm -f "$apps_ver_file"
         have_apps=true
     fi
 

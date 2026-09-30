@@ -520,7 +520,6 @@ sync_apps() {
         # Signal post_deploy so it runs restart_updated_apps even when git
         # pull was a no-op (org repos update independently from smplos).
         APPS_CHANGED=1
-        rebuild-app-cache 2>/dev/null && ok "App cache rebuilt" || true
     else
         ok "smpl-os apps already current"
     fi
@@ -893,7 +892,7 @@ if [[ $SCRIPTS_ONLY -eq 0 ]]; then
         reexec_args=()
         [[ $QUIET -eq 1 ]] && reexec_args+=(--quiet)
         export SMPLOS_OS_UPDATE_RESUMED=1
-        exec "$SELF_CANONICAL" "${local_args[@]}"
+        exec "$SELF_CANONICAL" "${reexec_args[@]}"
     fi
 
     sync_configs
@@ -927,6 +926,10 @@ fi
 if [[ $SCRIPTS_ONLY -eq 1 ]]; then
     sync_scripts
 fi
+
+# Script-only updates can change index semantics without any new app binaries.
+rebuild-app-cache || die "App cache refresh failed"
+ok "App cache rebuilt"
 
 header ""
 ok "smplOS system update complete"

@@ -379,7 +379,7 @@ Each app shows a source badge indicating where it came from:
 
 ### How it works
 
-- **`src/shared/apps/start-menu/`** - Rust + Slint application. Reads the app index, resolves icons (SVG/PNG from hicolor, Flatpak exports, and user icon dirs), renders a GPU-accelerated UI.
+- **[`smpl-os/smpl-apps/start-menu`](https://github.com/smpl-os/smpl-apps/tree/main/start-menu)** - Independently built Rust + Slint application. Reads the app index, resolves icons (SVG/PNG from hicolor, Flatpak exports, and user icon dirs), renders a GPU-accelerated UI.
 - **`toggle-start-menu`** - wrapper script that toggles the menu open/closed. Manages focus capture (`stay_focused`, `pin`, temporary `follow_mouse=3`).
 - **Hyprland window rules** - `float`, `move 2 (monitor_h-window_h-37)`, `animation slide left`, `opacity 1.0 override`.
 
@@ -390,6 +390,21 @@ The start menu reads from a pre-built app index at `~/.cache/smplos/app_index`. 
 ```bash
 rebuild-app-cache
 ```
+
+Desktop entries are resolved by desktop-file ID: `$XDG_DATA_HOME/applications`
+(default `~/.local/share/applications`) overrides `$XDG_DATA_DIRS` in order
+(default `/usr/local/share:/usr/share`). A user `Hidden=true` or `NoDisplay=true`
+entry also masks the system entry, even if its name differs. Flatpak exports
+and AppImages remain included. Rebuilds are serialized and published atomically;
+normal OS and app updates refresh the index even when no binary changed.
+The cache stays at `~/.cache/smplos/app_index` for compatibility with existing
+menu and legacy launcher consumers; `XDG_CACHE_HOME` does not relocate it.
+The path watcher covers the default directories; after changes in custom XDG
+directories, run `rebuild-app-cache` manually.
+
+The menu binary's icon lookup and pin matching are released separately from
+these scripts. See [application icon delivery](UPDATING.md#application-icon-delivery)
+for the required release sequence and the independently packaged Grafium icon.
 
 ## GTK Theming & Credential Storage
 

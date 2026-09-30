@@ -7,6 +7,7 @@
 set -euo pipefail
 
 source "$(dirname "${BASH_SOURCE[0]}")/../shared/lib/smplos-packages.sh"
+source "$(dirname "${BASH_SOURCE[0]}")/../shared/lib/smplos-app-bundle.sh"
 
 ###############################################################################
 # Configuration
@@ -874,10 +875,10 @@ install_prebuilt_apps() {
     local bin_dir="/build/app-binaries"
 
     if [[ ! -d "$bin_dir" ]]; then
-        log_warn "No pre-built binaries at $bin_dir -- apps will be missing!"
-        log_warn "Run build-apps.sh before build-iso.sh"
-        return
+        log_error "No pre-built binaries at $bin_dir; run build-apps.sh before build-iso.sh"
+        return 1
     fi
+    smplos_app_bundle_valid "$bin_dir" || return 1
 
     # ── st-wl terminal ──
     # As of 2026-07-26, the only st we can install is st-wl, fetched by
@@ -907,8 +908,7 @@ install_prebuilt_apps() {
     fi
 
     # ── Rust apps ──
-    local rust_apps=(start-menu notif-center settings app-center webapp-center sync-center-daemon sync-center-gui smpl-calendar smpl-calendar-alertd)
-    for app in "${rust_apps[@]}"; do
+    for app in "${SMPLOS_APP_BINS[@]}"; do
         if [[ -f "$bin_dir/$app" ]]; then
             install -Dm755 "$bin_dir/$app" "$airootfs/usr/local/bin/$app"
             install -Dm755 "$bin_dir/$app" "$airootfs/root/smplos/bin/$app"

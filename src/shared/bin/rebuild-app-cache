@@ -7,11 +7,31 @@
 
 set -euo pipefail
 
+# Updaters may be elevated with the desktop user's HOME. Never leave their
+# derived cache owned by root.
+if [[ $EUID -eq 0 ]]; then
+  invoker_uid="${SMPLOS_INVOKER_UID:-${PKEXEC_UID:-${SUDO_UID:-0}}}"
+  if [[ "$invoker_uid" != 0 ]]; then
+    if [[ ! "$invoker_uid" =~ ^[0-9]+$ ]] || ! entry=$(getent passwd "$invoker_uid"); then
+      echo "rebuild-app-cache: cannot resolve invoking user $invoker_uid" >&2
+      exit 1
+    fi
+    IFS=: read -r invoker _ _ _ _ invoker_home _ <<< "$entry"
+    exec runuser -u "$invoker" -- env HOME="$invoker_home" bash "$0"
+  fi
+fi
+
 CACHE_DIR="$HOME/.cache/smplos"
 CACHE_FILE="$CACHE_DIR/app_index"
-CACHE_TMP="$CACHE_FILE.tmp"
 
 mkdir -p "$CACHE_DIR"
+exec 9>"$CACHE_DIR/.app-cache.lock"
+flock 9
+CACHE_TMP=$(mktemp "$CACHE_FILE.XXXXXX")
+SCAN_TMP="$CACHE_TMP.files"
+trap 'rm -f -- "$CACHE_TMP" "$SCAN_TMP"' EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
 # ── Parse a .desktop file into cache format ──
 parse_desktop() {
@@ -19,7 +39,9 @@ parse_desktop() {
   local name="" exec="" icon="" nodisplay="" hidden="" tryexec="" terminal_flag=""
   local in_entry=false categories=""
 
-  while IFS='=' read -r key val; do
+  while IFS='=' read -r key val || [[ -n "$key" ]]; do
+    key="${key%$'\r'}"
+    val="${val%$'\r'}"
     # Only parse the [Desktop Entry] section
     if [[ "$key" == "[Desktop Entry]" ]]; then
       in_entry=true; continue
@@ -41,8 +63,8 @@ parse_desktop() {
   done < "$file"
 
   # Skip hidden/nodisplay entries
-  [[ "$nodisplay" == "true" || "$hidden" == "true" ]] && return
-  [[ -z "$name" || -z "$exec" ]] && return
+  [[ "$nodisplay" == "true" || "$hidden" == "true" ]] && return 0
+  [[ -z "$name" || -z "$exec" ]] && return 0
 
   # Strip field codes (%u %U %f %F etc.) from Exec
   exec="${exec%% \%*}"
@@ -73,27 +95,34 @@ parse_desktop() {
 
 # ── Scan all .desktop directories ──
 scan_desktop_dirs() {
-  local dirs=(
-    /usr/share/applications
-    /usr/local/share/applications
-    "$HOME/.local/share/applications"
-  )
-
-  # Include Flatpak export directories
-  for fp_dir in /var/lib/flatpak/exports/share/applications \
-                "$HOME/.local/share/flatpak/exports/share/applications"; do
-    [[ -d "$fp_dir" ]] && dirs+=("$fp_dir")
+  local data_home="${XDG_DATA_HOME:-$HOME/.local/share}"
+  [[ "$data_home" == /* ]] || data_home="$HOME/.local/share"
+  local dirs=("$data_home/applications")
+  local data_dirs=() dir file desktop_id
+  IFS=: read -r -a data_dirs <<< "${XDG_DATA_DIRS:-/usr/local/share:/usr/share}"
+  for dir in "${data_dirs[@]}"; do
+    [[ "$dir" == /* ]] && dirs+=("${dir%/}/applications")
   done
 
+  # Flatpak exports are not always in XDG_DATA_DIRS (e.g. a user service).
+  dirs+=("$data_home/flatpak/exports/share/applications"
+         "/var/lib/flatpak/exports/share/applications")
+  local -A seen_ids=() seen_dirs=()
   for dir in "${dirs[@]}"; do
-    [[ -d "$dir" ]] || continue
-    # Use -maxdepth 2 for user dir to pick up Wine subdirectories
-    local depth_flag=(-maxdepth 1)
-    [[ "$dir" == "$HOME/.local/share/applications"* ]] && depth_flag=()
+    dir="${dir%/}"
+    [[ -d "$dir" && -z "${seen_dirs[$dir]:-}" ]] || continue
+    seen_dirs["$dir"]=1
+    find "$dir" -name '*.desktop' -print0 > "$SCAN_TMP"
+    LC_ALL=C sort -z -o "$SCAN_TMP" "$SCAN_TMP"
     while IFS= read -r -d '' file; do
       [[ -r "$file" ]] || continue
+      desktop_id="${file#"$dir"/}"
+      desktop_id="${desktop_id//\//-}"
+      [[ -z "${seen_ids[$desktop_id]:-}" ]] || continue
+      # Hidden/NoDisplay overrides also mask the lower-priority desktop ID.
+      seen_ids["$desktop_id"]=1
       parse_desktop "$file"
-    done < <(find "$dir" "${depth_flag[@]}" -name '*.desktop' -print0 2>/dev/null)
+    done < "$SCAN_TMP"
   done
 }
 

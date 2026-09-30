@@ -1,0 +1,384 @@
+import io
+import json
+import os
+from pathlib import Path
+import re
+import shutil
+import subprocess
+import tarfile
+import tempfile
+import unittest
+
+
+ROOT = Path(__file__).resolve().parents[1]
+LIB = ROOT / "src/shared/lib/smplos-app-bundle.sh"
+APPS = (
+    "start-menu", "notif-center", "settings", "app-center", "webapp-center",
+    "sync-center-daemon", "sync-center-gui", "smpl-calendar", "smpl-calendar-alertd",
+)
+
+
+def function(path, name):
+    source = path.read_text()
+    match = re.search(rf"^{re.escape(name)}\(\) \{{\n.*?^\}}", source, re.M | re.S)
+    if match is None:
+        raise AssertionError(f"Function {name} not found in {path}")
+    return match.group()
+
+
+MOCK_CURL = """#!/usr/bin/python3
+import os, pathlib, shutil, sys
+args = sys.argv[1:]
+url = next(arg for arg in args if arg.startswith("https://"))
+with open(os.environ["REQUEST_LOG"], "a") as log:
+    log.write(url + "\\n")
+if "/orgs/" in url:
+    print('[{"full_name": "smpl-os/smpl-apps"}]')
+elif "/releases/latest" in url:
+    if "/smpl-apps/" not in url or os.environ.get("OFFLINE") == "1":
+        sys.exit(22)
+    print(pathlib.Path(os.environ["RELEASE_JSON"]).read_text())
+else:
+    if os.environ.get("FAIL_DOWNLOAD") == "1":
+        sys.exit(22)
+    archive = pathlib.Path(os.environ["ARCHIVE"])
+    if "-o" in args:
+        shutil.copyfile(archive, args[args.index("-o") + 1])
+    else:
+        sys.stdout.buffer.write(archive.read_bytes())
+"""
+
+
+class AppDeliveryTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.base = Path(self.tmp.name)
+        self.project = self.base / "project"
+        self.home = self.base / "home"
+        self.home.mkdir()
+        self.bin = self.base / "bin"
+        self.bin.mkdir()
+        self.cache = self.project / ".cache/app-binaries"
+        self.cache.mkdir(parents=True)
+        self.archive = self.base / "release.tar.gz"
+        self.release = self.base / "release.json"
+        self.requests = self.base / "requests.log"
+        for path in ("src/fetch-apps.sh", "src/fetch-org.sh",
+                     "src/shared/lib/smplos-app-bundle.sh"):
+            target = self.project / path
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(ROOT / path, target)
+        self.env = {
+            "HOME": str(self.home),
+            "PATH": f"{self.bin}:/usr/bin:/bin",
+            "LC_ALL": "C",
+            "PROJECT_ROOT": str(self.project),
+            "RELEASE_JSON": str(self.release),
+            "ARCHIVE": str(self.archive),
+            "REQUEST_LOG": str(self.requests),
+        }
+        self.mock("curl", MOCK_CURL)
+        self.mock("gh", "#!/bin/bash\nexit 1\n")
+        # Any accidental real update/build operation must fail, not touch the host.
+        for name in ("sudo", "pkill", "pacman", "makepkg", "podman", "docker", "nohup"):
+            self.mock(name, f'#!/bin/bash\necho "FORBIDDEN: {name}" >&2\nexit 99\n')
+        self.mock("pgrep", "#!/bin/bash\nexit 1\n")
+        self.publish()
+
+    def mock(self, name, contents):
+        path = self.bin / name
+        path.write_text(contents)
+        path.chmod(0o755)
+
+    def publish(self, missing=None, corrupt=None, asset=True):
+        url = "https://github.com/smpl-os/smpl-apps/releases/download/v0.8.23/smpl-apps-0.8.23-x86_64.tar.gz"
+        self.release.write_text(json.dumps({
+            "tag_name": "v0.8.23",
+            "assets": [{"browser_download_url": url}] if asset else [],
+        }, indent=2))
+        with tarfile.open(self.archive, "w:gz") as archive:
+            for app in (*APPS, "xrctl"):
+                if app == missing:
+                    continue
+                data = b"broken" if app == corrupt else b"\x7fELFnew-" + app.encode()
+                info = tarfile.TarInfo(app)
+                info.size = len(data)
+                info.mode = 0o755
+                archive.addfile(info, io.BytesIO(data))
+
+    def seed(self, directory, marker=None, version="v0.8.22"):
+        directory.mkdir(parents=True, exist_ok=True)
+        for app in APPS:
+            (directory / app).write_bytes(b"\x7fELFold-" + app.encode())
+        if marker:
+            marker.parent.mkdir(parents=True, exist_ok=True)
+            marker.write_text(version + "\n")
+
+    def shell(self, script, **env):
+        result = subprocess.run(
+            ["bash", "-euo", "pipefail", "-c", script],
+            env={**self.env, **env}, text=True, capture_output=True, timeout=15,
+        )
+        self.assertNotIn("FORBIDDEN:", result.stderr)
+        return result
+
+    def run_fetcher(self, name, **env):
+        return self.shell(f'bash "$PROJECT_ROOT/src/{name}"', **env)
+
+    def iso_download(self, **env):
+        path = ROOT / "src/build-iso.sh"
+        script = f'source "{LIB}"\n'
+        script += "\n".join(function(path, name) for name in
+                            ("_gh_api", "_version_gt", "download_prebuilt_apps"))
+        script += """
+log_step() { :; }
+log_info() { echo "$*"; }
+log_warn() { echo "$*" >&2; }
+die() { echo "$*" >&2; exit 1; }
+download_prebuilt_apps
+"""
+        return self.shell(script, **env)
+
+    def assert_new_bundle(self, directory):
+        for app in APPS:
+            self.assertEqual((directory / app).read_bytes(), b"\x7fELFnew-" + app.encode())
+            self.assertTrue(os.access(directory / app, os.X_OK))
+
+    def test_fetch_apps_and_iso_share_one_marker_and_skip_current_download(self):
+        result = self.run_fetcher("fetch-apps.sh")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assert_new_bundle(self.cache)
+        self.assertEqual((self.cache / ".smpl-apps-version").read_text(), "v0.8.23\n")
+        self.assertFalse((self.cache / "smpl-apps.fetched-version").exists())
+        result = self.iso_download()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.requests.read_text().count("/releases/download/"), 1)
+
+    def test_fetch_apps_rejects_missing_or_corrupt_binary_without_blessing_old_file(self):
+        marker = self.cache / ".smpl-apps-version"
+        self.seed(self.cache, marker)
+        for problem in ("missing", "corrupt"):
+            with self.subTest(problem=problem):
+                self.publish(**{problem: "start-menu"})
+                result = self.run_fetcher("fetch-apps.sh")
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("missing or invalid binary", result.stderr)
+                self.assertEqual(marker.read_text(), "v0.8.22\n")
+                for app in APPS:
+                    self.assertEqual((self.cache / app).read_bytes(),
+                                     b"\x7fELFold-" + app.encode())
+
+    def test_matching_marker_with_missing_binary_is_repaired(self):
+        marker = self.cache / ".smpl-apps-version"
+        self.seed(self.cache, marker, "v0.8.23")
+        (self.cache / "settings").unlink()
+        result = self.run_fetcher("fetch-apps.sh")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assert_new_bundle(self.cache)
+
+    def test_org_failed_download_does_not_advance_marker_and_retry_succeeds(self):
+        stage = self.project / ".cache/org-binaries"
+        marker = stage / ".versions/smpl-apps"
+        self.seed(stage / "bin", marker)
+        result = self.run_fetcher("fetch-org.sh", FAIL_DOWNLOAD="1")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(marker.read_text(), "v0.8.22\n")
+        result = self.run_fetcher("fetch-org.sh")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assert_new_bundle(stage / "bin")
+        self.assertEqual(marker.read_text(), "v0.8.23\n")
+
+    def test_org_incomplete_asset_does_not_overwrite_cache_or_marker(self):
+        stage = self.project / ".cache/org-binaries"
+        marker = stage / ".versions/smpl-apps"
+        self.seed(stage / "bin", marker)
+        self.publish(missing="settings")
+        result = self.run_fetcher("fetch-org.sh")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(marker.read_text(), "v0.8.22\n")
+        self.assertEqual((stage / "bin/start-menu").read_bytes(), b"\x7fELFold-start-menu")
+
+    def test_org_matching_marker_missing_binary_is_repaired(self):
+        stage = self.project / ".cache/org-binaries"
+        marker = stage / ".versions/smpl-apps"
+        self.seed(stage / "bin", marker, "v0.8.23")
+        (stage / "bin/start-menu").unlink()
+        result = self.run_fetcher("fetch-org.sh")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assert_new_bundle(stage / "bin")
+
+    def test_org_missing_asset_does_not_mark_release_fetched(self):
+        self.publish(asset=False)
+        result = self.run_fetcher("fetch-org.sh")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertFalse((self.project / ".cache/org-binaries/.versions/smpl-apps").exists())
+
+    def test_iso_refuses_known_new_but_incomplete_release_instead_of_old_cache(self):
+        marker = self.cache / ".smpl-apps-version"
+        self.seed(self.cache, marker)
+        self.publish(missing="start-menu")
+        result = self.iso_download()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("refusing to build with stale apps", result.stderr)
+        self.assertEqual(marker.read_text(), "v0.8.22\n")
+        self.assertEqual((self.cache / "start-menu").read_bytes(), b"\x7fELFold-start-menu")
+
+    def test_iso_can_use_complete_offline_cache_but_not_just_start_menu(self):
+        self.seed(self.cache)
+        result = self.iso_download(OFFLINE="1")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        (self.cache / "settings").unlink()
+        result = self.iso_download(OFFLINE="1")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("No smpl-apps binaries available", result.stderr)
+
+    def test_iso_accepts_complete_manual_offline_bundle_without_stale_marker(self):
+        marker = self.cache / ".smpl-apps-version"
+        marker.write_text("v0.8.22\n")
+        fallback = self.project / "build/prebuilt-apps"
+        self.seed(fallback)
+        result = self.iso_download(OFFLINE="1")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertFalse(marker.exists())
+        for app in APPS:
+            self.assertEqual((self.cache / app).read_bytes(), (fallback / app).read_bytes())
+
+    def test_app_updater_validates_before_install_or_version_write(self):
+        path = ROOT / "src/shared/bin/smplos-update-apps"
+        state = self.home / ".local/state/smplos/app-versions"
+        state.mkdir(parents=True)
+        (state / "smpl-apps").write_text("v0.8.22\n")
+        script = f'source "{LIB}"\n'
+        script += "\n".join(function(path, name) for name in
+                            ("_gh_api", "_version_gt", "_cached_ver", "update_smpl_apps"))
+        script += """
+STATE_DIR="$HOME/.local/state/smplos/app-versions"
+CHECK_ONLY=0; QUIET=0; n_updated=0
+log() { :; }
+ok() { :; }
+warn() { echo "$*" >&2; }
+update_smpl_apps
+"""
+        self.publish(missing="start-menu")
+        result = self.shell(script)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual((state / "smpl-apps").read_text(), "v0.8.22\n")
+        self.assertIn("version not recorded", result.stderr)
+
+    def test_app_updater_installs_complete_release_without_modifying_pins(self):
+        path = ROOT / "src/shared/bin/smplos-update-apps"
+        state = self.home / ".local/state/smplos/app-versions"
+        installed = self.home / "installed"
+        installed.mkdir()
+        state.mkdir(parents=True)
+        self.seed(installed, state / "smpl-apps")
+        pins = self.home / ".config/smplos/pinned-apps.txt"
+        pins.parent.mkdir(parents=True)
+        pins.write_text('"grafium"\ncustom --command\n')
+        self.mock("sudo", """#!/bin/bash
+[[ "$1" == install && "${@: -1}" == "$HOME/installed/"* ]] || exit 99
+shift
+exec /usr/bin/install "$@"
+""")
+        self.mock("systemctl", "#!/bin/bash\nexit 0\n")
+        source = function(path, "update_smpl_apps").replace("/usr/local/bin", str(installed))
+        script = f'source "{LIB}"\n'
+        script += "\n".join(function(path, name) for name in
+                            ("_gh_api", "_version_gt", "_cached_ver"))
+        script += "\n" + source + """
+STATE_DIR="$HOME/.local/state/smplos/app-versions"
+CHECK_ONLY=0; QUIET=0; n_updated=0
+log() { :; }; ok() { :; }; warn() { echo "$*" >&2; }
+update_smpl_apps
+"""
+        result = self.shell(script)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assert_new_bundle(installed)
+        self.assertEqual((state / "smpl-apps").read_text(), "v0.8.23\n")
+        self.assertEqual(pins.read_text(), '"grafium"\ncustom --command\n')
+        result = self.shell(script)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.requests.read_text().count("/releases/download/"), 1)
+
+    def test_iso_assembly_installs_same_bundle_for_live_and_installed_system(self):
+        binaries = self.base / "app-binaries"
+        profile = self.base / "profile"
+        self.seed(binaries)
+        source = function(ROOT / "src/builder/build.sh", "install_prebuilt_apps")
+        # Only redirect the container mount; all installation logic is unchanged.
+        source = source.replace('local bin_dir="/build/app-binaries"',
+                                f'local bin_dir="{binaries}"')
+        script = f'source "{LIB}"\n{source}\n'
+        script += f'PROFILE_DIR="{profile}"\n'
+        script += """
+log_step() { :; }; log_info() { :; }; log_warn() { :; }; log_error() { echo "$*" >&2; }
+install_prebuilt_apps
+"""
+        result = self.shell(script)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        for app in APPS:
+            for target in ("usr/local/bin", "root/smplos/bin"):
+                self.assertEqual((profile / "airootfs" / target / app).read_bytes(),
+                                 (binaries / app).read_bytes())
+
+    def test_update_mains_refresh_even_without_new_binaries_and_report_failure(self):
+        for name in ("smplos-os-update", "smplos-update-apps"):
+            path = ROOT / "src/shared/bin" / name
+            main = path.read_text().split("# ── Main", 1)[1].split("\n", 1)[1]
+            stubs = """
+CHECK_ONLY=0; MIGRATE_ONLY=0; SCRIPTS_ONLY=0; QUIET=1; n_updated=0
+SELF_UPDATED=1; SELF_CANONICAL="$HOME/no-installed-script"
+header() { :; }; ok() { :; }; warn() { echo "$*" >&2; }
+die() { echo "$*" >&2; exit 1; }
+pull_updates() { return 1; }
+sync_scripts() { :; }; sync_configs() { :; }; sync_themes() { :; }
+sync_apps() { :; }; sync_hypr_configs() { :; }; run_migrations() { :; }
+cleanup_shadow_bins() { :; }; post_deploy() { :; }
+update_smpl_apps() { :; }; update_st_smpl() { :; }; update_nemo_smpl() { :; }
+update_micro_smpl() { :; }; update_grafium() { :; }
+rebuild-app-cache() { echo refreshed; return "$CACHE_STATUS"; }
+"""
+            for status in ("0", "1"):
+                with self.subTest(updater=name, status=status):
+                    result = self.shell(stubs + main, CACHE_STATUS=status)
+                    self.assertEqual(result.stdout.count("refreshed"), 1)
+                    self.assertEqual(result.returncode, int(status), result.stderr)
+            if name == "smplos-os-update":
+                result = self.shell(stubs + "\nSCRIPTS_ONLY=1\n" + main, CACHE_STATUS="0")
+                self.assertEqual(result.stdout.count("refreshed"), 1)
+            else:
+                result = self.shell(stubs + "\nCHECK_ONLY=1\n" + main, CACHE_STATUS="0")
+                self.assertNotIn("refreshed", result.stdout)
+
+    def test_new_user_cache_is_generated_not_shipped(self):
+        builder = (ROOT / "src/builder/build.sh").read_text()
+        self.assertIn('cp "$SRC_DIR/shared/lib/"*.sh "$airootfs/usr/local/lib/smplos/"',
+                      builder)
+        self.assertIn('cp "$SRC_DIR/shared/lib/"*.sh "$airootfs/root/smplos/lib/"',
+                      builder)
+        self.assertIn('ln -sf ../smplos-app-cache.service', builder)
+        self.assertIn('ln -sf ../smplos-app-cache.path', builder)
+        installer = (ROOT / "src/shared/installer/install.sh").read_text()
+        self.assertIn('rebuild-app-cache || echo', installer)
+        self.assertFalse(list((ROOT / "src/shared").rglob("app_index")))
+
+    def test_os_updater_reexec_preserves_quiet_flag(self):
+        source = (ROOT / "src/shared/bin/smplos-os-update").read_text()
+        reexec = source.split('    if [[ "$SELF_UPDATED" != "1" ]]', 1)[1]
+        reexec = 'if [[ "$SELF_UPDATED" != "1" ]]' + reexec.split("\n    sync_configs", 1)[0]
+        canonical = self.home / "new-updater"
+        canonical.write_text('#!/bin/bash\nprintf "resumed=%s args=%s\\n" "$SMPLOS_OS_UPDATE_RESUMED" "$*"\n')
+        canonical.chmod(0o755)
+        script = f'SELF_CANONICAL="{canonical}"\n'
+        script += """
+SELF_UPDATED=0; QUIET=1; _pre_sync_hash=old; _post_sync_hash=new
+header() { :; }; warn() { :; }
+""" + reexec
+        result = self.shell(script)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout, "resumed=1 args=--quiet\n")
+
+
+if __name__ == "__main__":
+    unittest.main()

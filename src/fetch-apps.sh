@@ -24,15 +24,11 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
+source "$SCRIPT_DIR/shared/lib/smplos-app-bundle.sh"
 
 REPO="smpl-os/smpl-apps"
 BIN_OUTPUT="$PROJECT_ROOT/.cache/app-binaries"
-MARKER="$BIN_OUTPUT/smpl-apps.fetched-version"
-
-EXPECTED_BINS=(
-    start-menu notif-center settings app-center webapp-center
-    sync-center-gui sync-center-daemon smpl-calendar smpl-calendar-alertd
-)
+MARKER="$BIN_OUTPUT/.smpl-apps-version"
 
 GREEN='\033[0;32m'; YELLOW='\033[1;33m'; RED='\033[0;31m'; NC='\033[0m'
 log()  { echo -e "${GREEN}[fetch-apps]${NC} $*"; }
@@ -58,11 +54,7 @@ fi
 
 # ── Skip if already up to date ────────────────────────────────────────────────
 if [[ "$FORCE" == "false" && -f "$MARKER" && "$(cat "$MARKER")" == "$LATEST" ]]; then
-    all_present=true
-    for bin in "${EXPECTED_BINS[@]}"; do
-        [[ -f "$BIN_OUTPUT/$bin" ]] || { all_present=false; break; }
-    done
-    if [[ "$all_present" == "true" ]]; then
+    if smplos_app_bundle_valid "$BIN_OUTPUT"; then
         log "Already at latest ($LATEST) — nothing to do"
         exit 0
     fi
@@ -88,18 +80,8 @@ fi
 
 # ── Extract ───────────────────────────────────────────────────────────────────
 log "Extracting to $BIN_OUTPUT/"
-tar -xzf "$TMP/$TARBALL" -C "$BIN_OUTPUT/"
-
-# Ensure all expected binaries are present and executable
-missing=()
-for bin in "${EXPECTED_BINS[@]}"; do
-    if [[ -f "$BIN_OUTPUT/$bin" ]]; then
-        chmod +x "$BIN_OUTPUT/$bin"
-    else
-        missing+=("$bin")
-    fi
-done
-[[ ${#missing[@]} -gt 0 ]] && warn "Missing from release tarball: ${missing[*]}"
+smplos_stage_app_bundle "$TMP/$TARBALL" "$BIN_OUTPUT" \
+    || die "Incomplete or invalid smpl-apps release $LATEST; version not recorded"
 
 # ── Record installed version ──────────────────────────────────────────────────
 echo "$LATEST" > "$MARKER"
