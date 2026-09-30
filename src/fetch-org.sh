@@ -32,6 +32,7 @@ set -euo pipefail
 ORG="smpl-os"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
+source "$SCRIPT_DIR/shared/lib/smplos-app-bundle.sh"
 
 STAGE="$PROJECT_ROOT/.cache/org-binaries"
 BIN_STAGE="$STAGE/bin"
@@ -124,7 +125,7 @@ REPOS="$(api "https://api.github.com/orgs/$ORG/repos?per_page=100&type=public" \
     | grep '"full_name"' | sed -E 's/.*"full_name": *"'"$ORG"'\/([^"]+)".*/\1/')"
 [[ -n "$REPOS" ]] || die "Could not list repositories for org $ORG"
 
-n_repos=0; n_updated=0
+n_repos=0; n_updated=0; failed=0
 while IFS= read -r repo; do
     [[ -n "$repo" ]] || continue
     ((n_repos++)) || true
@@ -137,11 +138,26 @@ while IFS= read -r repo; do
 
     marker="$VER_DIR/$repo"
     if [[ "$FORCE" == "false" && -f "$marker" && "$(cat "$marker")" == "$tag" ]]; then
-        continue
+        if [[ "$repo" != smpl-apps ]] || smplos_app_bundle_valid "$BIN_STAGE"; then
+            continue
+        fi
     fi
 
     urls="$(grep '"browser_download_url"' <<< "$rel" \
         | sed -E 's/.*"browser_download_url": *"([^"]+)".*/\1/' || true)"
+
+    if [[ "$repo" == smpl-apps ]]; then
+        url=$(grep -m1 '/smpl-apps-[^/]*-x86_64\.tar\.gz$' <<< "$urls" || true)
+        if [[ -n "$url" ]] && smplos_download_app_bundle "$url" "$BIN_STAGE"; then
+            echo "$tag" > "$marker"
+            ((n_updated++)) || true
+        else
+            warn "smpl-apps $tag: complete release could not be staged; version not recorded"
+            failed=1
+        fi
+        continue
+    fi
+
     [[ -n "$urls" ]] || { echo "$tag" > "$marker"; continue; }
 
     log "$repo $tag"
@@ -154,3 +170,4 @@ while IFS= read -r repo; do
 done <<< "$REPOS"
 
 log "Scanned $n_repos repos; $n_updated with new binaries staged."
+exit "$failed"

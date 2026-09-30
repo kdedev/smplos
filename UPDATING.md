@@ -18,8 +18,8 @@ smplOS uses a **git-based update system**. The repo is cloned to
 7. Updates forked apps from GitHub releases
 8. Updates AUR + Flatpak packages
 
-**All you need to do is commit to `main`.** Users get your changes on
-their next update.
+OS-owned changes reach users after merging to `main` and running the updater.
+Changes to independently built apps also require a release in their own repo.
 
 ---
 
@@ -128,9 +128,10 @@ Users get the updated theme automatically on next update.
 
 ## 4. Bumping the smplOS Version
 
-**Steps:**
-1. Edit `src/VERSION` — increment the version number
-2. Commit and push
+The `Auto Release` workflow calls the org's shared version-bump workflow on
+pushes to `main`. It increments `src/VERSION` and creates the OS release/tag.
+Do not pre-bump a fix branch just to trigger delivery; that would be bumped
+again on merge.
 
 On next update, `sync_version()` reads the new version, regenerates
 `/etc/os-release` from the template, and tools like `fastfetch` and
@@ -220,10 +221,13 @@ These apps live in separate repos and are distributed as GitHub releases.
 ### Publishing a new release
 
 **smpl-apps** (Rust workspace — start-menu, notif-center, app-center, etc.):
-1. Build: `cargo build --release` in the smpl-apps repo
-2. Create a tarball: `tar -czf smpl-apps-v0.2.0-x86_64.tar.gz -C target/release start-menu notif-center settings app-center webapp-center sync-center-daemon sync-center-gui`
-3. Create a GitHub release with tag `v0.2.0`
-4. Attach the tarball as a release asset
+1. Merge the app changes in `smpl-os/smpl-apps`.
+2. Dispatch its manual `Release` workflow (`.github/workflows/release.yml`).
+3. The workflow increments the workspace patch version, builds the release
+   workspace, and publishes `v<VERSION>` with
+   `smpl-apps-<VERSION>-x86_64.tar.gz` plus individual binary assets.
+4. Confirm the complete tarball is attached before treating the release as
+   available. An OS release alone does not rebuild or publish `start-menu`.
 
 **st-smpl** (C — terminal emulator):
 1. Build: `make` in the st-smpl repo
@@ -235,8 +239,8 @@ These apps live in separate repos and are distributed as GitHub releases.
 2. Create a GitHub release with tag `v1.5.0`
 3. Attach the `.pkg.tar.zst` file (named `nemo-smpl-*x86_64.pkg.tar.zst`)
 
-**Note:** Each repo has CI workflows that automate the build + release.
-Just push a tag and the workflow creates the release with assets.
+**Note:** Release triggers differ by repository. In particular, smpl-apps
+requires the manual workflow dispatch, not merely an OS merge or tag.
 
 ### Checking app update status
 
@@ -246,6 +250,66 @@ smplos-update-apps            # download and install updates
 ```
 
 Version state is in `~/.local/state/smplos/app-versions/`.
+
+### Application icon delivery
+
+The OS cache builder resolves user desktop overrides before system entries,
+including hidden overrides by desktop-file ID. It preserves the existing
+`Name;Exec;Category;Icon[;1]` format and `~/.cache/smplos/` paths. Concurrent
+watcher/manual refreshes use a lock, unique temporary files, and atomic
+replacement. Elevated updater refreshes drop back to the invoking user.
+Neither refresh nor update migrates or resets `pinned-apps.txt`.
+
+Both update routes must remain supported:
+
+- `smplos-os-update` syncs scripts/libraries, uses `src/fetch-org.sh` to stage
+  app releases in `.cache/org-binaries/bin`, and installs to `/usr/local/bin`.
+  Its fetch marker is `.cache/org-binaries/.versions/smpl-apps`.
+- `smplos-update-apps` fetches the smpl-apps release tarball directly and records
+  the installed version in `~/.local/state/smplos/app-versions/smpl-apps`.
+
+Both refresh the app index even when the app binaries are already current.
+Refresh failures are reported rather than hidden.
+
+`src/shared/lib/smplos-app-bundle.sh` defines the shared required-binary set.
+Downloads are extracted and checked separately before touching cached binaries;
+incomplete releases cannot be completed accidentally with old cached files or
+advance a version marker. A matching marker with a missing/invalid binary
+triggers a retry. `fetch-apps.sh` and `build-iso.sh` now share
+`.cache/app-binaries/.smpl-apps-version`; the old `smpl-apps.fetched-version`
+marker is ignored.
+
+Future ISO builds consume the same release tarball. The container installs
+the required binaries into both the live `/usr/local/bin` and
+`/root/smplos/bin` installation payload. Shared scripts/libraries are copied
+to both locations, and the user skeleton enables the app-cache service/path
+units. The installer generates the index for the new user rather than
+shipping a developer's generated cache. Offline build preparation can use a
+complete cached or manually supplied bundle; when a newer release is known
+but fails download/validation, the build stops instead of silently embedding
+old apps. Installation from the finished ISO remains fully offline.
+
+For the coordinated menu fix, merge and release the smpl-apps icon-precedence
+and safe pin-matching changes **as well as** merging the OS changes. The app
+baseline inspected for this fix is v0.8.22; a release from that baseline
+would become v0.8.23, but consumers follow the actual published latest tag.
+No unreleased version is pinned or claimed as shipped here.
+
+**Grafium packaging is a separate boundary.** `grafium-bin` is bundled through
+`src/shared/packages-aur.txt` and `src/shared/pkgbuilds/grafium-bin/PKGBUILD`.
+The PKGBUILD extracts the upstream `Grafium_<VERSION>_amd64.deb` unchanged;
+smplOS does not synthesize its application icon. Correct user icon precedence
+does not fix a blue image already contained in that package on a machine with
+no good override. A corrected, accessible stable Grafium `.deb` release is
+still required. The release API returned no Grafium releases when this fix was
+prepared; do not package a developer's personal icon as a substitute.
+
+Focused, offline regression coverage (temporary homes and mocked downloads;
+no real updates, installs, or ISO builds):
+
+```bash
+python3 -m unittest discover -s tests -p 'test_app_*.py' -v
+```
 
 ---
 
