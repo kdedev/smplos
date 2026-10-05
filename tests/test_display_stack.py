@@ -7,10 +7,12 @@ commands; nothing reads or changes the live desktop.
 import json
 import os
 from pathlib import Path
+import re
 import shutil
 import subprocess
 import tempfile
 import textwrap
+import time
 import unittest
 
 
@@ -443,6 +445,68 @@ print(widths[#widths])
 '''
         self.assertEqual(lua(harness, HYPR, 4).strip(), "0.65")
         self.assertEqual(lua(harness, HYPR, 5).strip(), "0.95")
+
+
+class CompositorLogJournalTests(unittest.TestCase):
+    SCRIPT = BIN / "smplos-hypr-log-journal"
+
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name)
+        bin_dir = self.root / "bin"
+        bin_dir.mkdir()
+        self.journal = self.root / "journal"
+        fake_cat = bin_dir / "systemd-cat"
+        fake_cat.write_text(f'#!/bin/bash\necho "$*" > "{self.root}/args"\ncat >> "{self.journal}"\n')
+        fake_cat.chmod(0o755)
+        self.instance = self.root / "runtime/hypr/test-instance"
+        self.instance.mkdir(parents=True)
+        self.env = dict(os.environ, PATH=f"{bin_dir}:{os.environ['PATH']}",
+                        XDG_RUNTIME_DIR=str(self.root / "runtime"),
+                        HYPRLAND_INSTANCE_SIGNATURE="test-instance")
+
+    def wait_for(self, text):
+        for _ in range(100):
+            if self.journal.exists() and text in self.journal.read_text():
+                return
+            time.sleep(0.1)
+        self.fail(f"{text!r} never reached the journal")
+
+    def test_both_config_trees_start_the_mirror_once(self):
+        lua_calls = re.findall(r'hl\.exec_cmd\("smplos-hypr-log-journal"\)', (HYPR / "autostart.lua").read_text())
+        conf_calls = re.findall(r"^exec-once = smplos-hypr-log-journal$",
+                                (HYPR / "autostart.conf").read_text(), re.MULTILINE)
+        self.assertEqual((len(lua_calls), len(conf_calls)), (1, 1))
+
+    def test_log_is_mirrored_without_input_noise_and_stops_with_hyprland(self):
+        pid = int(subprocess.run(["bash", "-c", "setsid sleep 60 >/dev/null 2>&1 & echo $!"],
+                                 capture_output=True, text=True, check=True).stdout)
+        self.addCleanup(subprocess.run, ["kill", str(pid)], capture_output=True)
+        (self.instance / "hyprland.lock").write_text(f"{pid}\nwayland-1\n")
+        log = self.instance / "hyprland.log"
+        log.write_text("DEBUG ]: Creating the PointerManager!\n"
+                       "DEBUG from aquamarine ]: [libinput] Plugin:mouse-wheel     - wheel: NONE\n")
+        mirror = subprocess.Popen(["bash", str(self.SCRIPT)], env=self.env)
+        self.addCleanup(mirror.kill)
+        self.wait_for("PointerManager")
+        with log.open("a") as out:
+            out.write("DEBUG from aquamarine ]: drm: Modesetting HDMI-A-1 with 2560x1440@59.95Hz\n")
+        self.wait_for("Modesetting HDMI-A-1")
+        subprocess.run(["kill", str(pid)], check=True)
+        mirror.wait(timeout=10)
+        self.assertEqual(self.journal.read_text().splitlines(), [
+            "DEBUG ]: Creating the PointerManager!",
+            "DEBUG from aquamarine ]: drm: Modesetting HDMI-A-1 with 2560x1440@59.95Hz",
+        ])
+        self.assertEqual((self.root / "args").read_text().strip(), "-t hyprland")
+
+    def test_missing_instance_fails_without_waiting(self):
+        result = subprocess.run(["bash", str(self.SCRIPT)], env=self.env, capture_output=True,
+                                text=True, timeout=10)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("no Hyprland PID", result.stderr)
+        self.assertFalse(self.journal.exists())
 
 
 if __name__ == "__main__":
