@@ -509,5 +509,178 @@ class CompositorLogJournalTests(unittest.TestCase):
         self.assertFalse(self.journal.exists())
 
 
+def stub(path, body):
+    path.write_text("#!/bin/bash\n" + textwrap.dedent(body))
+    path.chmod(0o755)
+
+
+def live_pid(test):
+    """A detached stand-in for a running compositor, killed at cleanup."""
+    pid = int(subprocess.run(["bash", "-c", "setsid sleep 60 >/dev/null 2>&1 & echo $!"],
+                             capture_output=True, text=True, check=True).stdout)
+    test.addCleanup(subprocess.run, ["kill", str(pid)], capture_output=True)
+    return pid
+
+
+class GpuFaultWatchTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name)
+        bin_dir = self.root / "bin"
+        bin_dir.mkdir()
+        self.snaps = self.root / "snaps"
+        stub(bin_dir / "journalctl", 'cat "$KERNEL_LINES"\n')
+        stub(bin_dir / "smplos-gpu-snapshot", 'echo "$1" >> "$SNAPS"\n')
+        self.env = dict(os.environ, PATH=f"{bin_dir}:{os.environ['PATH']}", SNAPS=str(self.snaps),
+                        KERNEL_LINES=str(self.root / "kernel"))
+
+    def watch(self, lines, cooldown):
+        (self.root / "kernel").write_text("\n".join(lines) + "\n")
+        subprocess.run(["bash", str(BIN / "smplos-gpu-watch")], check=True, timeout=10, capture_output=True,
+                       env=dict(self.env, SMPLOS_GPU_COOLDOWN=str(cooldown)))
+        for _ in range(50):  # snapshots run in the background
+            if self.snaps.exists():
+                break
+            time.sleep(0.1)
+        time.sleep(0.3)
+        return self.snaps.read_text().splitlines() if self.snaps.exists() else []
+
+    def test_faults_from_every_vendor_trigger_and_ordinary_messages_do_not(self):
+        faults = [
+            "NVRM: Xid (PCI:0000:01:00): 56, CMDre 00000007 00000000 00000000 00000001 00000000",
+            "[drm:nv_drm_atomic_commit [nvidia_drm]] *ERROR* [nvidia-drm] [GPU ID 0x00000100] Flip event timeout on head 0",
+            "nvidia-modeset: WARNING: GPU:0: Lost display notification (0:0x00000000); continuing.",
+            "amdgpu 0000:03:00.0: amdgpu: ring gfx_0.0.0 timeout, signaled seq=1, emitted seq=2",
+            "i915 0000:00:02.0: [drm] GPU HANG: ecode 12:1:85dffffb, in Xorg [700]",
+        ]
+        ordinary = [
+            "nvidia-modeset: WARNING: GPU:0: RLD advertized maximum pixel clock 340000 KHz violates maximum pixel clock constraint for HDMI",
+            "[drm] Initialized nvidia-drm 0.0.0 for 0000:01:00.0 on minor 1",
+            "usb 1-3: new high-speed USB device number 10 using xhci_hcd",
+        ]
+        self.assertEqual(sorted(self.watch(ordinary + faults, cooldown=0)), sorted(faults))
+
+    def test_one_snapshot_per_cooldown_window(self):
+        self.assertEqual(self.watch(["NVRM: Xid (PCI:0000:01:00): 56, first",
+                                     "[drm:nv_drm_atomic_commit [nvidia_drm]] *ERROR* Flip event timeout on head 0"],
+                                    cooldown=600), ["NVRM: Xid (PCI:0000:01:00): 56, first"])
+
+
+class GpuSnapshotTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name)
+        bin_dir = self.root / "bin"
+        bin_dir.mkdir()
+        self.calls = self.root / "calls"
+        stub(bin_dir / "journalctl", 'echo "journalctl $*"\n')
+        stub(bin_dir / "pacman", 'printf "hyprland 0.56.2-4\\nfirefox 1-1\\n"\n')
+        stub(bin_dir / "nvidia-smi", 'echo "Driver Version : 615.71.09"\n')
+        stub(bin_dir / "nvidia-bug-report.sh", 'touch "$2.gz"\n')
+        stub(bin_dir / "notify-send", 'echo "notify $*" >> "$CALLS"\n')
+        stub(bin_dir / "hyprctl", 'echo "{\\"instance\\": \\"$HYPRLAND_INSTANCE_SIGNATURE\\", \\"query\\": \\"$2\\"}"\n')
+        # Root drops to the session owner; the tests already run as that user.
+        stub(bin_dir / "setpriv", 'while [[ "$1" == --* ]]; do shift; done\nexec "$@"\n')
+        self.incidents = self.root / "incidents"
+        self.runtime = self.root / "run"
+        self.uid = str(os.getuid())
+        self.instance = self.runtime / self.uid / "hypr/sig-1"
+        self.instance.mkdir(parents=True)
+        (self.instance / "hyprland.log").write_text("DEBUG ]: drm: Modesetting HDMI-A-1\n")
+        dri = self.root / "dri/1"
+        dri.mkdir(parents=True)
+        (dri / "state").write_text("crtc[68]: crtc-0\n\tactive=1\n")
+        (dri / "name").write_text("nvidia-drm dev=0000:01:00.0\n")
+        connector = self.root / "drm/card1-HDMI-A-1"
+        connector.mkdir(parents=True)
+        (connector / "status").write_text("connected\n")
+        (connector / "enabled").write_text("enabled\n")
+        self.env = dict(os.environ, PATH=f"{bin_dir}:{os.environ['PATH']}", CALLS=str(self.calls),
+                        SMPLOS_GPU_INCIDENTS=str(self.incidents), SMPLOS_RUNTIME_ROOT=str(self.runtime),
+                        SMPLOS_DRM_DEBUGFS=str(self.root / "dri"), SMPLOS_DRM_SYSFS=str(self.root / "drm"))
+
+    def snapshot(self, **env):
+        result = subprocess.run(["bash", str(BIN / "smplos-gpu-snapshot"), "NVRM: Xid 56"], check=True,
+                                timeout=30, capture_output=True, text=True, env=dict(self.env, **env))
+        return Path(result.stdout.strip().splitlines()[-1])
+
+    def test_live_state_is_recorded_for_the_running_compositor(self):
+        (self.instance / "hyprland.lock").write_text(f"{live_pid(self)}\nwayland-1\n")
+        snap = self.snapshot()
+        self.assertEqual(snap.parent, self.incidents)
+        self.assertEqual((snap / "trigger.txt").read_text(), "NVRM: Xid 56\n")
+        self.assertIn("journalctl -k -b", (snap / "kernel.log").read_text())
+        self.assertIn("--since -15 min", (snap / "journal-15min.log").read_text())
+        self.assertIn("hyprland 0.56.2-4", (snap / "packages.txt").read_text())
+        self.assertNotIn("firefox", (snap / "packages.txt").read_text())
+        self.assertIn("card1-HDMI-A-1 status=connected enabled=enabled", (snap / "connectors.txt").read_text())
+        self.assertIn("Modesetting HDMI-A-1", (snap / "hyprland/sig-1.log").read_text())
+        self.assertEqual(json.loads((snap / "hyprland/sig-1.monitors.json").read_text()),
+                         {"instance": "sig-1", "query": "monitors"})
+        self.assertIn("active=1", (snap / "drm/1.state").read_text())
+        self.assertIn("615.71.09", (snap / "nvidia-smi.txt").read_text())
+        self.assertTrue((snap / "nvidia-bug-report.log.gz").exists())
+        self.assertIn(str(snap), self.calls.read_text())
+        for path in [snap, *snap.rglob("*")]:
+            self.assertEqual(path.stat().st_mode & 0o007, 0, f"{path} is readable by other users")
+
+    def test_exited_compositor_is_not_queried(self):
+        (self.instance / "hyprland.lock").write_text("999999999\n")
+        snap = self.snapshot()
+        self.assertEqual(list((snap / "hyprland").iterdir()), [])
+        self.assertFalse(self.calls.exists(), "nobody to notify")
+        self.assertTrue((snap / "kernel.log").exists())
+
+    def test_only_the_newest_incidents_are_kept(self):
+        for name in ("20260101-000000", "20260102-000000", "20260103-000000"):
+            (self.incidents / name).mkdir(parents=True)
+        (self.incidents / "notes").mkdir()
+        snap = self.snapshot(SMPLOS_GPU_KEEP="2")
+        self.assertEqual(sorted(p.name for p in self.incidents.iterdir()),
+                         sorted(["20260103-000000", snap.name, "notes"]))
+
+
+class SessionOutputTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name)
+        bin_dir = self.root / "bin"
+        bin_dir.mkdir()
+        self.calls = self.root / "calls"
+        stub(bin_dir / "monitors-guard", "exit 0\n")
+        stub(bin_dir / "systemd-cat", '''\
+            echo "systemd-cat $*" >> "$CALLS"
+            [[ -n "${JOURNAL_DOWN:-}" ]] && exit 1
+            shift 2
+            exec "$@"
+            ''')
+        self.launcher = self.root / "start-hyprland"
+        stub(self.launcher, 'echo "launched pid=$$ args=$*" >> "$CALLS"\n')
+        self.env = dict(os.environ, PATH=f"{bin_dir}:{os.environ['PATH']}", CALLS=str(self.calls),
+                        HOME=str(self.root), SMPLOS_HYPRLAND_LAUNCHER=str(self.launcher))
+
+    def start(self, **env):
+        session = subprocess.Popen(["bash", str(BIN / "start-hyprland"), "--config", "x"],
+                                   env=dict(self.env, **env))
+        self.assertEqual(session.wait(timeout=10), 0)
+        return session.pid, self.calls.read_text().splitlines()
+
+    def test_launcher_output_goes_to_the_journal_in_the_same_pid(self):
+        pid, calls = self.start()
+        self.assertEqual(calls, [
+            "systemd-cat -t hyprland-session true",
+            f"systemd-cat -t hyprland-session {self.launcher} --config x",
+            f"launched pid={pid} args=--config x",
+        ])
+
+    def test_session_still_starts_when_the_journal_is_unavailable(self):
+        pid, calls = self.start(JOURNAL_DOWN="1")
+        self.assertEqual(calls, ["systemd-cat -t hyprland-session true",
+                                 f"launched pid={pid} args=--config x"])
+
+
 if __name__ == "__main__":
     unittest.main()

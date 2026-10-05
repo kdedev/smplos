@@ -104,6 +104,17 @@ mv ~/.config/hypr/hyprland.conf.disabled ~/.config/hypr/hyprland.conf
   Both autostart trees run `smplos-hypr-log-journal`, which mirrors that log
   (minus per-click libinput traces) into the persistent journal and exits
   with Hyprland. Read the previous session with `journalctl -b -1 -t hyprland`.
+  `start-hyprland` sends the launcher's stdout/stderr (watchdog, EGL/GBM and
+  driver library messages) to the journal as `hyprland-session`, falling back
+  to a plain launch if journald is unavailable.
+* **GPU faults**: the root `smplos-gpu-watch.service` follows the kernel log
+  for NVIDIA/amdgpu/i915/xe/nouveau/DRM faults and runs `smplos-gpu-snapshot`,
+  which saves the kernel log, the last 15 min of the journal, each live
+  Hyprland log and `hyprctl` state, DRM debugfs state, connector status,
+  `nvidia-smi -q` and `nvidia-bug-report.sh` to
+  `/var/log/smplos/gpu-incidents/<time>/` (newest 10 kept, readable by
+  `wheel`), then notifies the user. `60-smplos-sync.conf` makes journald sync
+  to disk every 15s so a forced power-off loses little.
 * **Keybindings**: edit `src/shared/configs/smplos/bindings.conf` (hyprlang).
   The Lua side reads the exact same file via `bindings_loader.lua`.
 * **Theme variables**: edit by running `theme-set <name>`. Both providers pick

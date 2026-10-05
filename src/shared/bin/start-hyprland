@@ -26,12 +26,24 @@ if command -v monitors-guard >/dev/null 2>&1; then
     monitors-guard 2>/dev/null || true
 fi
 
+# Hyprland's own log is mirrored by smplos-hypr-log-journal. stdout/stderr
+# carry what bypasses it (the start-hyprland watchdog, EGL/GBM/driver
+# libraries, aborts) and otherwise scroll past on an unseen VT. systemd-cat
+# connects them to journald and execs the launcher in this same PID, so greetd
+# keeps tracking it. Without a working journal, launch exactly as before.
+# Read with: journalctl -b -1 -t hyprland-session
+real=${SMPLOS_HYPRLAND_LAUNCHER:-/usr/bin/start-hyprland}
+journal=()
+if systemd-cat -t hyprland-session true 2>/dev/null; then
+    journal=(systemd-cat -t hyprland-session)
+fi
+
 # exec replaces this process image in the same PID, so greetd keeps tracking
 # the correct PID and env vars above are inherited by the child Hyprland.
-if [[ -x /usr/bin/start-hyprland ]]; then
-    exec /usr/bin/start-hyprland "$@"
+if [[ -x "$real" ]]; then
+    exec "${journal[@]}" "$real" "$@"
 fi
 
 # Fallback: real binary not found (shouldn't happen on a normal install).
 # Warning will appear in logs but Hyprland will still run.
-exec Hyprland "$@"
+exec "${journal[@]}" Hyprland "$@"

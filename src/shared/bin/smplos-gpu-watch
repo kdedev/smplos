@@ -1,0 +1,19 @@
+#!/bin/bash
+# Snapshot GPU/display state the moment the kernel reports a GPU fault.
+# Runs as root from smplos-gpu-watch.service. The display is often frozen by
+# then and the user reboots, so this is the only chance to record live state.
+set -uo pipefail
+
+COOLDOWN=${SMPLOS_GPU_COOLDOWN:-600}
+# NVIDIA, amdgpu, i915/xe, nouveau and generic DRM driver errors.
+FAULT='NVRM: Xid|Flip event timeout|Lost display notification|amdgpu.*(ring .* timeout|GPU reset|page fault)|i915.*(GPU HANG|Resetting chip)|xe .*(GT[0-9]*: reset|Timedout job)|nouveau .*(fifo|timeout)|\[drm[^]]*\].*\*ERROR\*'
+
+last=0
+while IFS= read -r line; do
+    [[ "$line" =~ $FAULT ]] || continue
+    echo "GPU fault: $line"
+    now=$(date +%s)
+    (( now - last < COOLDOWN )) && continue
+    last=$now
+    smplos-gpu-snapshot "$line" &
+done < <(journalctl -k -f -n 0 -o cat)
