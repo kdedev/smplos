@@ -87,8 +87,9 @@ if command -v nvidia-smi >/dev/null; then
     cap nvidia-smi.txt 30 nvidia-smi -q &
 fi
 if command -v nvidia-bug-report.sh >/dev/null; then
-    (cd "$dir" && timeout -k 10 300 nvidia-bug-report.sh --output-file "$dir/nvidia-bug-report.log" \
-        >"$dir/nvidia-bug-report.out" 2>&1) &
+    # --safe-mode skips nvidia-debugdump and other queries that can stall the GPU.
+    (cd "$dir" && timeout -k 10 300 nice -n 19 ionice -c 3 nvidia-bug-report.sh --safe-mode \
+        --output-file "$dir/nvidia-bug-report.log" >"$dir/nvidia-bug-report.out" 2>&1) &
 fi
 wait
 sync -f "$dir"

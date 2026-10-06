@@ -578,7 +578,7 @@ class GpuSnapshotTests(unittest.TestCase):
         stub(bin_dir / "journalctl", 'echo "journalctl $*"\n')
         stub(bin_dir / "pacman", 'printf "hyprland 0.56.2-4\\nfirefox 1-1\\n"\n')
         stub(bin_dir / "nvidia-smi", 'echo "Driver Version : 615.71.09"\n')
-        stub(bin_dir / "nvidia-bug-report.sh", 'touch "$2.gz"\n')
+        stub(bin_dir / "nvidia-bug-report.sh", 'echo "$*" > bug-report-args; touch "$3.gz"\n')
         stub(bin_dir / "notify-send", 'echo "notify $*" >> "$CALLS"\n')
         stub(bin_dir / "hyprctl", 'echo "{\\"instance\\": \\"$HYPRLAND_INSTANCE_SIGNATURE\\", \\"query\\": \\"$2\\"}"\n')
         # Root drops to the session owner; the tests already run as that user.
@@ -622,6 +622,7 @@ class GpuSnapshotTests(unittest.TestCase):
         self.assertIn("active=1", (snap / "drm/1.state").read_text())
         self.assertIn("615.71.09", (snap / "nvidia-smi.txt").read_text())
         self.assertTrue((snap / "nvidia-bug-report.log.gz").exists())
+        self.assertIn("--safe-mode", (snap / "bug-report-args").read_text().split())
         self.assertIn(str(snap), self.calls.read_text())
         for path in [snap, *snap.rglob("*")]:
             self.assertEqual(path.stat().st_mode & 0o007, 0, f"{path} is readable by other users")
