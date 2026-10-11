@@ -57,7 +57,7 @@ local root = arg[1]
 package.path = root .. "/?.lua;" .. package.path
 package.preload.theme = function() return THEME end
 for _, name in ipairs({"workspace_policy", "envs", "input", "looknfeel",
-                      "aspect_column", "popup_watchers", "autostart"}) do
+                      "aspect_column", "popup_watchers", "autostart", "keypad_glass"}) do
     package.preload[name] = function() return {} end
 end
 for _, name in ipairs({"monitors_loader", "bindings_loader"}) do

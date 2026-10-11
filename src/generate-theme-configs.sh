@@ -69,6 +69,16 @@ generate_theme() {
   done < "$colors_file"
 
   pairs[app_background_opacity]=$(python3 "$SCRIPT_DIR/theme_opacity.py" "$colors_file")
+  pairs[glass]="${pairs[glass]-false}"
+  if [[ "${pairs[glass]}" != true && "${pairs[glass]}" != false ]]; then
+    echo "ERROR: $name: glass must be true or false" >&2
+    return 1
+  fi
+  pairs[glass_background]="${pairs[glass_background]:-${pairs[background]}}"
+  pairs[glass_foreground]="${pairs[glass_foreground]:-${pairs[foreground]}}"
+  pairs[glass_fg_dim]="${pairs[glass_fg_dim]:-${pairs[fg_dim]}}"
+  pairs[glass_accent]="${pairs[glass_accent]:-${pairs[accent]}}"
+  pairs[glass_outline]="${pairs[glass_outline]:-${pairs[background]}}"
 
   # --- Derive terminal palette (ANSI 0-15) from semantic names ---
   # Each slot maps to a semantic variable. Themes can override with term_N.

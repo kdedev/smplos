@@ -46,7 +46,7 @@ class BarApplyTests(unittest.TestCase):
         watcher.write_text("#!/bin/sh\nexit 0\n")
         watcher.chmod(0o755)
         self.env = dict(os.environ, HOME=str(self.root), PATH=f"{mock_bin}:{os.environ['PATH']}",
-                        CALLS=str(self.calls))
+                        CALLS=str(self.calls), XDG_RUNTIME_DIR=str(self.root / "runtime"))
         for key in ("WAYLAND_DISPLAY", "DISPLAY", "HYPRLAND_INSTANCE_SIGNATURE",
                     "NIRI_SOCKET", "DBUS_SESSION_BUS_ADDRESS"):
             self.env.pop(key, None)
@@ -245,6 +245,96 @@ class BarApplyTests(unittest.TestCase):
             self.calls.unlink(missing_ok=True)
             self.assertEqual(self.run_apply(**variables).returncode, 0)
             self.assert_update()
+
+    def test_reload_and_geometry_redraw_are_serialized_without_inherited_locks(self):
+        eww = self.root / "bin/eww"
+        eww.write_text(
+            "#!/usr/bin/env python3\nimport os, sys, time\n"
+            "try:\n"
+            "    os.fstat(9)\n"
+            "except OSError:\n"
+            "    pass\n"
+            "else:\n"
+            "    raise RuntimeError('daemon inherited lifecycle lock')\n"
+            "with open(os.environ['CALLS'], 'a') as f:\n"
+            "    f.write('begin ' + sys.argv[3] + '\\n')\n"
+            "time.sleep(0.08)\n"
+            "with open(os.environ['CALLS'], 'a') as f:\n"
+            "    f.write('end ' + sys.argv[3] + '\\n')\n")
+        processes = [
+            subprocess.Popen(["bash", str(self.script), action], env=self.env,
+                             stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+            for action in ("reload", "redraw", "reload")
+        ]
+        try:
+            for process in processes:
+                out, err = process.communicate(timeout=10)
+                self.assertEqual(process.returncode, 0, out + err)
+        finally:
+            for process in processes:
+                if process.poll() is None:
+                    process.terminate()
+                    process.wait(timeout=5)
+        commands = [line for line in self.calls.read_text().splitlines() if line.startswith("begin ")]
+        self.assertIn(commands, [
+            ["begin reload", "begin update", "begin close", "begin open", "begin update", "begin reload", "begin update"],
+            ["begin close", "begin open", "begin update", "begin reload", "begin update", "begin reload", "begin update"],
+            ["begin reload", "begin update", "begin reload", "begin update", "begin close", "begin open", "begin update"],
+        ])
+        source = self.script.read_text()
+        self.assertIn('"$0" redraw "$BAR_NAME"', source)
+        self.assertIn('watch "$BAR_NAME" 9>&-', source)
+        self.assertIn(') 9>&- >/dev/null', source)
+
+    def test_open_failure_never_applies_preferences_or_reports_start_success(self):
+        self.assertNotIn("pkill", self.script.read_text())
+        for action in ("start", "redraw"):
+            self.calls.unlink(missing_ok=True)
+            result = subprocess.run(
+                ["bash", str(self.script), action], env={**self.env, "FAIL_EWW": "1"},
+                capture_output=True, text=True, timeout=5,
+            )
+            self.assertNotEqual(result.returncode, 0)
+            self.assertNotIn(f"bar-ctl {action} complete", self.log.read_text())
+            calls = [json.loads(line) for line in self.calls.read_text().splitlines()]
+            self.assertFalse(any("update" in call for call in calls))
+
+    def test_concurrent_cold_starts_spawn_exactly_one_daemon(self):
+        self.script.write_text(self.script.read_text().replace(
+            '( sleep 2; "$0" redraw "$BAR_NAME" ) 9>&- >/dev/null 2>&1 &',
+            ': # Boot geometry timer is outside this cold-start fixture.'))
+        pgrep = self.root / "bin/pgrep"
+        pgrep.write_text("#!/bin/sh\nexit 0\n")
+        pgrep.chmod(0o755)
+        eww = self.root / "bin/eww"
+        eww.write_text(
+            "#!/usr/bin/env python3\nimport os, pathlib, sys, time\n"
+            "if sys.argv[3] == 'open':\n"
+            "    root = pathlib.Path(os.environ['HOME'])\n"
+            "    if (root / 'spawning').exists():\n"
+            "        raise RuntimeError('concurrent daemon spawn')\n"
+            "    if not (root / 'ready').exists():\n"
+            "        (root / 'spawning').touch()\n"
+            "        time.sleep(0.15)\n"
+            "        (root / 'ready').touch()\n"
+            "        (root / 'spawning').unlink()\n"
+            "        with open(os.environ['CALLS'], 'a') as out:\n"
+            "            out.write('spawn\\n')\n")
+        processes = [
+            subprocess.Popen(["bash", str(self.script), "start"], env=self.env,
+                             stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+            for _ in range(2)
+        ]
+        try:
+            for process in processes:
+                out, err = process.communicate(timeout=5)
+                self.assertEqual(process.returncode, 0, out + err)
+        finally:
+            for process in processes:
+                if process.poll() is None:
+                    process.terminate()
+                    process.wait(timeout=5)
+        self.assertEqual(self.calls.read_text(), "spawn\n")
 
 
 if __name__ == "__main__":

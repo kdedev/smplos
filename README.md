@@ -76,7 +76,7 @@ It started as an attempt to build a lighter version of Omarchy - same keybinding
 - **Fast installs.** Fully offline - no internet required. A fresh install completes in under 2 minutes.
 - **Cross-compositor.** Built from the ground up to support multiple compositors. Hyprland (Wayland) ships first, [DWM (X11) is next](DWM-X11.md). Shared configs, shared themes, shared keybindings - the compositor is just a thin layer.
 - **One UI toolkit.** EWW powers the bar, widgets, and dialogs. It runs on both X11 and Wayland. No waybar, no polybar, no redundant tools.
-- **17 built-in themes.** One command switches colors across the entire system - terminal, bar, notifications, borders, lock screen, and editor.
+- **18 built-in themes.** One command switches colors across the entire system - terminal, bar, notifications, borders, lock screen, and editor.
 
 ---
 
@@ -120,7 +120,7 @@ This is the same pattern we use everywhere: the theme system writes config files
 
 #### Themes
 
-smplOS ships with 17 themes inherited and expanded from the Omarchy project. A single `theme-set` command applies colors system-wide - terminal, EWW bar, notifications, Hyprland borders, lock screen, btop, neovim, and VS Code. Every theme includes matching wallpapers and is generated from a single `colors.toml` source of truth.
+smplOS ships with 18 themes inherited and expanded from the Omarchy project. A single `theme-set` command applies colors system-wide - terminal, EWW bar, notifications, Hyprland borders, lock screen, btop, neovim, and VS Code. Themes are generated from a single `colors.toml` source of truth.
 
 Native transparency is **background-only**: capable Nemo, Grafium in Auto mode,
 and regular smpl-apps windows use `app_background_opacity`, while text, icons,
@@ -434,7 +434,7 @@ src/
     configs/
       smplos/               Cross-compositor configs (bindings.conf, messengers.conf, branding)
       <app>/                Per-app default configs (btop, dunst, fish, foot, nvim, …)
-    themes/                 17 themes — each a self-contained directory with pre-baked configs
+    themes/                 18 themes — each a self-contained directory with pre-baked configs
     icons/                  SVG status icon templates (baked with accent colors by theme-set)
     applications/           Shared web-app .desktop entries and hicolor icons
     skel/                   Default user home skeleton (copied to /etc/skel in the ISO)
@@ -847,9 +847,9 @@ See the [Development Guide](DEVELOPMENT.md) for hot-reload iteration, VM testing
 
 ## Themes
 
-17 built-in themes. Press <kbd>Super</kbd> + <kbd>Shift</kbd> + <kbd>T</kbd> to open the theme picker and switch instantly.
+18 built-in themes. Press <kbd>Super</kbd> + <kbd>Shift</kbd> + <kbd>T</kbd> to open the theme picker and switch instantly.
 
-Amber, Catppuccin Mocha, Catppuccin Latte, Ethereal, Everforest, Flexoki Light, Grafium, Gruvbox, Hackerman, Kanagawa, Matrix, Matte Black, Nord, Osaka Jade, Ristretto, Rose Pine, Tokyo Night.
+Amber, Catppuccin Mocha, Catppuccin Latte, Ethereal, Everforest, Flexoki Light, Frosted, Grafium, Gruvbox, Hackerman, Kanagawa, Matrix, Matte Black, Nord, Osaka Jade, Ristretto, Rose Pine, Tokyo Night.
 
 One command - `theme-set <name>` - applies colors across the entire system: terminal, bar, notifications, compositor borders, lock screen, launcher, system monitor, editor, fish shell, Logseq, and browser chrome.
 
@@ -1025,7 +1025,7 @@ When you run `theme-set <name>`, it:
    - `btop.theme` -> `~/.config/btop/themes/current.theme`
    - `fish.theme` -> `~/.config/fish/theme.fish`
    - `tide.theme` -> applied via `fish -c "source ...; tide reload"`
-   - `logseq-custom.css` -> inline CSS in `~/.logseq/config/config.edn` plus legacy graph CSS files
+   - `logseq-custom.css` -> initializes missing inline/graph CSS; existing EDN and custom CSS are preserved with a visible partial-update warning
    - `dunstrc.theme` -> composed with `dunstrc.base` into `~/.config/dunst/dunstrc`
    - `neovim.lua` -> `~/.config/nvim/lua/plugins/colorscheme.lua`
 4. Bakes accent/fg colors into SVG icon templates for the EWW bar
@@ -1044,6 +1044,11 @@ When you run `theme-set <name>`, it:
    - Logseq: config/plugin preferences require an application restart
    - GTK: `gsettings` (dark/light mode)
    - Brave/Chromium: managed policy + flags file
+
+Logseq preference updates merge only known theme fields and retain verified
+preimages; graph lists and unrelated settings survive. Existing arbitrary EDN
+and custom CSS require an explicit, backed-up merge, not wholesale replacement.
+See [Logseq data preservation](CREATING_MODIFYING_A_THEME.md#logseq-data-preservation-during-switching).
 
 ### Opacity Architecture
 

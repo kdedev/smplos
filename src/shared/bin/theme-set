@@ -109,6 +109,12 @@ _bg=$(grep '^background' "$CURRENT_THEME_PATH/colors.toml" 2>/dev/null | head -1
 _fg=${_fg:-#888888}
 _accent=${_accent:-#888888}
 _bg=${_bg:-#1e1e2e}
+if [[ "$(toml_get "$CURRENT_THEME_PATH/colors.toml" glass)" == true ]]; then
+  _glass_accent=$(toml_get "$CURRENT_THEME_PATH/colors.toml" glass_accent)
+  _glass_fg=$(toml_get "$CURRENT_THEME_PATH/colors.toml" glass_foreground)
+  _accent=${_glass_accent:-$_accent}
+  _fg=${_glass_fg:-$_fg}
+fi
 EWW_ICONS_TPL="$HOME/.local/share/smplos/icons/status"
 EWW_ICONS_DST="$HOME/.config/eww/icons/status"
 if [[ -d "$EWW_ICONS_TPL" ]]; then
@@ -435,8 +441,13 @@ if [[ -f "$HOME/.config/smplos/copilot-theme-sync.enabled" ]]; then
 fi
 
 # Logseq — switch theme via preferences.json + custom.css
-# custom.css provides full color theming via CSS variables (always works)
 # Plugin themes are optional — enhance theming if plugins are installed
+logseq_status=0
+logseq_warning() {
+  echo "theme-set: Logseq: $*; existing user data is preserved" >&2
+  logseq_status=1
+}
+
 mkdir -p "$HOME/.logseq"
 _logseq_prefs="$HOME/.logseq/preferences.json"
 _lp="$HOME/.logseq/plugins"
@@ -468,38 +479,85 @@ if [[ -d "$_lp" ]]; then
 fi
 
 if [[ -n "$_lq_pid" && -f "$_lq_css" ]]; then
-  # Write preferences.json with plugin theme + correct dark/light mode
-  cat > "$_logseq_prefs" <<EOF
-{
-  "theme": {
-    "name": "$_lq_name",
-    "url": "assets://$_lq_css",
-    "mode": "$_lq_mode",
-    "pid": "$_lq_pid"
-  },
-  "themes": {
-    "mode": "$_lq_mode"
-  },
-  "externals": []
-}
-EOF
+  _lq_url="assets://$_lq_css"
 else
-  # No plugin for this theme — use legacy "theme" key (with mode, no URL) so
-  # activateUserPreferences() calls selectTheme() -> emits "theme-selected"
-  # -> handler calls set-theme-mode!.  Without this key, Logseq defaults to
-  # "light" on Linux (stored in localStorage, not any config file).
-  cat > "$_logseq_prefs" <<EOF
-{
-  "theme": {
-    "mode": "$_lq_mode"
-  },
-  "themes": {
-    "mode": "$_lq_mode"
-  },
-  "externals": []
-}
-EOF
+  _lq_name="" _lq_url="" _lq_pid=""
 fi
+
+update_logseq_preferences() {
+  local input="$_logseq_prefs" temporary backup=""
+  if [[ -L "$input" || ( -e "$input" && ( ! -f "$input" || ! -r "$input" ) ) ]]; then
+    logseq_warning "Cannot safely update $input"
+    return
+  fi
+  temporary=$(mktemp "${_logseq_prefs}.tmp.XXXXXX") || {
+    logseq_warning "Cannot stage preferences"
+    return
+  }
+  if [[ -f "$input" ]]; then
+    backup=$(mktemp "${_logseq_prefs}.backup.XXXXXX") || {
+      rm -f -- "$temporary"
+      logseq_warning "Cannot back up preferences"
+      return
+    }
+    if ! cp -p "$input" "$backup" || ! cmp -s "$input" "$backup" ||
+       ! chmod --reference="$backup" "$temporary"; then
+      rm -f -- "$temporary"
+      logseq_warning "Cannot verify preferences backup $backup"
+      return
+    fi
+    input="$backup"
+  else
+    input=/dev/stdin
+  fi
+  if ! jq -e --arg mode "$_lq_mode" --arg name "$_lq_name" \
+      --arg url "$_lq_url" --arg pid "$_lq_pid" '
+      if type != "object" or
+         (.theme != null and (.theme | type) != "object") or
+         (.themes != null and (.themes | type) != "object")
+      then error("unsupported Logseq preferences structure")
+      else
+        .theme = ((.theme // {}) | del(.name, .url, .pid) + {mode: $mode} +
+          (if $pid == "" then {} else {name: $name, url: $url, pid: $pid} end)) |
+        .themes = ((.themes // {}) + {mode: $mode}) |
+        if has("externals") then . else . + {externals: []} end
+      end' "$input" < <(printf '{}\n') > "$temporary"; then
+    rm -f -- "$temporary"
+    logseq_warning "Preferences merge failed"
+    return
+  fi
+  if [[ -n "$backup" ]]; then
+    if ! cmp -s "$backup" "$_logseq_prefs"; then
+      rm -f -- "$temporary"
+      logseq_warning "Preferences changed during merge"
+      return
+    fi
+    if cmp -s "$temporary" "$_logseq_prefs"; then
+      rm -f -- "$temporary"
+      return
+    fi
+  elif [[ -e "$_logseq_prefs" || -L "$_logseq_prefs" ]]; then
+    rm -f -- "$temporary"
+    logseq_warning "Preferences appeared during merge"
+    return
+  fi
+  if ! mv -f -- "$temporary" "$_logseq_prefs"; then
+    rm -f -- "$temporary"
+    logseq_warning "Cannot publish merged preferences"
+  fi
+}
+update_logseq_preferences
+
+# Do not replace a user's custom CSS or parse arbitrary EDN with text filters.
+install_logseq_css() {
+  local target="$1"
+  if [[ -e "$target" || -L "$target" ]]; then
+    cmp -s "$CURRENT_THEME_PATH/logseq-custom.css" "$target" ||
+      logseq_warning "Skipped custom CSS at $target"
+  elif ! (set -o noclobber; cat "$CURRENT_THEME_PATH/logseq-custom.css" > "$target"); then
+    logseq_warning "Cannot create custom CSS at $target"
+  fi
+}
 
 # Deploy Logseq theme CSS.
 # Logseq's add-style! embeds the :custom-css-url value as CSS *content* in a
@@ -508,7 +566,7 @@ fi
 # Also write to any file-based graph dirs for live-reload via file watcher.
 if [[ -f "$CURRENT_THEME_PATH/logseq-custom.css" ]]; then
   mkdir -p "$HOME/.logseq/config"
-  cp "$CURRENT_THEME_PATH/logseq-custom.css" "$HOME/.logseq/custom.css"
+  install_logseq_css "$HOME/.logseq/custom.css"
 
   # Embed CSS content directly into config.edn as the :custom-css-url value.
   # EDN strings: escape backslashes then double-quotes; collapse to single line.
@@ -516,19 +574,15 @@ if [[ -f "$CURRENT_THEME_PATH/logseq-custom.css" ]]; then
                  | tr '\n' ' ' | sed 's/[[:space:]]\+/ /g')
   _lq_global_cfg="$HOME/.logseq/config/config.edn"
 
-  # Preserve the comment header, replace only the map at the bottom
-  if [[ -f "$_lq_global_cfg" ]]; then
-    # Strip old map line(s) and append new one
-    grep '^;;' "$_lq_global_cfg" > "${_lq_global_cfg}.tmp" 2>/dev/null || true
-    printf '\n{:custom-css-url "%s"}\n' "$_css_content" >> "${_lq_global_cfg}.tmp"
-    mv "${_lq_global_cfg}.tmp" "$_lq_global_cfg"
-  else
-    printf '{:custom-css-url "%s"}\n' "$_css_content" > "$_lq_global_cfg"
+  if [[ -e "$_lq_global_cfg" || -L "$_lq_global_cfg" ]]; then
+    logseq_warning "Skipped inline CSS in $_lq_global_cfg (safe EDN merge unavailable)"
+  elif ! (set -o noclobber; printf '{:custom-css-url "%s"}\n' "$_css_content" > "$_lq_global_cfg"); then
+    logseq_warning "Cannot create inline CSS in $_lq_global_cfg"
   fi
 
   # Also write to any file-based graph's logseq/custom.css (live-reloaded by file watcher)
   while IFS= read -r _lq_config; do
-    cp "$CURRENT_THEME_PATH/logseq-custom.css" "$(dirname "$_lq_config")/custom.css"
+    install_logseq_css "$(dirname "$_lq_config")/custom.css"
   done < <(find "$HOME" -maxdepth 5 -name "config.edn" -path "*/logseq/config.edn" \
              -not -path "$HOME/.logseq/*" 2>/dev/null)
 fi
@@ -658,5 +712,13 @@ fi
 
 if (( terminal_status != 0 )); then
   die "Theme '$THEME_NAME' applied, but terminal refresh failed; see errors above"
+fi
+if (( logseq_status != 0 )); then
+  if command -v notify-send &>/dev/null; then
+    notify-send "Theme applied with warnings" \
+      "Desktop theme: $THEME_NAME. Logseq customization was preserved; some Logseq theme updates were skipped." ||
+      echo "theme-set: Cannot display Logseq theme warning" >&2
+  fi
+  die "Theme '$THEME_NAME' applied to the desktop, but Logseq integration is incomplete; see errors above"
 fi
 echo "Theme set to: $THEME_NAME"

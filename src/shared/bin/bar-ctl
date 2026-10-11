@@ -24,54 +24,49 @@ done
 # Ensure EWW listener scripts are executable
 find "$EWW_CONFIG/scripts" -name '*.sh' ! -perm -u+x -exec chmod +x {} \; 2>/dev/null
 
-eww_start() {
-    if ! pidof eww &>/dev/null; then
-        # Kill any orphaned listener scripts from a previous EWW crash/kill
-        pkill -f "eww.*scripts/.*\.sh" 2>/dev/null
-        pkill -f "socat -u UNIX-CONNECT:.*/hypr/.*\.socket2\.sock" 2>/dev/null
-        pkill -f "pactl subscribe" 2>/dev/null
-        pkill -f "nmcli monitor" 2>/dev/null
-    else
-        echo "$(date '+%H:%M:%S') eww already running (pid $(pidof eww))" >> "$LOG"
-    fi
+eww_cmd() {
+    # A newly spawned daemon must not inherit the lifecycle lock.
+    eww --config "$EWW_CONFIG" "$@" 9>&-
+}
 
+eww_start() {
     # Let EWW handle daemon spawning itself — running 'eww open' on a
     # non-running daemon auto-starts one. This avoids the race condition
     # where a separate 'eww daemon' + 'eww open' could spawn two daemons
     # if the IPC socket wasn't ready between the two commands.
     echo "$(date '+%H:%M:%S') Opening: $BAR_NAME" >> "$LOG"
-    eww --config "$EWW_CONFIG" open "$BAR_NAME" >> "$LOG" 2>&1
+    eww_cmd open "$BAR_NAME" >> "$LOG" 2>&1 || return
 
     # Apply saved bar settings (workspace count, position, etc.)
     eww_apply || return
 
     echo "$(date '+%H:%M:%S') Active windows:" >> "$LOG"
-    eww --config "$EWW_CONFIG" active-windows >> "$LOG" 2>&1
+    eww_cmd active-windows >> "$LOG" 2>&1 || return
 
     # Start the geometry watcher so the bar recomputes its width whenever the
     # monitor scale/resolution changes (Settings -> Display, hot-plug, etc.).
     if ! pgrep -f "bar-ctl watch" >/dev/null 2>&1; then
-        setsid "$0" watch "$BAR_NAME" >/dev/null 2>&1 &
+        setsid "$0" watch "$BAR_NAME" 9>&- >/dev/null 2>&1 &
     fi
 
     # One-shot recompute shortly after boot: the bar may open before the final
     # monitor scale is applied, leaving it centred/too-narrow.  Redrawing once
     # the layout has settled snaps it back to the correct full width.
-    ( sleep 2; "$0" redraw "$BAR_NAME" ) >/dev/null 2>&1 &
+    ( sleep 2; "$0" redraw "$BAR_NAME" ) 9>&- >/dev/null 2>&1 &
 
     echo "$(date '+%H:%M:%S') bar-ctl start complete" >> "$LOG"
 }
 eww_stop() {
-    eww --config "$EWW_CONFIG" close "$BAR_NAME" 2>/dev/null
+    eww_cmd close "$BAR_NAME" 2>/dev/null
 }
 
 # Force the bar to recompute its geometry (percentage widths are resolved
 # against the monitor only at open time, so a close+reopen is the reliable
 # way to pick up a new scale/resolution).
 eww_redraw() {
-    eww --config "$EWW_CONFIG" close "$BAR_NAME" 2>/dev/null
+    eww_cmd close "$BAR_NAME" 2>/dev/null
     sleep 0.3
-    eww --config "$EWW_CONFIG" open "$BAR_NAME" >> "$LOG" 2>&1
+    eww_cmd open "$BAR_NAME" >> "$LOG" 2>&1 || return
     eww_apply || return
     echo "$(date '+%H:%M:%S') bar-ctl redraw complete" >> "$LOG"
 }
@@ -90,16 +85,16 @@ eww_watch() {
         case "${line%%>>*}" in
             monitoradded|monitoraddedv2|monitorremoved|configreloaded)
                 sleep 1
-                eww_redraw
+                "$0" redraw "$BAR_NAME"
                 ;;
         esac
     done
 }
 eww_toggle() {
-    eww --config "$EWW_CONFIG" open --toggle "$BAR_NAME"
+    eww_cmd open --toggle "$BAR_NAME"
 }
 eww_reload() {
-    eww --config "$EWW_CONFIG" reload || return
+    eww_cmd reload || return
     # eww reload resets all defvar to defaults — re-apply saved settings
     sleep 0.3
     eww_apply
@@ -158,13 +153,23 @@ eww_apply() {
 
     # The workspace listener reconciles count changes from bar.conf itself.
     # Presentation-only changes must not force a policy reload or move focus.
-    if ! eww --config "$EWW_CONFIG" update ws-count="$ws_count" ws-position="$ws_position" \
+    if ! eww_cmd update ws-count="$ws_count" ws-position="$ws_position" \
             ws-spacing="$ws_spacing" ws-style="$ws_style"; then
         apply_error "EWW update failed; saved preferences have not been applied"
         return 1
     fi
     echo "$(date '+%H:%M:%S') bar-ctl apply: ws_count=$ws_count ws_position=$ws_position ws_spacing=$ws_spacing ws_style=$ws_style" >> "$LOG"
 }
+
+# All entrypoints, including geometry redraws, share one config-scoped lock.
+if [[ "$action" != watch ]]; then
+    lock_dir="${XDG_RUNTIME_DIR:-${XDG_CACHE_HOME:-$HOME/.cache}}/smplos"
+    config_path=$(realpath -m "$EWW_CONFIG") || exit 1
+    config_id=$(printf '%s' "$config_path" | sha256sum) || exit 1
+    mkdir -p "$lock_dir" || exit 1
+    exec 9>"$lock_dir/bar-${config_id%% *}.lock" || exit 1
+    flock 9 || exit 1
+fi
 
 case "$action" in
     start|open)   eww_start ;;

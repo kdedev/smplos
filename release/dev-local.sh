@@ -74,7 +74,7 @@ run_as_user() {
 }
 
 # ── Parse components ────────────────────────────────────────
-components=("${@:-}")
+components=("$@")
 if [[ ${#components[@]} -eq 0 ]]; then
     # Default: everything except st and rust (those are slow)
     components=(eww bin hypr themes configs apps icons)
@@ -99,8 +99,14 @@ echo ""
 if do_component eww; then
     log "Applying EWW configs..."
     mkdir -p "$USER_HOME/.config/eww"
-    find "$USER_HOME/.config/eww" -mindepth 1 -maxdepth 1 -exec rm -rf {} + 2>/dev/null || true
-    cp -a "$SRC_DIR/shared/eww/." "$USER_HOME/.config/eww/"
+    for file in "$SRC_DIR/shared/eww/"*; do
+        name=$(basename "$file")
+        case "$name" in
+            theme-colors.scss|theme-colors.yuck)
+                [[ -f "$USER_HOME/.config/eww/$name" ]] && continue ;;
+        esac
+        cp -a "$file" "$USER_HOME/.config/eww/"
+    done
     find "$USER_HOME/.config/eww/scripts" -name '*.sh' -exec chmod +x {} \; 2>/dev/null || true
     own "$USER_HOME/.config/eww/"
     restart_eww=true
@@ -282,18 +288,15 @@ fi
 # ── Restart services ────────────────────────────────────────
 current_theme=$(cat "$USER_HOME/.config/smplos/current/theme.name" 2>/dev/null || true)
 
-if [[ -n "${current_theme:-}" ]] && ($restart_eww || $restart_hypr); then
-    log "Killing EWW for theme re-apply..."
-    run_as_user "eww --config ~/.config/eww kill 2>/dev/null; killall -9 eww 2>/dev/null" || true
-    sleep 0.5
+if [[ -n "${current_theme:-}" ]] && ($restart_eww || $restart_hypr || do_component themes); then
     log "Re-applying theme '$current_theme'..."
-    run_as_user "theme-set '$current_theme'" 2>/dev/null || warn "  theme-set failed"
-    sleep 0.3
-    log "Starting EWW bar..."
-    run_as_user "timeout 8s bar-ctl start >/tmp/eww-startup.log 2>&1 || true"
+    run_as_user "theme-set '$current_theme'" || {
+        err "Theme re-apply failed; deployment is incomplete. EWW was not restarted."
+        exit 1
+    }
 
     # Browser policies (need root)
-    THEME_DIR="$USER_HOME/.local/share/smplos/themes/$current_theme"
+    THEME_DIR="$USER_HOME/.config/smplos/current/theme"
     BROWSER_BG=$(grep '^background' "$THEME_DIR/colors.toml" 2>/dev/null | head -1 | sed 's/.*"\(#[^"]*\)".*/\1/')
     if [[ -n "${BROWSER_BG:-}" ]]; then
         BROWSER_POLICY="{\"BrowserThemeColor\": \"$BROWSER_BG\", \"BackgroundModeEnabled\": false}"
@@ -303,6 +306,12 @@ if [[ -n "${current_theme:-}" ]] && ($restart_eww || $restart_hypr); then
             echo "$BROWSER_POLICY" > "/etc/$browser/policies/managed/color.json" 2>/dev/null
         done
     fi
+elif $restart_eww; then
+    log "Reloading EWW without restarting the daemon..."
+    run_as_user "bar-ctl reload" || {
+        err "EWW reload failed; deployment is incomplete."
+        exit 1
+    }
 fi
 
 if $restart_hypr; then
@@ -310,7 +319,10 @@ if $restart_hypr; then
     run_as_user "generate-messenger-bindings" 2>/dev/null || warn "  messenger bindings generation failed"
     log "Reloading Hyprland..."
     run_as_user "pkill rofi" 2>/dev/null || true
-    run_as_user "hyprctl reload" 2>/dev/null || warn "  hyprctl reload failed"
+    run_as_user "hyprctl reload" || {
+        err "Hyprland reload failed; deployment is incomplete."
+        exit 1
+    }
     log "  done"
 fi
 

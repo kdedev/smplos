@@ -281,6 +281,16 @@ sudo bash /mnt/dev-apply.sh
 
 ISO rebuilds are only needed when adding or removing **packages**.
 
+On an installed development machine, `release/dev-local.sh` accepts the same
+component names (run it elevated from the intended checkout). EWW deployment
+preserves the active palette and custom extra files, then reloads the existing
+daemon instead of killing it and independently opening another bar. Theme or
+compositor reload failures are visible and return a nonzero status; "All done"
+is printed only after those steps succeed. Bar startup, reload and geometry
+redraws share a config-scoped lock; daemon/listener children do not inherit it.
+An already-running older `bar-ctl watch` must be restarted or replaced at next
+login to use the new serialized redraw entrypoint.
+
 ## VM Testing
 
 Use QEMU for testing -- it provides a `virtio-gpu` device that Hyprland works with out of the box:

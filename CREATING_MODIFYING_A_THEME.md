@@ -267,7 +267,7 @@ This requires GTK3, PyGObject, pycairo and Xvfb. To include the real Nemo
 preferences layout, explicitly set `NEMO_PREFERENCES_UI` to its
 `gresources/nemo-file-management-properties.glade` path; this also requires
 XApp's introspection bindings. The test never discovers other checkouts
-implicitly. It renders all 17 palettes over both Adwaita variants, exercises
+implicitly. It renders all stock palettes over both Adwaita variants, exercises
 control states and RTL, and replaces providers on existing windows to cover
 live light/dark switching. Temporary profiles leave the active desktop alone.
 Opaque control contrast and synthetic native-capability background alpha are
@@ -374,13 +374,14 @@ ARGB surfaces and undecorated windows in the native app repos.
 
 ### Stock palette audit
 
-All 17 themes set ordinary active/inactive, browser and messenger multipliers
+All 18 themes set ordinary active/inactive, browser and messenger multipliers
 equal to the native background intensity below. Native surfaces still receive
 compositor **1.0**, not this multiplier. Popup and terminal values are unchanged.
 
 | Themes | App background / existing popup alpha |
 |--------|--------------------------------------|
 | Catppuccin | 0.50 |
+| Frosted | 0.35 |
 | Tokyo Night | 0.70 |
 | Ethereal | 0.75 |
 | Everforest, Gruvbox, Hackerman, Kanagawa, Matte Black, Nord, Osaka Jade, Ristretto, Rose Pine | 0.85 |
@@ -423,6 +424,76 @@ noncomposited X11 rather than exposing an unusable alpha surface. Unowned
 GTK/Qt/Electron applications remain outside the native background contract but
 receive the whole-window theme multiplier on Hyprland. That compositor-specific
 effect is not implemented on niri.
+
+### Frosted glass opt-in
+
+`frosted` appears as **Frosted** in the normal theme picker. Its canonical
+`colors.toml` keeps a deep navy/teal `#0b2230` semantic background/backdrop,
+ice-light semantic text, cyan accents, thin borders and gentle Hyprland blur
+(size 8, 2 passes). Its empty `backgrounds/` directory selects the normal
+solid-color wallpaper fallback instead of unrelated wallpaper images.
+There is no `light.mode` marker; GTK/browser and editor presets use dark mode.
+
+The optional `glass = "true"` enables EWW's silver glass surfaces, including the
+bar and dialogs. `glass_background = "#dce6f0"` separates their tint from the
+desktop and solid-control palette. Root backing retains 0.35 alpha; keypad slots
+restore the original silver 12%-to-4% gradient and white 12% inset highlight.
+Keypad slots retain faint theme-colored glass highlights
+in every palette. The keypad's effective base alpha is
+`min(popup_opacity, 0.35)` so even opaque themes retain frosted translucency.
+`glass_foreground`, `glass_fg_dim`, `glass_accent`
+and `glass_outline` supply opaque pale ink and a thin dark text halo.
+Generated `$theme-glass*` tokens carry this opt-in; absent keys use ordinary
+theme background/ink with glass disabled, so existing/custom themes retain their
+style. The original material uses `#f4f8ff` ink, `#e0eaf5` secondary ink,
+`#d4e8fa` accents and `#091422` halos. Panel borders are pale accent at 24%;
+the dark outline token owns the 95% text halo and 8% outer shadow, not a dark
+panel fill. Glass text and icons remain opaque, with no label backing.
+`theme-set` uses glass foreground/accent for EWW's baked status icons too.
+Labels remain unbacked and layout/hit areas do not change.
+The keypad's existing 0.35 opacity default is neutral theme intensity rather
+than an independent fixed alpha; its other values scale the selected theme's
+35%-limited popup alpha, capped at 1.0. Theme changes recolor the overlay
+without any overlay-specific selector. Only the keypad has this translucency
+limit; opaque Grafium/Matrix backgrounds in other apps remain unchanged.
+The Hyprland Lua keypad helper temporarily borrows a minimum blur kernel
+(size 8, 2 passes) during the mapped sheet lifetime, then restores the theme
+or user's baseline on close/crash. Reload adopts the new theme baseline.
+Because Hyprland has one shared blur kernel, other translucent surfaces
+briefly share it while the sheet is open; no theme file is modified.
+Blur removes spatial detail, not uniform background hue. At 35% backing alpha,
+65% of the processed scene still contributes; reference restoration does not
+guarantee neutral silver over every saturated or bright backdrop. Hyprland's
+blur contrast/brightness/vibrancy controls are shared, not per-layer material
+properties. Vibrancy boosts saturation; zero disables that boost but is not
+desaturation. This material does not change those global controls.
+
+### Logseq data preservation during switching
+
+`theme-set` merges only known dark/light and plugin theme fields in
+`preferences.json`, preserving graph/external lists, unrelated settings and
+other nested theme fields. Existing preferences receive a byte-verified
+`preferences.json.backup.*` preimage before publication. Invalid or unsupported
+JSON and symbolic links are left unchanged.
+
+There is no safe arbitrary-EDN merge helper in this checkout. Existing
+`config/config.edn` and custom CSS (global or graph-local) are never replaced
+by theme switching; missing files can be initialized. A skipped update emits
+a visible desktop warning and nonzero partial-failure status after the desktop
+theme applies. This deliberately leaves Logseq's previous custom theme intact
+rather than erasing unrelated user configuration. Updating existing Logseq CSS
+requires an explicit, backed-up manual merge; inline CSS is content, not a
+`file://` or `assets://` URL.
+
+### Native Frosted rendering
+
+The base foreground palette now uses readable ice-light ink on dark controls
+and native apps; cyan selection fills retain dark ink. Current native
+apps receive the navy/teal tint and normal alpha tokens; exact glass-ink/halo
+rendering requires a separate smpl-apps implementation of the glass tokens,
+not native source copied into this OS repo. Third-party applications retain
+the documented whole-window-alpha tradeoff; they cannot acquire native glass
+text outlines through compositor rules.
 Terminal semantic `term_N` versus the legacy `theme-set-st` `colorN` reader is
 a separate known palette issue, not fixed by this alpha work.
 

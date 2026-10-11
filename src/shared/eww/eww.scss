@@ -23,8 +23,16 @@ $theme-popup-opacity: 0.75 !default;
 /* Override with active theme colors (written by theme-set) */
 @import "theme-colors";
 
+$theme-glass: false !default;
+$theme-glass-bg: $theme-bg !default;
+$theme-glass-fg: $theme-fg !default;
+$theme-glass-fg-dim: $theme-fg-dim !default;
+$theme-glass-accent: $theme-accent !default;
+$theme-glass-outline: $theme-bg !default;
+
 /* Alias theme vars for use in this stylesheet */
 $bg: $theme-bg;
+$material-bg: $bg;
 $bg-light: $theme-bg-light;
 $bg-lighter: $theme-bg-lighter;
 $fg: $theme-fg;
@@ -40,6 +48,13 @@ $border-radius: 2px;
 $font: "JetBrains Mono Nerd Font";
 $identify-font-size: 42px;
 
+@if $theme-glass {
+  $material-bg: $theme-glass-bg;
+  $fg: $theme-glass-fg;
+  $fg-dim: $theme-glass-fg-dim;
+  $accent: $theme-glass-accent;
+}
+
 /* ============================================================================
    GLOBAL
    ============================================================================ */
@@ -49,6 +64,9 @@ $identify-font-size: 42px;
   font-family: $font, "Font Awesome 6 Free", sans-serif;
   font-size: 13px;
   color: $fg;
+  @if $theme-glass {
+    text-shadow: 0 1px 1px rgba($theme-glass-outline, 0.95), 0 0 1px rgba($theme-glass-outline, 0.95);
+  }
 }
 
 /* ============================================================================
@@ -90,6 +108,12 @@ window {
   background-color: transparent;
 }
 
+.dialog {
+  background-color: rgba($bg, $popup-opacity);
+  border: 1px solid rgba($bg-lighter, 0.35);
+  color: $fg;
+}
+
 /* ============================================================================
    BAR
    ============================================================================ */
@@ -99,6 +123,10 @@ window {
   border-radius: $border-radius;
   border: 1px solid rgba($bg-lighter, 0.95);
   padding: 2px 5px;
+  @if $theme-glass {
+    background-color: rgba($material-bg, $popup-opacity);
+    border-color: rgba($accent, 0.24);
+  }
 }
 
 .bar-left,
@@ -677,24 +705,38 @@ window {
 /* Notification Hub */
 @import "notification-hub";
 
+@if $theme-glass {
+  .bar-content,
+  .dialog,
+  .qs-panel,
+  .notif-hub,
+  .cal-widget,
+  .usb-popup,
+  .workspace-overview-panel {
+    background-color: rgba($material-bg, $popup-opacity);
+    border: 1px solid rgba($accent, 0.24);
+    box-shadow: inset 0 1px rgba(#ffffff, 0.12), 0 2px 6px rgba($theme-glass-outline, 0.08);
+  }
+}
+
 /* ============================================================================
    Macro keypad cheatsheet (pad-cheatsheet window, see KEYPAD.md)
-   The background is see-through (.o1 .. .o20 = 5% .. 100%, default .o7 =
-   35%, blurred by Hyprland); text and borders are never transparent, and a
-   halo in the background color keeps text legible over anything.
+   Frosted separates its original silver material from the semantic backdrop.
    State is carried by border shape, not color.
    ============================================================================ */
 .pad-sheet {
   padding: 14px 16px;
   border-radius: 10px;
-  border: 1px solid $bg-lighter;
-  color: $fg;
-  text-shadow: 0 0 3px darken($bg, 5%);
+  border-color: rgba($accent, 0.24);
+  box-shadow: inset 0 1px rgba($fg, 0.12), 0 2px 6px rgba($theme-glass-outline, 0.08);
+  @if $theme-glass {
+    box-shadow: inset 0 1px rgba(#ffffff, 0.12), 0 2px 6px rgba($theme-glass-outline, 0.08);
+  }
 }
 
 @for $i from 1 through 20 {
   .pad-sheet.o#{$i} {
-    background-color: rgba(darken($bg, 5%), $i / 20);
+    background-color: rgba($material-bg, min(1, min($popup-opacity, 0.35) * $i / 7));
   }
 }
 
@@ -708,20 +750,32 @@ window {
   font-size: 11px;
   padding: 1px 8px;
   border-radius: 8px;
-  border: 1px solid $accent;
+  border: 1px solid rgba($accent, 0.35);
   color: $accent;
+  @if $theme-glass {
+    border-color: rgba($accent, 0.24);
+  }
 }
 
 .pad-sheet-notice {
   font-size: 12px;
   color: $warning;
+  @if $theme-glass {
+    color: $fg;
+  }
 }
 
 .pad-sheet-key,
 .pad-sheet-knob {
   padding: 4px 6px;
   border-radius: 6px;
-  border: 1px solid $bg-lighter;
+  border: 1px solid rgba($accent, 0.24);
+  background-color: transparent;
+  background-image: linear-gradient(to bottom, rgba($material-bg, 0.12), rgba($material-bg, 0.04));
+  box-shadow: inset 0 1px rgba($fg, 0.12);
+  @if $theme-glass {
+    box-shadow: inset 0 1px rgba(#ffffff, 0.12);
+  }
 }
 
 .pad-sheet-knob {
@@ -729,13 +783,19 @@ window {
 }
 
 .pad-sheet-key.on {
-  border: 1px solid $accent;
+  border: 1px solid rgba($accent, 0.65);
+  @if $theme-glass {
+    border-color: rgba($accent, 0.40);
+  }
 }
 
 .pad-sheet-key.off,
 .pad-sheet-turn.off {
-  border: 1px dashed $fg-dim;
+  border: 1px dashed rgba($fg-dim, 0.35);
   border-radius: 4px;
+  @if $theme-glass {
+    border-color: rgba($fg-dim, 0.28);
+  }
 }
 
 .pad-sheet-key.unbound {

@@ -276,16 +276,46 @@ while a keypad is plugged in:
   (for example, Kdenlive's interface is off, explained in a notice line); no
   border and a dot means unbound.
 
-**See-through, never faded text.** Only the background is translucent: the
-`opacity` option picks `.pad-sheet.o1` to `.o20` (5% steps) on the background
-box, the overlay's only translucent color. Text, key borders and the outline
-stay fully opaque, with a halo in the background color so labels stay legible
-over anything. Without an `opacity` in the content, EWW falls back to 0.35.
+**Theme-compliant, never faded text.** The panel shares the smplOS dialog
+palette: background, foreground, secondary ink and accent come from the active
+theme. Frosted supplies an independent silver material tint; selecting Grafium,
+Matrix or any other theme restores that theme's ordinary colors.
+The keypad always retains frosted translucency, including with opaque Matrix
+or Grafium themes. Faint theme-tinted slot gradients and inner highlights
+preserve the glass treatment without changing other apps' opacity.
+Labels have no rectangular backing. Layout, hit areas and click-through
+behavior are unchanged.
+The existing `opacity` option picks `.pad-sheet.o1` to `.o20` (5% steps).
+Its historical default 0.35 is now neutral theme intensity: the background
+uses `min(popup_opacity, 0.35)` (35% for Frosted, Matrix and Grafium;
+thinner custom themes retain their lower alpha).
+Lower/higher settings scale that intensity relative to 0.35, capped at fully
+opaque. EWW quantizes saved values to twentieths with nearest-even rounding;
+Settings must label this **Theme intensity** (default 100%), not absolute
+35% opacity. Its preview uses the same quantized scale and 35%-limited popup alpha;
+neither setting fades text or changes mappings. Super+Shift+T uses the ordinary
+theme picker and reloads the open overlay along with the other EWW widgets.
 Hyprland blurs what's behind it (`blur on`, `ignore_alpha 0.1` so the clear
 rounded corners aren't blurred, `xray off`); no layer rule changes its alpha.
-Measured on a private X server with an RGBA visual: background alpha 0.349 at
-0.35 (0.851 at the old 0.85 default, which looked solid), text and borders
-1.0.
+On supported Hyprland Lua configurations, `keypad_glass.lua` borrows blur
+enabled/size/passes only while a sheet is mapped, with a minimum size 8 /
+2 passes. The last close (including client crash) restores prior values
+unless the user changed them live. A config/theme reload adopts the new
+theme baseline; closing then restores that baseline, including Matrix 0/0.
+Hyprland has one shared blur kernel: other translucent layers briefly share
+this stronger kernel while the sheet is open, never a permanent theme change.
+
+The separately selectable **Frosted** theme (`frosted`) restores the original
+silver `#dce6f0` glass independently of its dark navy/teal desktop palette:
+35% tint, faint 12%-to-4% key/knob gradients, white 12% inset highlights,
+opaque pale ink with a thin dark halo. Its normal theme configuration supplies
+gentle size 8 / 2-pass blur system-wide. The original source and earlier palette
+trials are preserved privately. Blur removes detail, not uniform hue: at 35%
+alpha the processed background still contributes 65%, so silver cannot dominate
+every vivid scene without a separate material/compositor change.
+Other themes use their own ink/tint rather than Frosted's silver palette and
+dark text halo. Legacy/X11 configurations retain translucent paint and their
+compositor's existing blur support; missing Lua lifecycle APIs are reported.
 
 **Dismissing it.** The overlay never takes keyboard focus, so a click is the
 way to close it:
@@ -660,7 +690,7 @@ app on the bus there is nothing to switch.
 | Flasher | wchisp through a two-command allowlist, dry run by default | Never touches config registers; nothing can flash by accident |
 | Daemon packaging | Lives in smpl-apps (`control-surface/`, history kept); smplOS installs a pinned release asset with pacman | Built and tested once, by the apps' CI; the package owns `/usr/bin` and the firmware path keypad-ctl reads; not in the app bundle, which would also copy it to `/usr/local/bin` |
 | Sidebar | "Keypad" right after "Keyboard"; tab index 11 | Related settings stay together; existing indices are unchanged |
-| Cheatsheet look | 35% background with blur; text and borders opaque | Shows what's behind it without fading the labels |
+| Cheatsheet look | Active dialog palette; Frosted glass is a selectable theme | Theme-compliant by default, with unchanged layout and opaque ink |
 | Dismissing the cheatsheet | Click anywhere, the 8 s auto-hide, or the key; no Escape | The overlay never takes keyboard focus, so it can't steal keys from the app |
 | Click-through cheatsheet | Optional second window with EWW `:passthrough`, off by default | Hyprland 0.56 has no input-passthrough layer rule; clicking to close stays the simple default |
 | Cheatsheet icons | Tabler Icons outline, subset to a 70 KB font, drawn as text | One consistent outline style, MIT, theme colour through CSS, opaque like labels; SVGs can't be recoloured by eww (`fill-svg` replaces fills, Tabler strokes) |

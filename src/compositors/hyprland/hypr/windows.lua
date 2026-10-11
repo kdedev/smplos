@@ -22,6 +22,8 @@ for _, ns in ipairs(eww_namespaces) do
     hl.layer_rule({ match = { namespace = ns }, xray = false })
 end
 
+require("keypad_glass")
+
 -- Rofi launcher (layer surface; needs layer rules not window rules)
 hl.layer_rule({ match = { namespace = "rofi" }, animation = "slide left" })
 hl.layer_rule({ match = { namespace = "rofi" }, order = -1 })

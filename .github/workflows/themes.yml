@@ -10,6 +10,11 @@ on:
       - 'src/shared/themes/**'
       - 'src/shared/bin/theme-set*'
       - 'src/shared/bin/bar-ctl'
+      - 'src/shared/eww/**'
+      - 'release/dev-local.sh'
+      - 'tests/test_keypad_glass.py'
+      - 'tests/test_bar_ctl.py'
+      - 'tests/test_dev_local.py'
       - 'src/builder/build.sh'
       - 'src/compositors/hyprland/hypr/**'
       - 'tests/test_theme*.py'
@@ -22,6 +27,11 @@ on:
       - 'src/shared/themes/**'
       - 'src/shared/bin/theme-set*'
       - 'src/shared/bin/bar-ctl'
+      - 'src/shared/eww/**'
+      - 'release/dev-local.sh'
+      - 'tests/test_keypad_glass.py'
+      - 'tests/test_bar_ctl.py'
+      - 'tests/test_dev_local.py'
       - 'src/builder/build.sh'
       - 'src/compositors/hyprland/hypr/**'
       - 'tests/test_theme*.py'
@@ -40,11 +50,14 @@ jobs:
           bash -n src/regen-all-themes.sh
           bash -n src/generate-theme-configs.sh
           bash -n src/shared/bin/theme-set
+          bash -n src/shared/bin/bar-ctl release/dev-local.sh
           bash -n src/builder/build.sh
       - name: Check generated themes without rewriting files
         run: bash src/regen-all-themes.sh --check
       - name: Exercise isolated theme fixtures
         run: python3 -m unittest discover -s tests -p 'test_theme*.py' -v
+      - name: Check glass opt-in and local deployment lifecycle
+        run: PYTHONPATH=tests python3 -m unittest test_keypad_glass test_bar_ctl test_dev_local -v
       - name: Install GTK renderer test dependencies
         run: sudo apt-get update -qq && sudo apt-get install -y python3-gi python3-gi-cairo python3-cairo gir1.2-gtk-3.0 xvfb xauth
       - name: Render native controls and background ownership

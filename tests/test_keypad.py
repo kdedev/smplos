@@ -537,11 +537,11 @@ class LifecycleTests(unittest.TestCase):
         self.assertIn("(pad_sheet.options?.opacity ?: 0.35) * 20", sheet, "see-through by default")
         scss = (ROOT / "src/shared/eww/eww.scss").read_text()
         self.assertIn(".pad-sheet.o#{$i}", scss)
-        self.assertIn("background-color: rgba(darken($bg, 5%), $i / 20)", scss)
+        self.assertIn("background-color: rgba($material-bg, min(1, min($popup-opacity, 0.35) * $i / 7))", scss)
         self.assertIn("border: 1px dashed", scss, "inactive bindings differ by shape, not only color")
         styles = scss[scss.index("Macro keypad cheatsheet"):]
         self.assertNotRegex(styles, r"(?<!-)opacity\s*:", "alpha only on the background, never on text")
-        self.assertEqual(styles.count("rgba("), 1, "the background loop is the only translucent color")
+        self.assertNotRegex(styles, r"(?m)^\s*color:\s*rgba", "glass must not fade foregrounds")
         for path in ("windows.conf", "windows.lua"):
             self.assertIn("eww-pad-cheatsheet", (ROOT / "src/compositors/hyprland/hypr" / path).read_text())
 

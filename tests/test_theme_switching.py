@@ -1,6 +1,7 @@
 import json
 import os
 from pathlib import Path
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -76,7 +77,7 @@ class ThemeSwitchingTests(unittest.TestCase):
         }
         for cmd in (
             "pgrep", "cp", "bar-ctl", "theme-bg-next", "theme-set-st", "fish",
-            "gsettings", "hyprctl", "systemctl", "code", "codium", "cursor",
+            "gsettings", "hyprctl", "systemctl", "code", "codium", "cursor", "notify-send",
         ):
             path = self.bin / cmd
             path.write_text(MOCK_COMMAND)
@@ -201,6 +202,133 @@ class ThemeSwitchingTests(unittest.TestCase):
         self.assertIn("terminal refresh failed", result.stderr)
         self.assertNotIn("Theme set to:", result.stdout)
         self.assert_switched("new")
+
+    def test_frosted_status_icons_use_glass_ink_and_switch_back(self):
+        template = self.home / ".local/share/smplos/icons/status"
+        template.mkdir(parents=True)
+        (template / "test.svg").write_text('<svg fill="{{accent}}" stroke="{{fg}}"/>')
+        frosted = self.make_theme("frosted", "#0b2230")
+        with (frosted / "colors.toml").open("a") as file:
+            file.write('glass = "true"\nglass_background = "#dce6f0"\n'
+                       'glass_foreground = "#f4f8ff"\nglass_accent = "#d4e8fa"\n')
+        icon = self.home / ".config/eww/icons/status/test.svg"
+        for name, foreground, accent in (
+            ("frosted", "#f4f8ff", "#d4e8fa"),
+            ("old", "#c1c497", "#509475"),
+        ):
+            result = self.switch(name)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(icon.read_text(), f'<svg fill="{accent}" stroke="{foreground}"/>')
+
+    def test_dark_frosted_switch_retires_old_light_marker_and_applies_dark_mode(self):
+        shutil.copytree(ROOT / "src/shared/themes/frosted", self.stock / "frosted")
+        old = self.current / "theme"
+        old.mkdir()
+        (old / "light.mode").touch()
+        result = self.switch("frosted")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertFalse((self.current / "theme/light.mode").exists())
+        self.assertEqual((self.current / "theme.name").read_text().strip(), "frosted")
+        self.assertIn("gsettings set org.gnome.desktop.interface color-scheme prefer-dark",
+                      self.log.read_text())
+        self.assertIn("GTK_THEME=Adwaita:dark",
+                      (self.home / ".config/environment.d/gtk.conf").read_text())
+        self.assertIn("background = \"#0b2230\"", (self.current / "theme/colors.toml").read_text())
+
+    def test_logseq_preferences_merge_preserves_data_and_backs_up_before_switching(self):
+        prefs = self.home / ".logseq/preferences.json"
+        prefs.parent.mkdir()
+        original = {
+            "externals": ["file:///keep/my-graph"],
+            "window": {"width": 1234},
+            "theme": {"mode": "light", "custom": True, "pid": "old", "url": "old", "name": "old"},
+            "themes": {"mode": "light", "other": ["keep"]},
+        }
+        preimage = json.dumps(original).encode()
+        prefs.write_bytes(preimage)
+        prefs.chmod(0o640)
+        plugin = prefs.parent / "plugins/logseq-catppuccin/ctp-mocha.css"
+        plugin.parent.mkdir(parents=True)
+        plugin.write_text("/* installed plugin */")
+        with (self.stock / "new/colors.toml").open("a") as file:
+            file.write('app_theme_logseq = "catppuccin"\n')
+        (self.stock / "old/light.mode").touch()
+        for name, mode, pid in (("new", "dark", "logseq-catppuccin"), ("old", "light", None),
+                                ("new", "dark", "logseq-catppuccin")):
+            result = self.switch(name)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            actual = json.loads(prefs.read_text())
+            self.assertEqual(actual["externals"], original["externals"])
+            self.assertEqual(actual["window"], original["window"])
+            self.assertTrue(actual["theme"]["custom"])
+            self.assertEqual(actual["theme"]["mode"], mode)
+            self.assertEqual(actual["themes"], {**original["themes"], "mode": mode})
+            self.assertEqual(actual["theme"].get("pid"), pid)
+            if pid is None:
+                self.assertNotIn("name", actual["theme"])
+                self.assertNotIn("url", actual["theme"])
+            else:
+                self.assertEqual(actual["theme"]["url"], f"assets://{plugin}")
+            self.assertEqual(prefs.stat().st_mode & 0o777, 0o640)
+        self.assertIn(preimage, [file.read_bytes() for file in prefs.parent.glob("preferences.json.backup.*")])
+
+    def test_logseq_invalid_preferences_are_preserved_with_visible_partial_failure(self):
+        prefs = self.home / ".logseq/preferences.json"
+        prefs.parent.mkdir()
+        for invalid in ('{broken', '', '[]', '{"theme":false}', '{"themes":[]}'):
+            with self.subTest(content=invalid):
+                prefs.write_text(invalid)
+                result = self.switch("new")
+                self.assertNotEqual(result.returncode, 0)
+                self.assertEqual(prefs.read_text(), invalid)
+                self.assertIn("existing user data is preserved", result.stderr)
+                self.assertIn("Logseq integration is incomplete", result.stderr)
+                self.assertNotIn("Theme set to:", result.stdout)
+                self.assert_switched("new")
+        self.assertIn("notify-send Theme applied with warnings", self.log.read_text())
+
+    def test_logseq_config_and_custom_css_are_never_replaced(self):
+        theme = self.stock / "new"
+        (theme / "logseq-custom.css").write_text('body { color: "blue"; }\n')
+        files = {
+            self.home / ".logseq/config/config.edn":
+                ';; personal config\n{:journals-directory "notes" :shortcuts {:x "a"}\n'
+                ' :custom-css-url "my css"}\n',
+            self.home / ".logseq/custom.css": "/* personal global CSS */\n",
+            self.home / "graph/logseq/config.edn": '{:preferred-format :markdown}\n',
+            self.home / "graph/logseq/custom.css": "/* personal graph CSS */\n",
+        }
+        for path, content in files.items():
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(content)
+        result = self.switch("new")
+        self.assertNotEqual(result.returncode, 0)
+        for path, content in files.items():
+            self.assertEqual(path.read_text(), content)
+        self.assertIn("safe EDN merge unavailable", result.stderr)
+        self.assertIn("Skipped custom CSS", result.stderr)
+        self.assert_switched("new")
+
+    def test_logseq_symlink_preferences_are_preserved(self):
+        prefs = self.home / ".logseq/preferences.json"
+        prefs.parent.mkdir()
+        target = self.home / "personal.json"
+        target.write_text('{"externals":["keep"]}')
+        prefs.symlink_to(target)
+        result = self.switch("new")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertTrue(prefs.is_symlink())
+        self.assertEqual(target.read_text(), '{"externals":["keep"]}')
+        self.assertIn("Cannot safely update", result.stderr)
+
+    def test_new_logseq_inline_theme_is_css_content_not_a_url(self):
+        (self.stock / "new/logseq-custom.css").write_text('body { content: "\\\\"; }\n')
+        result = self.switch("new")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        edn = self.home / ".logseq/config/config.edn"
+        self.assertIn(':custom-css-url "body {', edn.read_text())
+        self.assertNotIn("file://", edn.read_text())
+        self.assertNotIn("assets://", edn.read_text())
 
     def test_copilot_sync_is_opt_in_and_failure_does_not_abort_theme_switch(self):
         helper = self.bin / "theme-set-copilot"

@@ -42,7 +42,7 @@ class AlphaContractTests(unittest.TestCase):
 
     def test_all_stock_palettes_apply_equal_ordinary_alpha_without_focus_fade(self):
         palettes = list((SRC / "shared/themes").glob("*/colors.toml"))
-        self.assertEqual(len(palettes), 17)
+        self.assertEqual(len(palettes), 18)
         for path in palettes:
             with self.subTest(theme=path.parent.name):
                 colors = read_colors(path)
@@ -120,6 +120,7 @@ package.preload.theme = function()
     return {themeOpacityActive="0.3", themeOpacityInactive="0.2",
             themeMessengerOpacity="0.4"}
 end
+package.preload.keypad_glass = function() return {} end
 hl = {layer_rule=function(_) end, window_rule=function(rule)
     local match = rule.match
     if (rule.tag or rule.opacity) and not match.title and
