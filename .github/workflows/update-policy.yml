@@ -8,6 +8,11 @@ on:
       - "src/shared/bin/smplos-update"
       - "src/shared/bin/smplos-update-*"
       - "src/shared/bin/smplos-os-update"
+      - "src/shared/bin/smplos-migrate"
+      - "src/shared/lib/smplos-update-entry.sh"
+      - "src/shared/lib/smplos-session-env.sh"
+      - "src/fetch-apps.sh"
+      - "src/fetch-org.sh"
       - "src/shared/bin/smplos-ensure-yay"
       - "src/shared/bin/heal-paru"
       - "src/shared/bin/rebuild-paru"
@@ -20,6 +25,7 @@ on:
       - "src/shared/installer/automated_script.sh"
       - "migrations/**"
       - "tests/test_update_safety.py"
+      - "tests/test_update_handoff.py"
       - "tests/test_yay_delivery.py"
       - "tests/test_app_delivery.py"
       - "tests/test_bar_ctl.py"
@@ -33,6 +39,11 @@ on:
       - "src/shared/bin/smplos-update"
       - "src/shared/bin/smplos-update-*"
       - "src/shared/bin/smplos-os-update"
+      - "src/shared/bin/smplos-migrate"
+      - "src/shared/lib/smplos-update-entry.sh"
+      - "src/shared/lib/smplos-session-env.sh"
+      - "src/fetch-apps.sh"
+      - "src/fetch-org.sh"
       - "src/shared/bin/smplos-ensure-yay"
       - "src/shared/bin/heal-paru"
       - "src/shared/bin/rebuild-paru"
@@ -45,6 +56,7 @@ on:
       - "src/shared/installer/automated_script.sh"
       - "migrations/**"
       - "tests/test_update_safety.py"
+      - "tests/test_update_handoff.py"
       - "tests/test_yay_delivery.py"
       - "tests/test_app_delivery.py"
       - "tests/test_bar_ctl.py"
@@ -68,6 +80,8 @@ jobs:
       - name: Check shell syntax
         run: |
           for script in src/shared/bin/smplos-update src/shared/bin/smplos-os-update \
+            src/shared/bin/smplos-migrate src/shared/lib/smplos-update-entry.sh \
+            src/shared/lib/smplos-session-env.sh src/fetch-apps.sh src/fetch-org.sh \
             src/shared/bin/smplos-update-apps src/shared/bin/smplos-update-bootstrap src/shared/bin/bar-ctl \
             src/shared/bin/smplos-ensure-yay src/shared/bin/heal-paru src/shared/bin/rebuild-paru \
             src/shared/pkgbuilds/yay-bin/PKGBUILD src/shared/lib/smplos-pkgbuild.sh \
@@ -80,6 +94,7 @@ jobs:
       - name: Check update safeguards, diagnostics and delivery
         run: |
           python3 -m unittest discover -s tests -p 'test_update_safety.py' -v
+          python3 -m unittest discover -s tests -p 'test_update_handoff.py' -v
           python3 -m unittest discover -s tests -p 'test_yay_delivery.py' -v
           python3 -m unittest discover -s tests -p 'test_app_delivery.py' -v
           python3 -m unittest discover -s tests -p 'test_bar_ctl.py' -v

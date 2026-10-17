@@ -85,7 +85,11 @@ class AppDeliveryTests(unittest.TestCase):
         self.release = self.base / "release.json"
         self.requests = self.base / "requests.log"
         for path in ("src/fetch-apps.sh", "src/fetch-org.sh",
-                     "src/shared/lib/smplos-app-bundle.sh"):
+                     "src/shared/lib/smplos-app-bundle.sh",
+                     "src/shared/lib/smplos-update-entry.sh",
+                     "src/shared/lib/smplos-session-env.sh",
+                     "src/shared/bin/smplos-update-handoff",
+                     "src/shared/update-policy/legacy-update-runners.sha256"):
             target = self.project / path
             target.parent.mkdir(parents=True, exist_ok=True)
             shutil.copyfile(ROOT / path, target)
@@ -569,6 +573,7 @@ sync_apps
             stubs = """
 CHECK_ONLY=0; MIGRATE_ONLY=0; SCRIPTS_ONLY=0; DEPLOY_ONLY=0; FINALIZE_ONLY=0; QUIET=1; n_updated=0
 STATE_DIR="$HOME/state"; SMPLOS_PATH="$HOME/data"; SMPLOS_APP_BINS=()
+SMPLOS_REPO="$PROJECT_ROOT"
 REPORT_FILE="$HOME/apps.json"; REPORT_WORK="$HOME/results"
 mkdir -p "$REPORT_WORK"
 installed_component_version() { :; }; record_app_result() { :; }; log() { :; }

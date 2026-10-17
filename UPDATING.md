@@ -935,18 +935,56 @@ package above.
 
 ### Bringing older fleet machines onto this updater
 
-**Publish/merge this implementation first.** The commands below are not usable
-until this updater is on upstream `main`. Old installed wrappers cannot
-gain the new top-level AC/authentication/bootstrap behavior before fetching
-it. Do not assume the first click on a legacy Update OS is protected.
+The customer-facing procedure is **App Center → Update OS**, including on
+supported older Git-based installations. No separate enrollment command is
+required once this implementation is published on upstream `main`.
 
 Start with one bootable test machine and a verified backup of its important
-user data. Connect AC and use its desktop user's terminal, **without sudo**.
-Inspect the existing repo and preserve any local changes or divergent commits;
-do not reset, abort a rebase or overwrite them.
+user data. Connect AC, click **Update OS**, and confirm the update.
 
-Fetch the enrollment script from the published source and save it locally
-rather than piping a network response into a shell:
+Legacy App Center versions already start `smplos-update --mode full`. Their
+installed Git updater fetches fresh source and reaches a refreshed helper,
+native fetcher or migration runner. Those entry points recognize the actual
+historical generated Bash runner by its loaded script, ownership, complete
+SHA256 and process start time. A detached supervisor stops that runner and its
+intervening helper processes, then automatically reopens the current updater
+as the desktop user. It does not kill applications by name or stop the desktop.
+The new coordinator verifies the old processes are gone before power checks,
+authentication or package transactions. Failed replacement acquisition or
+terminal launch does not resume the stopped legacy package sequence.
+
+The old terminal may close and a new one appear. A Polkit-based old updater
+has already authenticated before fetching new code, so this first migration
+requires **one additional sudo prompt**. Later updates authenticate once.
+Passwords are neither stored nor forwarded, and no passwordless grant is
+installed. Handoff diagnostics are retained in the desktop-user-owned
+`/tmp/smplos-handoff-*.log` file identified in the terminal or failure notification.
+
+This bridge covers the shipped Git-based runner families, including the early
+Git updater and versions with broken helper self-reexecution. It cannot change
+old local actions performed **before** fresh code is fetched. Offline fetch
+failures, locally modified/unrecognized runners, and pre-Git images without a
+reachable fresh-script checkpoint are not retroactively protected by publishing
+source. Do not certify those images as first-click safe. A machine that no
+longer boots requires local recovery; no fleet machine is contacted automatically.
+
+The replacement bootstrap checks the origin and clean `main` checkout, refuses
+unfinished Git operations and only fast-forwards. It preserves local changes
+and divergent commits by stopping rather than resetting them. Every subsequent
+Update OS repeats the complete script/helper verification gate before package
+work. A missing, stale or nonexecutable managed command stops the update.
+
+After a full update, retain its transcript, `*.before.json`, `*.after.json`,
+`*.apps.json`, `*.brave.json`, `*.bootstrap.json` and `status` under
+`~/.local/state/smplos/update/`. Repair reported kernel/initramfs errors before
+rebooting. This is not transactional rollback or a guarantee against interruption
+during package writes.
+
+#### Optional scripts-only support enrollment
+
+Support can refresh only the updater commands without starting an OS update.
+This is **not required before the normal Update OS button**. From the desktop
+user's terminal, without sudo, download the published support script locally:
 
 ```bash
 (
@@ -960,7 +998,7 @@ rather than piping a network response into a shell:
 )
 ```
 
-Enrollment takes the normal update lock, checks the origin and clean `main`
+This support enrollment takes the normal update lock, checks the origin and clean `main`
 checkout, refuses unfinished Git operations, and only fast-forwards. It never
 runs the installed legacy wrapper/helper. A missing checkout is cloned from
 upstream. The new repository wrapper then checks external power, authenticates
@@ -976,26 +1014,10 @@ records the exact source commit and any managed-file failures. Bootstrap
 verification does not require the old machine's native apps to already work.
 It runs before the base upgrade and does not require Python 3.11-only hashing.
 
-Only after enrollment reports **"Updater enrollment verified"**, start the
-actual update separately:
-
-```bash
-/usr/local/bin/smplos-update --mode full
-```
-
-Later normal Update OS runs repeat the complete script/helper gate before any
-package transaction. A missing, stale or nonexecutable managed command, or a
-mismatched helper, stops the update instead of trusting a successful sync exit.
-
-If an inspection, fast-forward or verification fails, stop and preserve/resolve
-the reported problem; do not fall back to the legacy Update OS button. After a
-full update, retain its transcript, `*.before.json`, `*.after.json`,
-`*.apps.json`, `*.brave.json`, `*.bootstrap.json` and `status` for diagnosis. Repair reported
-kernel/initramfs errors before rebooting. This is not transactional rollback or
-a guarantee against interruption during package writes.
-
-This procedure updates bootable machines; it cannot remotely repair a machine
-that no longer boots. No fleet machine is contacted automatically.
+After **"Updater enrollment verified"**, the support operation is complete.
+Use App Center's normal Update OS button when ready for the full update.
+If inspection, fast-forward or verification fails, preserve and resolve the
+reported problem rather than bypassing the gate.
 
 ---
 

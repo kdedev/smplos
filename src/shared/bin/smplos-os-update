@@ -882,6 +882,10 @@ post_deploy() {
 }
 
 # ── Main ──────────────────────────────────────────────────────────────────────
+if [[ -r "$SMPLOS_REPO/src/shared/lib/smplos-update-entry.sh" ]]; then
+    source "$SMPLOS_REPO/src/shared/lib/smplos-update-entry.sh"
+    smplos_update_entry_guard "$SMPLOS_REPO"
+fi
 if [[ $CHECK_ONLY -eq 1 ]]; then
     check_updates
     exit $?

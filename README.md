@@ -646,7 +646,7 @@ The quick-settings panel in the EWW bar shows a dictation pill with a themed mic
 
 smplOS has a **git-based over-the-air update system**. The OS repo is cloned to `~/.local/share/smplos/repo/` on each machine. When you update, it pulls the latest changes and applies them — no re-imaging required.
 
-Run a full update from the terminal, or double-click the "System Update" notification in the notification center:
+Use **App Center → Update OS** for a full update. The terminal command is:
 
 ```bash
 smplos-update
@@ -661,8 +661,11 @@ A full update runs through these stages:
 5. **AUR** — enroll prebuilt Yay without compiling it, retire Paru rebuilds, record Brave's update target and run `yay -Sua`.
 6. **Flatpak and verification** — update user/system apps and runtimes, compare installed versions/files/libraries, save local reports, and publish the OS version only on complete success.
 
-For older machines, perform scripts-only enrollment **before** using Update OS.
-See [fleet enrollment and diagnostic reports](UPDATING.md#bringing-older-fleet-machines-onto-this-updater).
+Supported older Git-based updaters automatically stop their old runner and
+reopen the current updater from the same button click; no separate enrollment
+command is required. The first migration from a Polkit-based updater asks once
+more for administrator authentication; subsequent updates authenticate once.
+See [legacy handoff, compatibility limits and diagnostic reports](UPDATING.md#bringing-older-fleet-machines-onto-this-updater).
 
 ### What can be updated
 

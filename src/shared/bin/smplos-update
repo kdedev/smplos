@@ -14,6 +14,7 @@ set -o pipefail
 # Apps mode never performs a partial host-package upgrade.
 UPDATE_MODE="full"
 BOOTSTRAP_ONLY=0
+LEGACY_HANDOFF=""
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --mode)
@@ -22,6 +23,9 @@ while [[ $# -gt 0 ]]; do
             }
             UPDATE_MODE="$2"; shift ;;
         --bootstrap-only) BOOTSTRAP_ONLY=1 ;;
+        --legacy-handoff)
+            [[ -n "${2:-}" ]] || { echo "Missing handoff record" >&2; exit 1; }
+            LEGACY_HANDOFF="$2"; shift ;;
         -h|--help) echo "Usage: smplos-update [--mode full|apps] [--bootstrap-only]"; exit 0 ;;
         *) echo "Unknown option: $1" >&2; exit 1 ;;
     esac
@@ -106,6 +110,13 @@ if [[ ! -t 1 && $EUID -ne 0 ]]; then
     fi
     launch_args=(--mode "$UPDATE_MODE")
     [[ $BOOTSTRAP_ONLY -eq 0 ]] || launch_args+=(--bootstrap-only)
+    [[ -z "$LEGACY_HANDOFF" ]] || launch_args+=(--legacy-handoff "$LEGACY_HANDOFF")
+    # Terminal servers may close inherited descriptors or retain them outside
+    # the child. The tty coordinator must acquire its own lock in either case.
+    if [[ "${SMPLOS_UPDATE_LOCKED:-0}" == 1 ]]; then
+        exec 9>&-
+        unset SMPLOS_UPDATE_LOCKED
+    fi
     exec "$TERM_BIN" -e bash "$SELF" "${launch_args[@]}"
 fi
 
@@ -117,6 +128,7 @@ if [[ $EUID -eq 0 ]]; then
 fi
 export PATH="/usr/local/sbin:/usr/local/bin:$PATH"
 SMPLOS_PATH="${SMPLOS_PATH:-$HOME/.local/share/smplos}"
+export SMPLOS_UPDATE_COORDINATOR=1
 LOG_DIR="$HOME/.local/state/smplos/update"
 mkdir -p "$LOG_DIR" || exit 1
 if [[ "${SMPLOS_UPDATE_LOCKED:-0}" != 1 ]]; then
@@ -141,6 +153,11 @@ bootstrap_fail() {
     exit 1
 }
 
+if [[ -n "$LEGACY_HANDOFF" ]]; then
+    python3 "$SMPLOS_PATH/repo/src/shared/bin/smplos-update-handoff" --wait "$LEGACY_HANDOFF" \
+        2>&1 | tee -a "$SMPLOS_UPDATE_LOG_FILE" ||
+        bootstrap_fail "Automatic updater handoff failed; no package upgrade was started."
+fi
 if ! check_update_power 2>&1 | tee -a "$SMPLOS_UPDATE_LOG_FILE"; then
     [[ ! -t 0 ]] || read -r -p "Plug in power, then press Enter to close and retry. " _
     exit 1
@@ -173,7 +190,11 @@ source_updater="$SMPLOS_PATH/repo/src/shared/bin/smplos-os-update"
 source_checker="$SMPLOS_PATH/repo/src/shared/bin/smplos-update-check"
 if [[ ! -r "$source_updater" || ! -r "$source_checker" ]] ||
     ! grep -qxF 'SMPLOS_UPDATE_PROTOCOL=1' "$source_updater"; then
-    bootstrap_fail "Legacy/incomplete source checkout. Run the published smplos-update-bootstrap enrollment first."
+    enrollment=/usr/local/bin/smplos-update-bootstrap
+    [[ -r "$enrollment" ]] || bootstrap_fail "Updater bootstrap is missing; no package upgrade was started."
+    enrollment_args=(--mode "$UPDATE_MODE")
+    [[ $BOOTSTRAP_ONLY -eq 0 ]] || enrollment_args+=(--bootstrap-only)
+    exec bash "$enrollment" "${enrollment_args[@]}"
 fi
 if [[ "${SMPLOS_UPDATER_REFRESHED:-0}" != 1 ]]; then
     before=$(sha256sum "$SELF") || bootstrap_fail "Cannot read updater entrypoint."

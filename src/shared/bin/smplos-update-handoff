@@ -1,0 +1,221 @@
+#!/usr/bin/env python3
+"""Retire recognized legacy update processes before reopening the coordinator."""
+
+import argparse
+import hashlib
+import json
+import os
+from pathlib import Path
+import pwd
+import select
+import signal
+import stat
+import subprocess
+import sys
+import tempfile
+import time
+
+
+def process(pid):
+    try:
+        raw = Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()
+        return {"pid": pid, "parent": int(raw[1]), "start": raw[19], "state": raw[0]}
+    except FileNotFoundError:
+        return None
+
+
+def legacy_ancestors(parent, known, uid=None):
+    chain, runners = [], []
+    for _ in range(64):
+        if parent <= 1:
+            break
+        item = process(parent)
+        if item is None:
+            break
+        chain.append(item)
+        argv = Path(f"/proc/{parent}/cmdline").read_bytes().split(b"\0")
+        candidate = next((os.fsdecode(arg) for arg in argv[1:]
+                          if arg.startswith(b"/") and Path(os.fsdecode(arg)).name.startswith("smplos-update.")
+                          and arg.endswith(b".sh")), None)
+        if candidate and Path(f"/proc/{parent}/exe").resolve().name.removesuffix(" (deleted)") == "bash":
+            script = Path(f"/proc/{parent}/fd/255")
+            if not script.exists():
+                parent = item["parent"]
+                continue
+            loaded = str(script.resolve()).removesuffix(" (deleted)")
+            if loaded != str(Path(candidate).resolve()):
+                parent = item["parent"]
+                continue
+            info = script.stat()
+            if not stat.S_ISREG(info.st_mode) or info.st_uid not in (os.stat(f"/proc/{parent}").st_uid, uid):
+                raise RuntimeError("Legacy updater script ownership could not be verified")
+            digest = hashlib.sha256(script.read_bytes()).hexdigest()
+            if digest not in known:
+                raise RuntimeError(f"Unrecognized legacy updater {candidate}; refusing a guessed process handoff")
+            runners.append(len(chain))
+        parent = item["parent"]
+    return chain[:max(runners)] if runners else []
+
+
+def stop_legacy(chain):
+    handles = []
+    try:
+        for item in chain:
+            try:
+                fd = os.pidfd_open(item["pid"])
+            except ProcessLookupError:
+                continue
+            handles.append(fd)
+            current = process(item["pid"])
+            if current is None or current["start"] != item["start"]:
+                raise RuntimeError("Legacy process identity changed; handoff stopped")
+        for sig in (signal.SIGTERM, signal.SIGKILL):
+            poll = select.poll()
+            for fd in reversed(handles):
+                try:
+                    signal.pidfd_send_signal(fd, sig)
+                except ProcessLookupError:
+                    pass
+                poll.register(fd, select.POLLIN)
+            deadline = time.monotonic() + 3
+            pending = set(handles)
+            while pending and time.monotonic() < deadline:
+                for fd, _ in poll.poll(100):
+                    pending.discard(fd)
+            if not pending:
+                return
+        raise RuntimeError("Legacy updater did not stop; the replacement must not start package work")
+    finally:
+        for fd in handles:
+            os.close(fd)
+
+
+def wait_for_legacy(path):
+    with path.open() as stream:
+        record = json.loads(stream.readline())
+    old_processes = record.get("legacy") if isinstance(record, dict) else None
+    if (path.stat().st_uid != os.geteuid() or not isinstance(old_processes, list)
+            or not 1 <= len(old_processes) <= 64
+            or any(not isinstance(old, dict) or not isinstance(old.get("pid"), int)
+                   or old["pid"] <= 1 or not isinstance(old.get("start"), str)
+                   or not old["start"].isdigit() for old in old_processes)):
+        raise RuntimeError("Invalid automatic update handoff record")
+    deadline = time.monotonic() + 15
+    while True:
+        live = []
+        for old in old_processes:
+            current = process(int(old["pid"]))
+            if current and current["start"] == old["start"] and current["state"] not in ("Z", "X"):
+                live.append(current)
+        if not live:
+            with path.open("a") as stream:
+                stream.write("\ncoordinator-ready\n")
+            print(f"Automatic updater handoff verified. Details: {path}")
+            return
+        if time.monotonic() >= deadline:
+            raise RuntimeError("The old updater is still running; no package upgrade was started")
+        time.sleep(0.05)
+
+
+def user_environment(uid):
+    try:
+        user = pwd.getpwuid(uid)
+    except KeyError as error:
+        raise RuntimeError(f"Desktop user {uid} no longer exists") from error
+    env = {key: value for key, value in os.environ.items()
+           if not key.startswith(("BASH_FUNC_", "SMPLOS_SUDO_", "SMPLOS_UPDATER_", "SMPLOS_OS_UPDATE_",
+                                  "SMPLOS_OS_HAD_", "SMPLOS_UPDATE_", "SMPLOS_INVOKER_"))}
+    home = user.pw_dir if os.geteuid() == 0 else os.environ["HOME"]
+    env.update(HOME=home, USER=user.pw_name, LOGNAME=user.pw_name)
+    if not env.get("SMPLOS_PATH") or env["SMPLOS_PATH"].startswith("/root/"):
+        env["SMPLOS_PATH"] = str(Path(home) / ".local/share/smplos")
+    return user.pw_name, env
+
+
+def launch(repo, chain, uid):
+    with tempfile.NamedTemporaryFile(prefix="smplos-handoff-", suffix=".sh") as bootstrap:
+        record_fd, record_name = tempfile.mkstemp(prefix="smplos-handoff-", suffix=".log")
+        record = Path(record_name)
+        if os.geteuid() == 0:
+            os.fchown(bootstrap.fileno(), uid, -1)
+            os.fchown(record_fd, uid, -1)
+        bootstrap.write((repo / "src/shared/bin/smplos-update-bootstrap").read_bytes())
+        bootstrap.flush()
+        with os.fdopen(record_fd, "w") as stream:
+            stream.write(json.dumps({"legacy": chain}) + "\n")
+        print(f"Refreshing the updater automatically; reopening Update OS. Details: {record}", flush=True)
+        result = 76
+        try:
+            name, env = user_environment(uid)
+            command = ["bash", bootstrap.name, "--mode", "full", "--legacy-handoff", record_name]
+            prefix = ["runuser", "-u", name, "--"] if os.geteuid() == 0 else []
+            with record.open("a") as output:
+                os.dup2(output.fileno(), 1)
+                os.dup2(output.fileno(), 2)
+                child = subprocess.Popen(prefix + command, env=env, stdin=subprocess.DEVNULL,
+                                         stdout=output, stderr=output, start_new_session=True)
+                # Old callers ignore helper failures and continue their stale
+                # transaction, so they must stop before the new one can start.
+                stop_legacy(chain)
+                deadline = time.monotonic() + 30
+                while time.monotonic() < deadline:
+                    if "\ncoordinator-ready\n" in record.read_text():
+                        result = 75
+                        break
+                    if child.poll() not in (None, 0):
+                        raise RuntimeError(f"Replacement updater exited before opening (status {child.returncode})")
+                    time.sleep(0.05)
+                else:
+                    raise RuntimeError("Replacement updater did not open; the old update was stopped")
+        except (OSError, ValueError, RuntimeError) as error:
+            with record.open("a") as output:
+                print(f"ERROR: automatic updater handoff failed: {error}", file=output)
+            stop_legacy(chain)
+            name, env = user_environment(uid)
+            notify = ["notify-send", "Update OS could not start",
+                      f"The old update was stopped safely. Details: {record}"]
+            result_notify = subprocess.run(
+                (["runuser", "-u", name, "--"] if os.geteuid() == 0 else []) + notify, env=env, check=False)
+            if result_notify.returncode:
+                print("ERROR: the handoff failure notification could not be displayed", file=sys.stderr)
+        return result
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--wait", type=Path)
+    parser.add_argument("--repo", type=Path)
+    parser.add_argument("--parent", type=int)
+    parser.add_argument("--uid", type=int)
+    args = parser.parse_args()
+    if args.wait:
+        wait_for_legacy(args.wait)
+        return 0
+    if args.repo is None or args.parent is None:
+        parser.error("--repo and --parent are required for a handoff probe")
+    policy = args.repo / "src/shared/update-policy/legacy-update-runners.sha256"
+    known = {line.split()[0] for line in policy.read_text().splitlines() if line and not line.startswith("#")}
+    chain = legacy_ancestors(args.parent, known, args.uid)
+    if not chain:
+        return 0
+    try:
+        if os.getsid(0) != os.getpid():
+            if os.getpgrp() == os.getpid():
+                controller = os.fork()
+                if controller:
+                    _, status = os.waitpid(controller, 0)
+                    return os.waitstatus_to_exitcode(status)
+            os.setsid()
+        if args.uid is None or args.uid <= 0 or (os.geteuid() != 0 and args.uid != os.geteuid()):
+            raise RuntimeError("Cannot identify the desktop user; the old update was stopped")
+        return launch(args.repo, chain, args.uid)
+    finally:
+        stop_legacy(chain)
+
+
+if __name__ == "__main__":
+    try:
+        sys.exit(main())
+    except (OSError, ValueError, RuntimeError) as error:
+        print(f"ERROR: {error}", file=sys.stderr)
+        sys.exit(1)

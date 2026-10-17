@@ -10,6 +10,10 @@
 set -euo pipefail
 
 SMPLOS_PATH="${SMPLOS_PATH:-$HOME/.local/share/smplos}"
+if [[ -r "$SMPLOS_PATH/repo/src/shared/lib/smplos-update-entry.sh" ]]; then
+    source "$SMPLOS_PATH/repo/src/shared/lib/smplos-update-entry.sh"
+    smplos_update_entry_guard "$SMPLOS_PATH/repo"
+fi
 MIGRATIONS_DIR="$SMPLOS_PATH/repo/migrations"
 STATE_DIR="$HOME/.local/state/smplos/migrations"
 SKIPPED_DIR="$STATE_DIR/skipped"

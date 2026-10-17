@@ -1,13 +1,35 @@
 #!/bin/bash
-# One-time enrollment: never execute the installed legacy updater.
+# Fetch verified updater source without running installed legacy orchestration.
 set -euo pipefail
 
 if [[ "${1:-}" == --help || "${1:-}" == -h ]]; then
-    echo "Usage: smplos-update-bootstrap"
-    echo "Fetch trusted main and install/verify updater scripts only; no package upgrade."
+    echo "Usage: smplos-update-bootstrap [--mode full|apps] [--bootstrap-only]"
+    echo "Without --mode, install/verify updater scripts only; --mode continues into that update."
     exit 0
 fi
-[[ $# -eq 0 ]] || { echo "ERROR: unexpected bootstrap arguments" >&2; exit 1; }
+mode=""
+bootstrap_only=0
+legacy_handoff=""
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --mode)
+            [[ "${2:-}" == full || "${2:-}" == apps ]] ||
+                { echo "ERROR: invalid update mode" >&2; exit 1; }
+            mode="$2"; shift ;;
+        --bootstrap-only) bootstrap_only=1 ;;
+        --legacy-handoff)
+            [[ -n "${2:-}" ]] || { echo "ERROR: missing handoff record" >&2; exit 1; }
+            legacy_handoff="$2"; shift ;;
+        *) echo "ERROR: unexpected bootstrap argument: $1" >&2; exit 1 ;;
+    esac
+    shift
+done
+args=(--bootstrap-only)
+if [[ -n "$mode" ]]; then
+    args=(--mode "$mode")
+    [[ $bootstrap_only -eq 0 ]] || args+=(--bootstrap-only)
+fi
+[[ -z "$legacy_handoff" ]] || args+=(--legacy-handoff "$legacy_handoff")
 [[ $EUID -ne 0 ]] || { echo "Run enrollment as your desktop user, without sudo." >&2; exit 1; }
 
 export SMPLOS_PATH="${SMPLOS_PATH:-$HOME/.local/share/smplos}"
@@ -18,7 +40,9 @@ log="$state/bootstrap-$(date +%Y%m%d-%H%M%S)-$$.log"
 
 die() { echo "ERROR: $*" >&2; exit 1; }
 
-exec 9>"$state/update.lock"
+if [[ "${SMPLOS_UPDATE_LOCKED:-0}" != 1 ]]; then
+    exec 9>"$state/update.lock"
+fi
 flock -n 9 || die "Another smplOS update/enrollment is already running."
 export SMPLOS_UPDATE_LOCKED=1
 
@@ -54,4 +78,4 @@ prepare_source() {
 
 prepare_source 2>&1 | tee -a "$log"
 # Keep stdout attached to the user's terminal for the authentication prompt.
-exec bash "$repo/src/shared/bin/smplos-update" --bootstrap-only
+exec bash "$repo/src/shared/bin/smplos-update" "${args[@]}"
