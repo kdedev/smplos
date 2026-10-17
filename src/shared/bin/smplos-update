@@ -189,7 +189,7 @@ if ! mkdir -p "$LOG_DIR" || [[ ! -w "$LOG_DIR" ]] ||
     mkdir -p "$LOG_DIR" || startup_fail "Cannot create the update state directory: $LOG_DIR"
 fi
 if [[ "${SMPLOS_UPDATE_LOCKED:-0}" != 1 ]]; then
-    exec 9>"$LOG_DIR/update.lock" ||
+    exec 9>>"$LOG_DIR/update.lock" ||
         startup_fail "Cannot write $LOG_DIR/update.lock; existing state was preserved."
 fi
 flock -n 9 || startup_fail "Another smplOS update is already running."

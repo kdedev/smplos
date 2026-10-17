@@ -255,6 +255,78 @@ class PrivilegedHandoffTests(unittest.TestCase):
             self.assertEqual(old_log.stat().st_uid, 0)
             self.assertEqual(old_log.read_text(), "preserve diagnostic evidence\n")
 
+    def test_real_user_coordinator_repairs_root_state_before_lock_and_package_work(self):
+        name = handoff.pwd.getpwuid(self.uid).pw_name
+        permitted = subprocess.run(["runuser", "-u", name, "--", "sudo", "-n", "true"],
+                                   capture_output=True, timeout=10)
+        if permitted.returncode:
+            self.skipTest("Requires the CI runner's existing noninteractive sudo permission")
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            base.chmod(0o755)
+            home = base / "home"
+            home.mkdir()
+            os.chown(home, self.uid, -1)
+            temporary = home / "tmp"
+            temporary.mkdir()
+            os.chown(temporary, self.uid, -1)
+            state = home / ".local/state/smplos/update"
+            state.mkdir(parents=True)
+            state.chmod(0o700)
+            lock = state / "update.lock"
+            lock.write_text("keep lock identity\n")
+            inode = lock.stat().st_ino
+            marker = state / "critical-bundle-applied"
+            marker.write_text("old marker\n")
+            old_log = state / "old-root-update.log"
+            old_log.write_text("keep historical evidence\n")
+            repo_bin = home / ".local/share/smplos/repo/src/shared/bin"
+            repo_bin.mkdir(parents=True)
+            helper = (BIN / "smplos-update-handoff").read_text()
+            home_lookup = 'home = user.pw_dir if os.geteuid() == 0 else os.environ["HOME"]'
+            self.assertIn(home_lookup, helper)
+            # Keep every privileged write in the fixture, not the runner's real home.
+            (repo_bin / "smplos-update-handoff").write_text(
+                helper.replace(home_lookup, f"home = {str(home)!r}"))
+            (repo_bin / "smplos-os-update").write_text(
+                'SMPLOS_UPDATE_PROTOCOL=1\necho "scripts refreshed"\n')
+            (repo_bin / "smplos-update-check").write_text(
+                'from pathlib import Path\nimport sys\n'
+                'Path(sys.argv[sys.argv.index("--output") + 1]).write_text("{}")\n')
+            system = base / "system/usr/local"
+            (system / "bin").mkdir(parents=True)
+            source = (BIN / "smplos-update").read_text().split("UPDATE_SCRIPT=$(mktemp", 1)[0]
+            source = source.replace("if [[ ! -t 1 && $EUID -ne 0 ]]; then", "if false; then")
+            source = re.sub(r"check_update_power\(\) \{\n.*?^\}",
+                            "check_update_power() { return 0; }", source, count=1, flags=re.S | re.M)
+            source = source.replace("/usr/local", str(system))
+            source += (f'\nprintf "new marker\\n" > {shlex.quote(str(marker))}\n'
+                       f'touch {shlex.quote(str(state / "ready-for-package-work"))}\n')
+            wrapper = system / "bin/smplos-update"
+            wrapper.write_text(source)
+            wrapper.chmod(0o755)
+            sudo = system / "bin/sudo"
+            sudo.write_text('#!/bin/bash\necho "sudo $*" >> "$HOME/sudo-calls"\nexec /usr/bin/sudo "$@"\n')
+            sudo.chmod(0o755)
+            log = home / "update.log"
+            result = subprocess.run(
+                ["runuser", "-u", name, "--", "env", "-i", f"HOME={home}", f"USER={name}",
+                 f"LOGNAME={name}", "PATH=/usr/bin:/bin", f"TMPDIR={temporary}",
+                 "PYTHONDONTWRITEBYTECODE=1", f"SMPLOS_UPDATE_LOG_FILE={log}",
+                 "bash", str(wrapper), "--mode", "full"],
+                capture_output=True, text=True, timeout=20)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertTrue((state / "ready-for-package-work").exists())
+            self.assertEqual((state / "ready-for-package-work").stat().st_uid, self.uid)
+            self.assertEqual(lock.stat().st_ino, inode)
+            self.assertEqual(lock.read_text(), "keep lock identity\n")
+            self.assertEqual(marker.stat().st_uid, self.uid)
+            self.assertEqual(marker.read_text(), "new marker\n")
+            self.assertEqual(old_log.stat().st_uid, 0)
+            self.assertEqual(old_log.read_text(), "keep historical evidence\n")
+            self.assertIn("Restoring legacy state ownership:", log.read_text())
+            self.assertEqual((home / "sudo-calls").read_text().splitlines().count("sudo -v"), 1)
+
 
 class LegacyButtonTests(unittest.TestCase):
     def setUp(self):
