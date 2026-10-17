@@ -797,7 +797,7 @@ The supported entrypoint is `smplos-update` as the desktop user, without
 before the terminal waits or closes. It never stores the password or creates
 a passwordless sudoers rule.
 
-Subsequent elevation uses `sudo -n`; Paru also receives explicit noninteractive
+Subsequent elevation uses `sudo -n`; Yay also receives explicit noninteractive
 sudo flags instead of starting its own credential loop. User Flatpak apps and
 runtimes update as the user; system Flatpaks update through the same cached sudo
 authorization, not a separate Polkit password dialog. If authorization expires

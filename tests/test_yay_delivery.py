@@ -150,6 +150,21 @@ esac
         self.assertIn("retired", result.stdout)
         self.assertFalse(self.calls.exists())
 
+    def test_retired_healer_reports_retirement_without_rebuilding(self):
+        result = subprocess.run(["bash", str(BIN / "heal-paru")], env=self.env,
+                                capture_output=True, text=True)
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("retired", result.stderr)
+        self.assertFalse(self.calls.exists())
+
+    def test_no_shipped_edition_or_compositor_package_list_requires_paru(self):
+        for path in (ROOT / "src").rglob("packages*.txt"):
+            with self.subTest(path=path.relative_to(ROOT)):
+                packages = {
+                    line.split("#", 1)[0].strip() for line in path.read_text().splitlines()
+                }
+                self.assertFalse(packages & {"paru", "paru-bin", "paru-git"})
+
     def test_recipe_only_installs_upstream_binary_and_checks_actual_alpm_access(self):
         bundle = self.base / "yay_13.0.1_x86_64"
         bundle.mkdir()
