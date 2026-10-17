@@ -140,7 +140,7 @@ Write a migration. See section 5 below.
 
 Normal OS updates reconcile keypad integration on every run, not only once
 per migration: the canonical `control-surface.service`, udev rules and pinned
-`control-surface` package from **smpl-apps v0.8.28** must all be available.
+`control-surface` package from **smpl-apps v0.8.29** must all be available.
 That release builds the keypad daemon on its Qt 6.11 baseline, compatible with
 the installed Qt 6.11.2 runtime; v0.8.27 incorrectly required Qt 6.12.
 The catch-up migration `20261009-010000-keypad-login-recovery.sh` covers
@@ -928,8 +928,10 @@ Yay still needs usable pacman/libalpm APIs; changing helpers is not a guarantee
 against every future ABI change. Failed binary/runtime checks stop AUR work
 and remain in the overall update status. The AUR transaction disables Yay's
 own sudo loop (`--sudoloop=false`) and uses the update's cached, noninteractive
-sudo context. Native App Center/Settings must also be delivered in a new
-smpl-apps release with their Yay callers before retiring Paru on a test machine.
+sudo context. Native App Center/Settings must also be delivered from
+**smpl-apps v0.8.29** or newer, with their Yay callers, before the migration
+is considered complete. That coordinated release includes the pinned keypad
+package above.
 
 ### Bringing older fleet machines onto this updater
 

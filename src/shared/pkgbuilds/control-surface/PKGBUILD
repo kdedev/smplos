@@ -16,7 +16,7 @@
 # stay in /usr/share/control-surface/examples.
 
 pkgname=control-surface
-pkgver=0.8.28
+pkgver=0.8.29
 pkgrel=1
 pkgdesc='Keypad app for CH552 macro keypads: per-app profiles, cheatsheet, Kdenlive API plugin, open firmware images'
 arch=(x86_64)
@@ -29,7 +29,7 @@ optdepends=(
 )
 options=(!strip !debug)
 source=("https://github.com/smpl-os/smpl-apps/releases/download/v${pkgver}/control-surface-${pkgver}-x86_64.tar.gz")
-sha256sums=('0577fa04890f0bea7c27c6ede30e87097c43b607b4fe2d27b547063b02626e63')
+sha256sums=('9c033ac4fbf76cc4325ebb3a6caff91f72c09323dd75c204c603b3d67aba9ce7')
 
 check() {
   # Verify the release's real runtime ABI before pacman can install it.
