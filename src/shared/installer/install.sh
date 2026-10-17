@@ -158,6 +158,19 @@ if [[ -d "$SMPLOS_PATH/system/udev" ]]; then
   sudo udevadm trigger --subsystem-match=usb 2>/dev/null || true
 fi
 
+# GPU fault recorder and faster journal sync, so display hangs leave evidence
+if [[ -d "$SMPLOS_PATH/system/journald" ]]; then
+  echo "==> Deploying journald settings..."
+  sudo install -Dm644 -t /etc/systemd/journald.conf.d "$SMPLOS_PATH/system/journald/"*.conf
+fi
+if [[ -d "$SMPLOS_PATH/system/systemd" ]]; then
+  echo "==> Deploying system services..."
+  sudo install -Dm644 -t /etc/systemd/system "$SMPLOS_PATH/system/systemd/"*.service
+  for unit in "$SMPLOS_PATH/system/systemd/"*.service; do
+    chrootable_systemctl_enable "${unit##*/}" || true
+  done
+fi
+
 # Deploy pacman hooks
 echo "==> Installing pacman hooks..."
 sudo mkdir -p /etc/pacman.d/hooks

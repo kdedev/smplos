@@ -1219,6 +1219,14 @@ DCONF_PROFILE
         mkdir -p "$airootfs/root/smplos/system/udev"
         cp "$SRC_DIR/shared/system/udev/"*.rules "$airootfs/root/smplos/system/udev/" 2>/dev/null || true
     fi
+
+    # Stage system units and journald drop-ins (GPU fault recorder) for the installer
+    for kind in systemd journald; do
+        if [[ -d "$SRC_DIR/shared/system/$kind" ]]; then
+            mkdir -p "$airootfs/root/smplos/system/$kind"
+            cp "$SRC_DIR/shared/system/$kind/"* "$airootfs/root/smplos/system/$kind/"
+        fi
+    done
     
     # Copy EWW configs
     if [[ -d "$SRC_DIR/shared/eww" ]]; then

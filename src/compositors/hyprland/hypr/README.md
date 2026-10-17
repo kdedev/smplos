@@ -15,7 +15,7 @@ hyprland.lua          ←  Lua entry point (preferred by Hyprland 0.55+)
 │  └ apps/
 │     ├ browser.lua  jetbrains.lua  pip.lua  qemu.lua  steam.lua
 │     └ system.lua   terminals.lua
-├ autostart.lua       ←  hl.on("hyprland.start", …) — 16 exec_cmd entries
+├ autostart.lua       ←  hl.on("hyprland.start", …) — 19 exec_cmd entries
 ├ theme.lua           ←  parses ~/.config/hypr/theme.conf $vars into a Lua table
 ├ monitors_loader.lua ←  parses ~/.config/hypr/monitors.conf → hl.monitor calls
 └ bindings_loader.lua ←  parses ~/.config/smplos/bindings.conf  → hl.bind calls
@@ -99,6 +99,22 @@ mv ~/.config/hypr/hyprland.conf.disabled ~/.config/hypr/hyprland.conf
   that is not running, stops one that still fails (so `Restart=` cannot loop)
   and notifies (power timers at every login, others once per change). Never
   start these daemons bare from autostart.
+* **Compositor log**: Hyprland logs to a tmpfs (`$XDG_RUNTIME_DIR/hypr/…`)
+  without timestamps, so a GPU hang that forces a reboot used to erase it.
+  Both autostart trees run `smplos-hypr-log-journal`, which mirrors that log
+  (minus per-click libinput traces) into the persistent journal and exits
+  with Hyprland. Read the previous session with `journalctl -b -1 -t hyprland`.
+  `start-hyprland` sends the launcher's stdout/stderr (watchdog, EGL/GBM and
+  driver library messages) to the journal as `hyprland-session`, falling back
+  to a plain launch if journald is unavailable.
+* **GPU faults**: the root `smplos-gpu-watch.service` follows the kernel log
+  for NVIDIA/amdgpu/i915/xe/nouveau/DRM faults and runs `smplos-gpu-snapshot`,
+  which saves the kernel log, the last 15 min of the journal, each live
+  Hyprland log and `hyprctl` state, DRM debugfs state, connector status,
+  `nvidia-smi -q` and `nvidia-bug-report.sh` to
+  `/var/log/smplos/gpu-incidents/<time>/` (newest 10 kept, readable by
+  `wheel`), then notifies the user. `60-smplos-sync.conf` makes journald sync
+  to disk every 15s so a forced power-off loses little.
 * **Keybindings**: edit `src/shared/configs/smplos/bindings.conf` (hyprlang).
   The Lua side reads the exact same file via `bindings_loader.lua`.
 * **Theme variables**: edit by running `theme-set <name>`. Both providers pick

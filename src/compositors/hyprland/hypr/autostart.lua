@@ -2,6 +2,10 @@
 -- Mirrors src/compositors/hyprland/hypr/autostart.conf.
 
 hl.on("hyprland.start", function()
+    -- Keep this session's compositor log after a hang or reboot
+    -- (journalctl -b -1 -t hyprland).
+    hl.exec_cmd("smplos-hypr-log-journal")
+
     -- Core services
     -- NOTE: hypridle is now managed by the packaged systemd user unit
     -- (hypridle.service, enabled via /etc/skel + migration). Launching it
