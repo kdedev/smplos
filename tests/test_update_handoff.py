@@ -126,6 +126,16 @@ class HandoffContracts(unittest.TestCase):
                     mock.patch("sys.stdout", new_callable=io.StringIO):
                 self.assertEqual(handoff.launch(base, [], os.getuid()), 75)
 
+    def test_state_repair_cli_requires_root_and_a_nonroot_desktop_identity(self):
+        for euid, uid in ((1000, "1000"), (0, "0")):
+            with self.subTest(euid=euid, uid=uid), \
+                    mock.patch.object(handoff.os, "geteuid", return_value=euid), \
+                    mock.patch.object(sys, "argv", ["handoff", "--repair-state", "--uid", uid]), \
+                    mock.patch.object(handoff, "restore_state_ownership") as repair:
+                with self.assertRaisesRegex(RuntimeError, "administrator authentication"):
+                    handoff.main()
+                repair.assert_not_called()
+
 
 @unittest.skipUnless(os.geteuid() == 0, "Requires the separate isolated sudo CI step")
 class PrivilegedHandoffTests(unittest.TestCase):
@@ -221,6 +231,30 @@ class PrivilegedHandoffTests(unittest.TestCase):
             self.assertEqual(outside.stat().st_uid, 0)
             self.assertEqual(outside.read_text(), "keep ownership and contents\n")
 
+    def test_normal_coordinator_state_repair_preserves_lock_identity_and_old_logs(self):
+        with tempfile.TemporaryDirectory() as directory:
+            home = Path(directory) / "home"
+            home.mkdir()
+            os.chown(home, self.uid, -1)
+            state = home / ".local/state/smplos/update"
+            state.mkdir(parents=True)
+            state.chmod(0o700)
+            lock = state / "update.lock"
+            lock.write_text("preserve the existing lock\n")
+            inode = lock.stat().st_ino
+            old_log = state / "old-root-update.log"
+            old_log.write_text("preserve diagnostic evidence\n")
+            with mock.patch.object(sys, "argv",
+                                   ["handoff", "--repair-state", "--uid", str(self.uid)]), \
+                    mock.patch.object(handoff, "user_environment", return_value=("", {"HOME": str(home)})):
+                self.assertEqual(handoff.main(), 0)
+            self.assertEqual(state.stat().st_uid, self.uid)
+            self.assertEqual(lock.stat().st_uid, self.uid)
+            self.assertEqual(lock.stat().st_ino, inode)
+            self.assertEqual(lock.read_text(), "preserve the existing lock\n")
+            self.assertEqual(old_log.stat().st_uid, 0)
+            self.assertEqual(old_log.read_text(), "preserve diagnostic evidence\n")
+
 
 class LegacyButtonTests(unittest.TestCase):
     def setUp(self):
@@ -262,6 +296,11 @@ if args == ["-v"]:
     sys.exit(0)
 if args and args[0] == "-n":
     args.pop(0)
+if args[0] == "python3":
+    assert args[1].startswith(os.environ["FIXTURE_ROOT"] + "/"), args
+    assert args[1].endswith("/smplos-update-handoff"), args
+    assert args[2:] == ["--repair-state", "--uid", str(os.getuid())], args
+    sys.exit(int(os.environ.get("STATE_REPAIR_FAIL", "0")))
 assert args[0] in ("mkdir", "mktemp", "install", "mv", "rm"), args
 assert all(not arg.startswith("/") or arg.startswith(os.environ["FIXTURE_ROOT"] + "/")
            for arg in args), args
@@ -327,7 +366,10 @@ sys.exit(code if code >= 0 else 128 - code)
         return source.replace("/usr/local", str(self.system / "usr/local"))
 
     def prepare(self, commit):
-        for name in ("smplos-update", "smplos-os-update"):
+        names = ["smplos-update", "smplos-os-update"]
+        if commit == "948dec6":
+            names += ["smplos-update-check", "smplos-update-bootstrap", "smplos-update-handoff"]
+        for name in names:
             source = subprocess.check_output(
                 [self.git, "show", f"{commit}:src/shared/bin/{name}"], cwd=ROOT, text=True)
             source = self.relocate(source)
@@ -337,7 +379,7 @@ sys.exit(code if code >= 0 else 128 - code)
             path = self.upstream / "src/shared/bin" / name
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text(source)
-        legacy = generated((self.bin / "smplos-update").read_text())
+        legacy = generated((self.bin / "smplos-update").read_text()) if commit != "948dec6" else None
         self.command("-C", str(self.upstream), "add", ".")
         self.command("-C", str(self.upstream), "commit", "-qm", "Fixture installed legacy updater")
         self.repo.parent.mkdir(parents=True)
@@ -346,8 +388,9 @@ sys.exit(code if code >= 0 else 128 - code)
             target = self.upstream / "src" / directory
             target.parent.mkdir(parents=True, exist_ok=True)
             shutil.copytree(ROOT / "src" / directory, target)
-        with (self.upstream / "src/shared/update-policy/legacy-update-runners.sha256").open("a") as stream:
-            stream.write(hashlib.sha256(legacy.encode()).hexdigest() + " relocated-test-fixture\n")
+        if legacy is not None:
+            with (self.upstream / "src/shared/update-policy/legacy-update-runners.sha256").open("a") as stream:
+                stream.write(hashlib.sha256(legacy.encode()).hexdigest() + " relocated-test-fixture\n")
         for name in ("smplos-update", "smplos-os-update", "smplos-update-check",
                      "smplos-update-bootstrap", "smplos-update-handoff", "smplos-migrate"):
             source = self.relocate((BIN / name).read_text())
@@ -375,6 +418,9 @@ sys.exit(code if code >= 0 else 128 - code)
             if self.done.exists() or "notify Update OS could not start" in calls:
                 break
             if env.get("POWER_FAIL") == "1" and self.tty_log.exists() and "Plug in power" in self.tty_log.read_text():
+                break
+            if env.get("STATE_REPAIR_FAIL") == "1" and self.tty_log.exists() and \
+                    "Updater-state ownership could not be restored" in self.tty_log.read_text():
                 break
             time.sleep(0.05)
         return result
@@ -458,6 +504,63 @@ sys.exit(code if code >= 0 else 128 - code)
         self.assertTrue(self.done.exists(), self.tty_log.read_text())
         self.assertNotIn("legacy-polkit", self.calls.read_text())
         self.assertEqual(self.calls.read_text().splitlines().count("sudo -v"), 1)
+        self.assert_no_legacy_package_work()
+
+    def test_retry_from_the_exact_published_118_launcher_repairs_state_without_usb_or_handoff(self):
+        self.prepare("948dec6")
+        self.click()
+        self.assertTrue(self.done.exists(), self.tty_log.read_text())
+        calls = self.calls.read_text()
+        self.assertNotIn("legacy-polkit", calls)
+        self.assertNotIn("handoff verified", self.tty_log.read_text().lower())
+        self.assertEqual(calls.splitlines().count("sudo -v"), 1)
+        self.assertIn("--repair-state --uid", calls)
+        self.assertLess(calls.index("--repair-state --uid"), calls.index("FRESH-WRAPPER"))
+        self.assert_no_legacy_package_work()
+
+    def test_state_repair_failure_stops_a_published_118_retry_before_package_work(self):
+        self.prepare("948dec6")
+        self.click(STATE_REPAIR_FAIL="1")
+        self.assertFalse(self.done.exists())
+        self.assertIn("Updater-state ownership could not be restored", self.tty_log.read_text())
+        self.assert_no_legacy_package_work()
+
+    def test_published_118_cannot_receive_remote_changes_when_its_local_state_is_unwritable(self):
+        self.prepare("948dec6")
+        state = self.home / ".local/state/smplos/update"
+        state.mkdir(parents=True)
+        state.chmod(0o500)
+        try:
+            result = subprocess.run(["smplos-update", "--mode", "full"], env=self.env,
+                                    capture_output=True, text=True, timeout=20)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("Permission denied", self.tty_log.read_text())
+            self.assertFalse(self.done.exists())
+            calls = self.calls.read_text() if self.calls.exists() else ""
+            self.assertNotIn("fetch", calls)
+            self.assertNotIn("sudo ", calls)
+        finally:
+            state.chmod(0o700)
+
+    def test_early_state_failure_repairs_before_lock_and_reuses_the_same_authentication(self):
+        self.prepare("e4188ff")
+        for name in ("smplos-update", "smplos-update-bootstrap"):
+            shutil.copyfile(self.upstream / "src/shared/bin" / name, self.bin / name)
+        self.command("-C", str(self.repo), "fetch", "origin", "main")
+        self.command("-C", str(self.repo), "merge", "--ff-only", "origin/main")
+        self.mock("mkdir", """#!/bin/bash
+if [[ "$*" == "-p $HOME/.local/state/smplos/update" && ! -e "$FIXTURE_ROOT/state-failure-seen" ]]; then
+    touch "$FIXTURE_ROOT/state-failure-seen"
+    echo "fixture: legacy state is unwritable" >&2
+    exit 1
+fi
+exec /usr/bin/mkdir "$@"
+""")
+        self.click()
+        self.assertTrue(self.done.exists(), self.tty_log.read_text())
+        calls = self.calls.read_text()
+        self.assertEqual(calls.splitlines().count("sudo -v"), 1)
+        self.assertLess(calls.index("--repair-state --uid"), calls.index("git -C"))
         self.assert_no_legacy_package_work()
 
 

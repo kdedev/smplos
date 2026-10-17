@@ -45,7 +45,7 @@ notify() {
 }
 
 startup_fail() {
-    notify "Update OS could not start" "$1"
+    notify "Update OS could not start" "$1${STARTUP_LOG:+ Startup log: $STARTUP_LOG}"
     [[ ! -t 0 ]] || read -r -p "Update could not start. Press Enter to close. " _
     exit 1
 }
@@ -136,15 +136,8 @@ export PATH="/usr/local/sbin:/usr/local/bin:$PATH"
 SMPLOS_PATH="${SMPLOS_PATH:-$HOME/.local/share/smplos}"
 export SMPLOS_UPDATE_COORDINATOR=1
 LOG_DIR="$HOME/.local/state/smplos/update"
-mkdir -p "$LOG_DIR" || startup_fail "Cannot create the update state directory: $LOG_DIR"
-if [[ "${SMPLOS_UPDATE_LOCKED:-0}" != 1 ]]; then
-    exec 9>"$LOG_DIR/update.lock" ||
-        startup_fail "Cannot write $LOG_DIR/update.lock. Preserve the existing state and collect update diagnostics."
-fi
-flock -n 9 || startup_fail "Another smplOS update is already running."
-export SMPLOS_UPDATE_LOCKED=1
-export SMPLOS_UPDATE_LOG_FILE="${SMPLOS_UPDATE_LOG_FILE:-$LOG_DIR/update-$(date +%Y%m%d-%H%M%S)-$$.log}"
 UPDATE_SCRIPT=""
+STARTUP_LOG=""
 stop_sudo_keepalive() {
     if [[ -n "${SMPLOS_SUDO_KEEPALIVE_PID:-}" ]]; then
         kill "$SMPLOS_SUDO_KEEPALIVE_PID" 2>/dev/null || true
@@ -152,6 +145,60 @@ stop_sudo_keepalive() {
         unset SMPLOS_SUDO_KEEPALIVE_PID
     fi
 }
+authenticate_update() {
+    [[ "${SMPLOS_SUDO_READY:-0}" != 1 ]] || return 0
+    command sudo -v || startup_fail "Authentication failed; update not started."
+    (
+        trap - EXIT INT HUP
+        sleeper=""
+        trap '[[ -z "$sleeper" ]] || kill "$sleeper" 2>/dev/null; exit' TERM
+        while true; do
+            sleep 30 & sleeper=$!
+            wait "$sleeper" || exit
+            command sudo -n -v || exit
+        done
+    ) 9>&- >/dev/null 2>&1 &
+    export SMPLOS_SUDO_KEEPALIVE_PID=$!
+    export SMPLOS_SUDO_READY=1
+}
+repair_update_state() {
+    local helper="$SMPLOS_PATH/repo/src/shared/bin/smplos-update-handoff"
+    [[ -r "$helper" ]] || {
+        echo "ERROR: updater state-repair helper is missing: $helper" >&2
+        return 1
+    }
+    echo "Checking legacy updater-state ownership."
+    command sudo -n python3 "$helper" --repair-state --uid "$UID"
+}
+trap stop_sudo_keepalive EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+trap 'exit 129' HUP
+
+# Legacy root runners can leave the state directory or lock unwritable.
+# Authenticate once and repair only managed state, never remove the lock.
+if ! mkdir -p "$LOG_DIR" || [[ ! -w "$LOG_DIR" ]] ||
+    [[ -e "$LOG_DIR/update.lock" && ! -w "$LOG_DIR/update.lock" ]]; then
+    STARTUP_LOG=$(mktemp "${TMPDIR:-/tmp}/smplos-update-startup.XXXXXX.log") ||
+        startup_fail "Cannot create a private startup-repair log."
+    check_update_power 2>&1 | tee -a "$STARTUP_LOG" ||
+        startup_fail "Connect external power before repairing Update OS."
+    authenticate_update
+    repair_update_state 2>&1 | tee -a "$STARTUP_LOG" ||
+        startup_fail "Cannot restore updater-state access; existing state was preserved."
+    mkdir -p "$LOG_DIR" || startup_fail "Cannot create the update state directory: $LOG_DIR"
+fi
+if [[ "${SMPLOS_UPDATE_LOCKED:-0}" != 1 ]]; then
+    exec 9>"$LOG_DIR/update.lock" ||
+        startup_fail "Cannot write $LOG_DIR/update.lock; existing state was preserved."
+fi
+flock -n 9 || startup_fail "Another smplOS update is already running."
+export SMPLOS_UPDATE_LOCKED=1
+export SMPLOS_UPDATE_LOG_FILE="${SMPLOS_UPDATE_LOG_FILE:-$LOG_DIR/update-$(date +%Y%m%d-%H%M%S)-$$.log}"
+if [[ -n "$STARTUP_LOG" ]]; then
+    cat -- "$STARTUP_LOG" >> "$SMPLOS_UPDATE_LOG_FILE" ||
+        startup_fail "Cannot retain the startup-repair transcript in the update log."
+fi
 bootstrap_fail() {
     echo "ERROR: $* Log: $SMPLOS_UPDATE_LOG_FILE" | tee -a "$SMPLOS_UPDATE_LOG_FILE" >&2
     [[ -z "$UPDATE_SCRIPT" ]] || rm -f -- "$UPDATE_SCRIPT"
@@ -169,27 +216,9 @@ if ! check_update_power 2>&1 | tee -a "$SMPLOS_UPDATE_LOG_FILE"; then
     [[ ! -t 0 ]] || read -r -p "Plug in power, then press Enter to close and retry. " _
     exit 1
 fi
-if [[ "${SMPLOS_SUDO_READY:-0}" != 1 ]]; then
-    sudo -v || bootstrap_fail "Authentication failed; update not started."
-    (
-        trap - EXIT INT HUP
-        sleeper=""
-        trap '[[ -z "$sleeper" ]] || kill "$sleeper" 2>/dev/null; exit' TERM
-        while true; do
-            sleep 30 & sleeper=$!
-            wait "$sleeper" || exit
-            command sudo -n -v || exit
-        done
-    ) 9>&- >/dev/null 2>&1 &
-    export SMPLOS_SUDO_KEEPALIVE_PID=$!
-fi
-trap stop_sudo_keepalive EXIT
-trap 'exit 130' INT
-trap 'exit 143' TERM
-trap 'exit 129' HUP
+authenticate_update
 sudo() { command sudo -n "$@"; }
 export -f sudo
-export SMPLOS_SUDO_READY=1
 
 # Refresh the orchestration itself before migrations or package transactions.
 # Never let a legacy installed helper perform the first Git synchronization.
@@ -228,6 +257,9 @@ if [[ "${SMPLOS_UPDATER_REFRESHED:-0}" != 1 ]]; then
         [[ $BOOTSTRAP_ONLY -eq 0 ]] || reexec_args+=(--bootstrap-only)
         exec bash "$fresh" "${reexec_args[@]}"
     fi
+fi
+if ! repair_update_state 2>&1 | tee -a "$SMPLOS_UPDATE_LOG_FILE"; then
+    bootstrap_fail "Updater-state ownership could not be restored. No package upgrade was started."
 fi
 if [[ $BOOTSTRAP_ONLY -eq 1 ]]; then
     echo "Updater enrollment verified. No host packages, native apps or desktop configs were updated." |

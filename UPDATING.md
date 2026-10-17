@@ -972,6 +972,14 @@ It records ownership changes, preserves file contents and historical logs, and
 does not recursively chown the home directory. Symlinks, hardlinked markers and
 unexpected owners are rejected rather than followed or guessed.
 
+The ordinary coordinator performs the same bounded repair after verifying and
+refreshing its scripts, before any package transaction. A retry that already
+installed the v0.8.118 coordinator therefore does not need another legacy
+handoff or a support script to repair version markers. The new coordinator
+also repairs unwritable state directories/locks before trying to acquire its
+lock, after checking external power and authenticating. Both paths reuse the
+same sudo context; the lock inode and old logs are preserved.
+
 This bridge covers the shipped Git-based runner families, including the early
 Git updater and versions with broken helper self-reexecution. It cannot change
 old local actions performed **before** fresh code is fetched. Offline fetch
@@ -979,6 +987,13 @@ failures, locally modified/unrecognized runners, and pre-Git images without a
 reachable fresh-script checkpoint are not retroactively protected by publishing
 source. Do not certify those images as first-click safe. A machine that no
 longer boots requires local recovery; no fleet machine is contacted automatically.
+
+In particular, the already-published v0.8.118 launcher opens its local state lock
+before authentication or fetching. If that directory or lock is unwritable on
+a machine that already installed that launcher, it cannot acquire this repair
+from a source publication. A retry from v0.8.118 is covered only when it can
+reach its existing fetch checkpoint. Do not call this a universally remote
+repair or ask customers to retry without establishing which path they reach.
 
 The replacement bootstrap checks the origin and clean `main` checkout, refuses
 unfinished Git operations and only fast-forwards. It preserves local changes

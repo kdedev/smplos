@@ -587,6 +587,8 @@ class UpdaterFlowTests(unittest.TestCase):
 [[ "$1" != -n ]] || shift
 case "$*" in
     -v|"rm -f /etc/sudoers.d/99-smplos-update-transient"|"rm -f /etc/pacman.d/hooks/90-rebuild-paru.hook") exit 0 ;;
+    "python3 $HOME/.local/share/smplos/repo/src/shared/bin/smplos-update-handoff --repair-state --uid $UID")
+        exit "${STATE_REPAIR_FAIL:-0}" ;;
     pacman*|flatpak*) exec "$@" ;;
     *) echo "FORBIDDEN: sudo $*" >&2; exit 99 ;;
 esac
@@ -631,6 +633,7 @@ exit "${VERIFY_FAIL:-0}"
 pathlib.Path(sys.argv[sys.argv.index("--output") + 1]).write_text('{"errors":[]}')
 sys.exit(int(os.environ.get("BOOTSTRAP_VERIFY_FAIL", "0")))
 """)
+        (source_bin / "smplos-update-handoff").write_text("# isolated repair-command fixture\n")
         self.mock("smplos-ensure-yay", 'echo enroll-yay >> "$CALLS"\nexit "${YAY_ENROLL_FAIL:-0}"\n')
         self.mock("yay", 'echo "yay $*" >> "$CALLS"\nexit "${AUR_FAIL:-0}"\n')
         self.mock("curl", "exit 0\n")
@@ -884,7 +887,7 @@ class BootstrapEnrollmentTests(unittest.TestCase):
         self.repo.parent.mkdir(parents=True)
         self.command("clone", "-q", "https://github.com/smpl-os/smplos.git", str(self.repo))
         for name in ("smplos-update", "smplos-os-update", "smplos-update-check",
-                     "smplos-update-bootstrap"):
+                     "smplos-update-bootstrap", "smplos-update-handoff"):
             source = (BIN / name).read_text()
             if name == "smplos-update":
                 source = source.replace("if [[ ! -t 1 && $EUID -ne 0 ]]; then", "if false; then")
@@ -915,6 +918,11 @@ with open(os.environ["CALLS"], "a") as stream:
 if args == ["-v"]:
     sys.exit(0)
 assert args.pop(0) == "-n", args
+if args[0] == "python3":
+    assert args[1].startswith(os.environ["FIXTURE_ROOT"] + "/"), args
+    assert args[1].endswith("/smplos-update-handoff"), args
+    assert args[2:] == ["--repair-state", "--uid", str(os.getuid())], args
+    sys.exit(0)
 assert args[0] in ("mkdir", "mktemp", "install", "mv", "rm"), args
 assert all(not arg.startswith("/") or arg.startswith(os.environ["FIXTURE_ROOT"] + "/")
            for arg in args), args
