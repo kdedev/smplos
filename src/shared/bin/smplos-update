@@ -44,6 +44,12 @@ notify() {
     echo "smplOS Update: $1${2:+ — $2}" >&2
 }
 
+startup_fail() {
+    notify "Update OS could not start" "$1"
+    [[ ! -t 0 ]] || read -r -p "Update could not start. Press Enter to close. " _
+    exit 1
+}
+
 # Resolve the entrypoint before opening a terminal or refreshing scripts.
 SELF="$(readlink -f "$0")"
 
@@ -130,11 +136,12 @@ export PATH="/usr/local/sbin:/usr/local/bin:$PATH"
 SMPLOS_PATH="${SMPLOS_PATH:-$HOME/.local/share/smplos}"
 export SMPLOS_UPDATE_COORDINATOR=1
 LOG_DIR="$HOME/.local/state/smplos/update"
-mkdir -p "$LOG_DIR" || exit 1
+mkdir -p "$LOG_DIR" || startup_fail "Cannot create the update state directory: $LOG_DIR"
 if [[ "${SMPLOS_UPDATE_LOCKED:-0}" != 1 ]]; then
-    exec 9>"$LOG_DIR/update.lock" || exit 1
+    exec 9>"$LOG_DIR/update.lock" ||
+        startup_fail "Cannot write $LOG_DIR/update.lock. Preserve the existing state and collect update diagnostics."
 fi
-flock -n 9 || { echo "Another smplOS update is already running." >&2; exit 1; }
+flock -n 9 || startup_fail "Another smplOS update is already running."
 export SMPLOS_UPDATE_LOCKED=1
 export SMPLOS_UPDATE_LOG_FILE="${SMPLOS_UPDATE_LOG_FILE:-$LOG_DIR/update-$(date +%Y%m%d-%H%M%S)-$$.log}"
 UPDATE_SCRIPT=""

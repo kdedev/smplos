@@ -960,6 +960,18 @@ Passwords are neither stored nor forwarded, and no passwordless grant is
 installed. Handoff diagnostics are retained in the desktop-user-owned
 `/tmp/smplos-handoff-*.log` file identified in the terminal or failure notification.
 
+The privileged bridge retains the log's original descriptor after assigning it
+to the desktop user. It never reopens that `/tmp` file for creation as root:
+Linux's `fs.protected_regular` correctly rejects that pattern. The safeguard
+remains enabled. Root-to-user behavior is checked separately in CI with real
+privilege separation, not only command stubs.
+
+Before dropping privileges, the bridge restores root-owned updater state
+directories and the fixed set of version/lock markers left by old root runners.
+It records ownership changes, preserves file contents and historical logs, and
+does not recursively chown the home directory. Symlinks, hardlinked markers and
+unexpected owners are rejected rather than followed or guessed.
+
 This bridge covers the shipped Git-based runner families, including the early
 Git updater and versions with broken helper self-reexecution. It cannot change
 old local actions performed **before** fresh code is fetched. Offline fetch

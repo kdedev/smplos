@@ -1,12 +1,15 @@
 import hashlib
 import importlib.machinery
 import importlib.util
+import io
 import json
 import os
 from pathlib import Path
 import re
+import shlex
 import shutil
 import subprocess
+import sys
 import tempfile
 import time
 import unittest
@@ -96,6 +99,127 @@ class HandoffContracts(unittest.TestCase):
             self.assertIsNone(child.poll())
         finally:
             child.communicate(b"\n", timeout=5)
+
+    def test_handoff_keeps_the_log_descriptor_instead_of_recreating_a_user_owned_tmp_file(self):
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            bootstrap = base / "src/shared/bin/smplos-update-bootstrap"
+            bootstrap.parent.mkdir(parents=True)
+            bootstrap.write_text("fixture\n")
+            original_open = Path.open
+
+            def protected_open(path, mode="r", *args, **kwargs):
+                if path.parent == base and path.suffix == ".log" and any(flag in mode for flag in "wa"):
+                    raise PermissionError("fs.protected_regular fixture")
+                return original_open(path, mode, *args, **kwargs)
+
+            def replacement(*args, **kwargs):
+                record = next(base.glob("*.log"))
+                with open(record, "a") as stream:
+                    stream.write("\ncoordinator-ready\n")
+                return mock.Mock()
+
+            with mock.patch.object(handoff.tempfile, "tempdir", directory), \
+                    mock.patch.object(Path, "open", protected_open), \
+                    mock.patch.object(handoff.os, "dup2"), \
+                    mock.patch.object(handoff.subprocess, "Popen", side_effect=replacement), \
+                    mock.patch("sys.stdout", new_callable=io.StringIO):
+                self.assertEqual(handoff.launch(base, [], os.getuid()), 75)
+
+
+@unittest.skipUnless(os.geteuid() == 0, "Requires the separate isolated sudo CI step")
+class PrivilegedHandoffTests(unittest.TestCase):
+    def setUp(self):
+        self.uid = int(os.environ.get("SUDO_UID", "0"))
+        if not self.uid:
+            self.skipTest("Run via sudo as a non-root desktop/test user")
+
+    def test_linux_rejects_the_previous_root_reopen_after_chown(self):
+        if Path("/proc/sys/fs/protected_regular").read_text().strip() == "0":
+            self.skipTest("This host has disabled the protected_regular kernel safeguard")
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            base.chmod(0o1777)
+            record = base / "user-owned.log"
+            record.write_text("original record\n")
+            os.chown(record, self.uid, -1)
+            with self.assertRaises(PermissionError):
+                record.open("a")
+            self.assertEqual(record.read_text(), "original record\n")
+
+    def test_real_root_to_user_handoff_works_with_protected_tmp_logs(self):
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            base.chmod(0o755)
+            home = base / "home"
+            home.mkdir()
+            os.chown(home, self.uid, -1)
+            state = home / ".local/state/smplos/update"
+            state.mkdir(parents=True)
+            state.chmod(0o700)
+            versions = home / ".local/state/smplos/app-versions"
+            versions.mkdir()
+            marker = versions / "smpl-apps"
+            marker.write_text("old native version\n")
+            untouched = state / "old-update.log"
+            untouched.write_text("preserve the old root log\n")
+            bootstrap = base / "src/shared/bin/smplos-update-bootstrap"
+            bootstrap.parent.mkdir(parents=True)
+            bootstrap.write_text(
+                '#!/bin/bash\nset -e\nprintf "replacement uid=%s\\n" "$(id -u)"\n'
+                f'echo new > {shlex.quote(str(state / "probe"))}\n'
+                f'echo new > {shlex.quote(str(marker))}\n'
+                'printf "\\ncoordinator-ready\\n" >> "$4"\n')
+            result = subprocess.run(
+                [sys.executable, "-c",
+                 "import os,pwd,runpy,sys; from pathlib import Path; "
+                 "module=runpy.run_path(sys.argv[1]); "
+                 "module['launch'].__globals__['user_environment'] = "
+                 "lambda uid: (pwd.getpwuid(uid).pw_name, dict(os.environ,HOME=sys.argv[2]+'/home')); "
+                 "sys.exit(module['launch'](Path(sys.argv[2]), [], int(sys.argv[3])))",
+                 str(BIN / "smplos-update-handoff"), str(base), str(self.uid)],
+                capture_output=True, text=True, timeout=40)
+            match = re.search(r"Details: (/.*\.log)", result.stdout)
+            self.assertIsNotNone(match, result.stdout + result.stderr)
+            record = Path(match[1])
+            self.addCleanup(record.unlink)
+            self.assertEqual(result.returncode, 75, record.read_text() + result.stderr)
+            self.assertEqual(record.stat().st_uid, self.uid)
+            self.assertIn(f"replacement uid={self.uid}", record.read_text())
+            self.assertIn("coordinator-ready", record.read_text())
+            self.assertEqual(state.stat().st_uid, self.uid)
+            self.assertEqual(marker.stat().st_uid, self.uid)
+            self.assertEqual((state / "probe").stat().st_uid, self.uid)
+            self.assertEqual(untouched.stat().st_uid, 0)
+            self.assertEqual(untouched.read_text(), "preserve the old root log\n")
+
+    def test_state_ownership_repair_does_not_follow_links_outside_the_desktop_home(self):
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            home = base / "home"
+            home.mkdir()
+            os.chown(home, self.uid, -1)
+            outside = base / "outside"
+            outside.mkdir()
+            (home / ".local").symlink_to(outside, target_is_directory=True)
+            with self.assertRaises(OSError):
+                handoff.restore_state_ownership(home, self.uid)
+            self.assertEqual(outside.stat().st_uid, 0)
+
+    def test_state_ownership_repair_refuses_hardlinked_version_markers(self):
+        with tempfile.TemporaryDirectory() as directory:
+            home = Path(directory) / "home"
+            home.mkdir()
+            os.chown(home, self.uid, -1)
+            versions = home / ".local/state/smplos/app-versions"
+            versions.mkdir(parents=True)
+            outside = Path(directory) / "outside"
+            outside.write_text("keep ownership and contents\n")
+            (versions / "smpl-apps").hardlink_to(outside)
+            with self.assertRaisesRegex(RuntimeError, "Unexpected state file"):
+                handoff.restore_state_ownership(home, self.uid)
+            self.assertEqual(outside.stat().st_uid, 0)
+            self.assertEqual(outside.read_text(), "keep ownership and contents\n")
 
 
 class LegacyButtonTests(unittest.TestCase):

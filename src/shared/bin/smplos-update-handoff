@@ -2,6 +2,7 @@
 """Retire recognized legacy update processes before reopening the coordinator."""
 
 import argparse
+import fcntl
 import hashlib
 import json
 import os
@@ -132,6 +133,60 @@ def user_environment(uid):
     return user.pw_name, env
 
 
+def restore_state_ownership(home, uid):
+    """Repair only updater-owned paths left behind by root legacy runners."""
+    gid = pwd.getpwuid(uid).pw_gid
+    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+    home_fd = os.open(home, flags)
+    try:
+        if os.fstat(home_fd).st_uid != uid:
+            raise RuntimeError("Desktop home ownership is unexpected; no state ownership was changed")
+        for relative, files in (
+                (".local/state/smplos/update",
+                 ("update.lock", "critical-bundle-applied", "critical-bundle-versions")),
+                (".local/state/smplos/app-versions",
+                 ("smpl-apps", "st-smpl", "nemo-smpl", "micro-smpl", "grafium")),
+                (".local/state/smplos/migrations/skipped", ())):
+            current = os.dup(home_fd)
+            visited = Path(home)
+            try:
+                for part in relative.split("/"):
+                    try:
+                        child = os.open(part, flags, dir_fd=current)
+                    except FileNotFoundError:
+                        break
+                    os.close(current)
+                    current = child
+                    visited /= part
+                    info = os.fstat(current)
+                    if info.st_uid not in (0, uid):
+                        raise RuntimeError(f"Unexpected owner for {visited}; refusing a guessed repair")
+                    if info.st_uid == 0:
+                        print(f"Restoring legacy state ownership: {visited} uid=0 gid={info.st_gid} -> {uid}:{gid}",
+                              flush=True)
+                        os.fchown(current, uid, gid)
+                else:
+                    for name in files:
+                        try:
+                            fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=current)
+                        except FileNotFoundError:
+                            continue
+                        try:
+                            info = os.fstat(fd)
+                            if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1 or info.st_uid not in (0, uid):
+                                raise RuntimeError(f"Unexpected state file {visited / name}; refusing ownership changes")
+                            if info.st_uid == 0:
+                                print(f"Restoring legacy state ownership: {visited / name} "
+                                      f"uid=0 gid={info.st_gid} -> {uid}:{gid}", flush=True)
+                                os.fchown(fd, uid, gid)
+                        finally:
+                            os.close(fd)
+            finally:
+                os.close(current)
+    finally:
+        os.close(home_fd)
+
+
 def launch(repo, chain, uid):
     with tempfile.NamedTemporaryFile(prefix="smplos-handoff-", suffix=".sh") as bootstrap:
         record_fd, record_name = tempfile.mkstemp(prefix="smplos-handoff-", suffix=".log")
@@ -141,17 +196,21 @@ def launch(repo, chain, uid):
             os.fchown(record_fd, uid, -1)
         bootstrap.write((repo / "src/shared/bin/smplos-update-bootstrap").read_bytes())
         bootstrap.flush()
-        with os.fdopen(record_fd, "w") as stream:
-            stream.write(json.dumps({"legacy": chain}) + "\n")
-        print(f"Refreshing the updater automatically; reopening Update OS. Details: {record}", flush=True)
-        result = 76
-        try:
-            name, env = user_environment(uid)
-            command = ["bash", bootstrap.name, "--mode", "full", "--legacy-handoff", record_name]
-            prefix = ["runuser", "-u", name, "--"] if os.geteuid() == 0 else []
-            with record.open("a") as output:
-                os.dup2(output.fileno(), 1)
-                os.dup2(output.fileno(), 2)
+        # Keep the creation descriptor after chown. Reopening a user-owned
+        # /tmp file with O_CREAT is denied by fs.protected_regular, even to root.
+        fcntl.fcntl(record_fd, fcntl.F_SETFL, fcntl.fcntl(record_fd, fcntl.F_GETFL) | os.O_APPEND)
+        with os.fdopen(record_fd, "w", buffering=1) as output:
+            output.write(json.dumps({"legacy": chain}) + "\n")
+            print(f"Refreshing the updater automatically; reopening Update OS. Details: {record}", flush=True)
+            os.dup2(output.fileno(), 1)
+            os.dup2(output.fileno(), 2)
+            result = 76
+            try:
+                name, env = user_environment(uid)
+                if os.geteuid() == 0:
+                    restore_state_ownership(env["HOME"], uid)
+                command = ["bash", bootstrap.name, "--mode", "full", "--legacy-handoff", record_name]
+                prefix = ["runuser", "-u", name, "--"] if os.geteuid() == 0 else []
                 child = subprocess.Popen(prefix + command, env=env, stdin=subprocess.DEVNULL,
                                          stdout=output, stderr=output, start_new_session=True)
                 # Old callers ignore helper failures and continue their stale
@@ -167,18 +226,17 @@ def launch(repo, chain, uid):
                     time.sleep(0.05)
                 else:
                     raise RuntimeError("Replacement updater did not open; the old update was stopped")
-        except (OSError, ValueError, RuntimeError) as error:
-            with record.open("a") as output:
+            except (OSError, ValueError, RuntimeError) as error:
                 print(f"ERROR: automatic updater handoff failed: {error}", file=output)
-            stop_legacy(chain)
-            name, env = user_environment(uid)
-            notify = ["notify-send", "Update OS could not start",
-                      f"The old update was stopped safely. Details: {record}"]
-            result_notify = subprocess.run(
-                (["runuser", "-u", name, "--"] if os.geteuid() == 0 else []) + notify, env=env, check=False)
-            if result_notify.returncode:
-                print("ERROR: the handoff failure notification could not be displayed", file=sys.stderr)
-        return result
+                stop_legacy(chain)
+                name, env = user_environment(uid)
+                notify = ["notify-send", "Update OS could not start",
+                          f"The old update was stopped safely. Details: {record}"]
+                result_notify = subprocess.run(
+                    (["runuser", "-u", name, "--"] if os.geteuid() == 0 else []) + notify, env=env, check=False)
+                if result_notify.returncode:
+                    print("ERROR: the handoff failure notification could not be displayed", file=sys.stderr)
+            return result
 
 
 def main():

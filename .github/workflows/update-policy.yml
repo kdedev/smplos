@@ -99,3 +99,7 @@ jobs:
           python3 -m unittest discover -s tests -p 'test_app_delivery.py' -v
           python3 -m unittest discover -s tests -p 'test_bar_ctl.py' -v
           python3 -m unittest discover -s tests -p 'test_dropped_packages.py' -v
+      - name: Check the real root-to-user handoff without running updates
+        run: |
+          sudo -n env PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=tests \
+            "$(command -v python3)" -m unittest test_update_handoff.PrivilegedHandoffTests -v
