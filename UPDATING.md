@@ -26,6 +26,13 @@ Run as the desktop user, **not** through sudo/pkexec. Root orchestration and
 later `runuser` contexts were responsible for repeated password prompts and lost
 graphical-session state. Subsequent privileged commands use noninteractive
 sudo: lost authorization is an explicit error, not another password prompt.
+Shared helper libraries are installed into an explicitly mode-0755 directory,
+with mode-0644 files, even when recovery runs with `umask 077`. Existing
+root-only library-directory permissions are corrected before installing files.
+Failed installs report the operation, destination, exit status and underlying
+command error instead of hiding verification failures behind a silent comparison.
+An enclosing recovery launcher may set `SMPLOS_UPDATE_NO_HOLD=1` to suppress
+startup/bootstrap Enter-to-close prompts and handle the final error display itself.
 `--mode apps` updates native/Flatpak apps only, without an official/AUR host
 package upgrade or desktop configuration deployment. A release needing newer
 host libraries can fail validation; use a full Update OS instead.

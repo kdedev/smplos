@@ -46,7 +46,8 @@ notify() {
 
 startup_fail() {
     notify "Update OS could not start" "$1${STARTUP_LOG:+ Startup log: $STARTUP_LOG}"
-    [[ ! -t 0 ]] || read -r -p "Update could not start. Press Enter to close. " _
+    [[ ! -t 0 || "${SMPLOS_UPDATE_NO_HOLD:-0}" == 1 ]] ||
+        read -r -p "Update could not start. Press Enter to close. " _
     exit 1
 }
 
@@ -203,7 +204,8 @@ bootstrap_fail() {
     echo "ERROR: $* Log: $SMPLOS_UPDATE_LOG_FILE" | tee -a "$SMPLOS_UPDATE_LOG_FILE" >&2
     [[ -z "$UPDATE_SCRIPT" ]] || rm -f -- "$UPDATE_SCRIPT"
     stop_sudo_keepalive
-    [[ ! -t 0 ]] || read -r -p "Update could not start. Press Enter to close. " _
+    [[ ! -t 0 || "${SMPLOS_UPDATE_NO_HOLD:-0}" == 1 ]] ||
+        read -r -p "Update could not start. Press Enter to close. " _
     exit 1
 }
 
@@ -213,7 +215,8 @@ if [[ -n "$LEGACY_HANDOFF" ]]; then
         bootstrap_fail "Automatic updater handoff failed; no package upgrade was started."
 fi
 if ! check_update_power 2>&1 | tee -a "$SMPLOS_UPDATE_LOG_FILE"; then
-    [[ ! -t 0 ]] || read -r -p "Plug in power, then press Enter to close and retry. " _
+    [[ ! -t 0 || "${SMPLOS_UPDATE_NO_HOLD:-0}" == 1 ]] ||
+        read -r -p "Plug in power, then press Enter to close and retry. " _
     exit 1
 fi
 authenticate_update

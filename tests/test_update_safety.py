@@ -1014,6 +1014,68 @@ exec "{self.git}" "$@"
 
 
 class RecoveryContractsTests(unittest.TestCase):
+    def test_failed_atomic_install_logs_the_operation_exit_status_and_command_error(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            candidate, installed = directory / "candidate", directory / "installed"
+            candidate.write_text("new file\n")
+            installed.write_text("existing file\n")
+            for operation in ("install", "publish", "verify"):
+                with self.subTest(operation=operation):
+                    script = function(BIN / "smplos-os-update", "install_system_file")
+                    script += """
+sudo() {
+    if [[ "$1:$FAIL_OPERATION" == install:install || "$1:$FAIL_OPERATION" == mv:publish ]]; then
+        echo "fixture underlying command error" >&2
+        return 73
+    fi
+    "$@"
+}
+cmp() {
+    [[ "$FAIL_OPERATION" != verify ]] || { echo "fixture comparison error" >&2; return 74; }
+    command cmp "$@"
+}
+install_system_file "$CANDIDATE" "$INSTALLED" 644
+"""
+                    result = subprocess.run(
+                        ["bash", "-c", script], capture_output=True, text=True,
+                        env={**os.environ, "CANDIDATE": str(candidate), "INSTALLED": str(installed),
+                             "FAIL_OPERATION": operation})
+                    code = 74 if operation == "verify" else 73
+                    self.assertEqual(result.returncode, code)
+                    self.assertIn(f"{operation} failed for {installed}", result.stderr)
+                    self.assertIn(f"exit {code}", result.stderr)
+                    self.assertIn("fixture ", result.stderr)
+                    self.assertEqual(list(directory.glob("installed.*")), [])
+
+    def test_shared_library_directory_is_readable_with_a_restrictive_recovery_umask(self):
+        for existing in (False, True):
+            with self.subTest(existing=existing), tempfile.TemporaryDirectory() as temporary:
+                directory = Path(temporary)
+                repo = directory / "repo"
+                source = repo / "src/shared/lib/fixture.sh"
+                source.parent.mkdir(parents=True)
+                source.write_text("fixture library\n")
+                destination = directory / "installed/lib/smplos"
+                if existing:
+                    destination.mkdir(parents=True, mode=0o700)
+                script = function(BIN / "smplos-os-update", "install_system_file")
+                script += "\n" + function(BIN / "smplos-os-update", "sync_libs").replace(
+                    '"/usr/local/lib/smplos"', shlex.quote(str(destination)))
+                script += """
+umask 077
+sudo() { "$@"; }
+ok() { :; }
+die() { echo "$*" >&2; exit 1; }
+sync_libs
+"""
+                result = subprocess.run(["bash", "-c", script], capture_output=True, text=True,
+                                        env={**os.environ, "SMPLOS_REPO": str(repo)})
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertEqual(destination.stat().st_mode & 0o777, 0o755)
+                self.assertEqual((destination / "fixture.sh").stat().st_mode & 0o777, 0o644)
+                self.assertEqual((destination / "fixture.sh").read_text(), "fixture library\n")
+
     def test_failed_nvidia_initramfs_rebuild_remains_pending_and_retries_with_unchanged_config(self):
         with tempfile.TemporaryDirectory() as temporary:
             directory = Path(temporary)

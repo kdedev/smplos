@@ -15,6 +15,8 @@ import time
 import unittest
 from unittest import mock
 
+from test_app_delivery import function
+
 
 ROOT = Path(__file__).resolve().parents[1]
 BIN = ROOT / "src/shared/bin"
@@ -143,6 +145,37 @@ class PrivilegedHandoffTests(unittest.TestCase):
         self.uid = int(os.environ.get("SUDO_UID", "0"))
         if not self.uid:
             self.skipTest("Run via sudo as a non-root desktop/test user")
+
+    def test_restrictive_recovery_umask_does_not_make_root_installed_libraries_unreadable(self):
+        name = handoff.pwd.getpwuid(self.uid).pw_name
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            base.chmod(0o755)
+            repo = base / "repo"
+            source = repo / "src/shared/lib/fixture.sh"
+            source.parent.mkdir(parents=True)
+            source.write_text("readable root-installed library\n")
+            destination = base / "installed/smplos"
+            destination.mkdir(parents=True, mode=0o700)
+            script = function(BIN / "smplos-os-update", "install_system_file")
+            script += "\n" + function(BIN / "smplos-os-update", "sync_libs").replace(
+                '"/usr/local/lib/smplos"', shlex.quote(str(destination)))
+            script += """
+umask 077
+sudo() { "$@"; }
+ok() { :; }
+die() { echo "$*" >&2; exit 1; }
+sync_libs
+"""
+            result = subprocess.run(["bash", "-c", script], capture_output=True, text=True,
+                                    env={**os.environ, "SMPLOS_REPO": str(repo)})
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            installed = destination / "fixture.sh"
+            self.assertEqual(installed.stat().st_uid, 0)
+            read = subprocess.run(["runuser", "-u", name, "--", "cat", str(installed)],
+                                  capture_output=True, text=True, timeout=10)
+            self.assertEqual(read.returncode, 0, read.stderr)
+            self.assertEqual(read.stdout, source.read_text())
 
     def test_linux_rejects_the_previous_root_reopen_after_chown(self):
         if Path("/proc/sys/fs/protected_regular").read_text().strip() == "0":
