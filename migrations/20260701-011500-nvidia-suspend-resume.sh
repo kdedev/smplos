@@ -33,6 +33,8 @@ fi
 
 n_changes=0
 conf_changed=0
+failed=0
+pending="$HOME/.local/state/smplos/nvidia-initramfs-pending"
 
 # ── 1. modprobe power-management options ─────────────────────────────────────
 MODPROBE="/etc/modprobe.d/nvidia.conf"
@@ -40,12 +42,23 @@ DESIRED='options nvidia_drm modeset=1 fbdev=1
 options nvidia NVreg_PreserveVideoMemoryAllocations=1'
 
 if [[ ! -f "$MODPROBE" ]] || [[ "$(cat "$MODPROBE" 2>/dev/null)" != "$DESIRED" ]]; then
+    if [[ -f "$MODPROBE" ]]; then
+        backup="$MODPROBE.smplos-before-$(date +%Y%m%d-%H%M%S)-$$"
+        sudo cp -pL -- "$MODPROBE" "$backup"
+        sudo cmp -s -- "$MODPROBE" "$backup" || {
+            echo "  ERROR: NVIDIA configuration backup could not be verified"
+            exit 1
+        }
+    fi
+    mkdir -p "${pending%/*}"
+    touch "$pending"
     if printf '%s\n' "$DESIRED" | sudo tee "$MODPROBE" >/dev/null 2>&1; then
         echo "  Updated $MODPROBE (fbdev + PreserveVideoMemoryAllocations)"
         conf_changed=1
         ((n_changes++)) || true
     else
         echo "  WARNING: could not write $MODPROBE (sudo required)"
+        failed=1
     fi
 else
     echo "  $MODPROBE already current"
@@ -59,6 +72,7 @@ for svc in nvidia-suspend.service nvidia-resume.service nvidia-hibernate.service
             ((n_changes++)) || true
         else
             echo "  WARNING: could not enable $svc"
+            failed=1
         fi
     fi
 done
@@ -66,22 +80,29 @@ done
 # ── 3. Rebuild initramfs so the new module options load early ────────────────
 # Only when the modprobe config changed (the nvidia modules are pulled into the
 # initramfs via MODULES+=, so their options must live there too).
-if [[ "$conf_changed" -eq 1 ]]; then
+if [[ "$conf_changed" -eq 1 || -f "$pending" ]]; then
     if command -v mkinitcpio >/dev/null 2>&1; then
         echo "  Rebuilding initramfs (mkinitcpio -P)…"
         if sudo mkinitcpio -P >/dev/null 2>&1; then
             echo "  initramfs rebuilt"
+            rm -f -- "$pending"
             ((n_changes++)) || true
         else
             echo "  WARNING: mkinitcpio -P failed — run it manually before rebooting"
+            failed=1
         fi
+    else
+        echo "  ERROR: mkinitcpio is missing; initramfs repair remains pending"
+        failed=1
     fi
 fi
 
-if [[ "$n_changes" -gt 0 ]]; then
+if [[ "$failed" -ne 0 ]]; then
+    echo "  ERROR: NVIDIA setup remains incomplete; resolve the errors before rebooting"
+elif [[ "$n_changes" -gt 0 ]]; then
     echo "  NVIDIA suspend/resume fix applied — takes effect after next reboot"
 else
     echo "  NVIDIA suspend/resume already configured, nothing to do"
 fi
 
-exit 0
+exit "$failed"

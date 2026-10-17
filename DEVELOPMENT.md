@@ -53,7 +53,7 @@ only grants unprivileged-user capabilities, which isn't enough. So the outer scr
 runs the container with `sudo podman run --privileged`, but Podman itself requires no
 daemon or background service.
 
-**Why two containers?** AUR packages (eww, brave-bin, paru-bin, etc.) must be compiled
+**Why two containers?** AUR packages (eww, brave-bin, yay-bin, etc.) must be packaged
 with `makepkg` as a non-root user, which is incompatible with the `--privileged` ISO
 builder. Separating them also means you only rebuild AUR packages when their
 `PKGBUILD` changes — subsequent runs reuse the cached `.pkg.tar.zst` files in

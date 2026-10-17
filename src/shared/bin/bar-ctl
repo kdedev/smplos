@@ -1,7 +1,8 @@
 #!/bin/bash
 # Bar Control Script (EWW)
 
-LOG="/tmp/eww-startup.log"
+LOG="${XDG_STATE_HOME:-$HOME/.local/state}/smplos/eww-startup.log"
+mkdir -p "${LOG%/*}" || exit 1
 
 action="${1:-toggle}"
 EWW_CONFIG="$HOME/.config/eww"
@@ -100,6 +101,21 @@ eww_reload() {
     eww_apply
 }
 
+eww_ensure() {
+    local windows
+    if ! windows=$(eww_cmd active-windows) ||
+        ! awk -F: -v name="$BAR_NAME" '$1 == name { found=1 } END { exit !found }' <<< "$windows"; then
+        eww_start || return 1
+    else
+        eww_reload || return 1
+    fi
+    windows=$(eww_cmd active-windows) || return 1
+    if ! awk -F: -v name="$BAR_NAME" '$1 == name { found=1 } END { exit !found }' <<< "$windows"; then
+        echo "Error: $BAR_NAME is still absent after recovery; see $LOG" >&2
+        return 1
+    fi
+}
+
 # Apply bar settings from ~/.config/smplos/bar.conf to running EWW instance.
 # File format: literal KEY=VALUE (not sourced as shell). Supported keys:
 #   ws_count    = 1-10   (total workspace slots, default 4)
@@ -176,11 +192,12 @@ case "$action" in
     stop|close)   eww_stop ;;
     toggle)       eww_toggle ;;
     reload)       eww_reload ;;
+    ensure)       eww_ensure ;;
     redraw)       eww_redraw ;;
     watch)        eww_watch ;;
     apply)        eww_apply ;;
     *)
-        echo "Usage: bar-ctl [start|stop|toggle|reload|redraw|watch|apply] [bar]"
+        echo "Usage: bar-ctl [start|stop|toggle|reload|ensure|redraw|watch|apply] [bar]"
         exit 1
         ;;
 esac

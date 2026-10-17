@@ -85,9 +85,11 @@ install_smplos() {
   # Install gum in chroot for any additional prompts
   chroot_bash -lc "sudo pacman -S --noconfirm --needed gum" >/dev/null 2>&1 || true
   
-  # Run the smplOS installer script (matching Omarchy's approach exactly)
-  # The || bash fallback ensures we don't exit on error
-  chroot_bash -lc "source /home/$SMPLOS_USER/.local/share/smplos/install.sh || bash"
+  # A conditional `source ... || bash` suppresses errexit inside install.sh.
+  if ! chroot_bash -lc "bash /home/$SMPLOS_USER/.local/share/smplos/install.sh"; then
+    echo "smplOS setup failed. Inspect the install log before retrying; no automatic reboot." >&2
+    return 1
+  fi
 
   # Reboot if installation completed successfully (matching Omarchy exactly)
   if [[ -f /mnt/var/tmp/smplos-install-completed ]]; then

@@ -12,8 +12,10 @@
 #   --quiet     Suppress per-file output
 #   --scripts   Only sync scripts (skip migrations)
 #   --migrate   Only run migrations (skip git pull + script sync)
+#   --deploy    Deploy the already-bootstrapped checkout without pulling again
 
 set -euo pipefail
+SMPLOS_UPDATE_PROTOCOL=1
 
 # ── Restore invoker context if running under pkexec/sudo ─────────────────────
 # Under pkexec, $HOME is /root and every $HOME-relative path (SMPLOS_PATH,
@@ -90,7 +92,7 @@ SELF_PATH="$(readlink -f "$0" 2>/dev/null || echo "$0")"
 SELF_CANONICAL="/usr/local/bin/smplos-os-update"
 
 # ── Argument parsing ──────────────────────────────────────────────────────────
-CHECK_ONLY=0; QUIET=0; SCRIPTS_ONLY=0; MIGRATE_ONLY=0
+CHECK_ONLY=0; QUIET=0; SCRIPTS_ONLY=0; MIGRATE_ONLY=0; DEPLOY_ONLY=0; FINALIZE_ONLY=0
 # Internal flag: set by self-reexec to prevent infinite loops if the newly
 # installed script somehow still detects itself as outdated.
 SELF_UPDATED="${SMPLOS_OS_UPDATE_RESUMED:-0}"
@@ -104,8 +106,10 @@ while [[ $# -gt 0 ]]; do
         --quiet)     QUIET=1 ;;
         --scripts)   SCRIPTS_ONLY=1 ;;
         --migrate)   MIGRATE_ONLY=1 ;;
+        --deploy)    DEPLOY_ONLY=1 ;;
+        --finalize)  FINALIZE_ONLY=1 ;;
         -h|--help)
-            echo "Usage: smplos-os-update [--check | --quiet | --scripts | --migrate]"
+            echo "Usage: smplos-os-update [--check | --quiet | --scripts | --migrate | --deploy]"
             exit 0 ;;
         *) echo "Unknown option: $1" >&2; exit 1 ;;
     esac
@@ -132,20 +136,7 @@ ensure_repo() {
 }
 
 # ── Git pull ──────────────────────────────────────────────────────────────────
-# Bulletproof repo sync. The old implementation silently swallowed errors with
-# `2>/dev/null` on every git command; we saw repos drift 25 commits behind
-# origin because a single failed rebase (dirty tree, detached HEAD, wrong
-# branch, network blip) would go completely unnoticed. Every subsequent
-# update would then report "Already up to date" against a stale local HEAD.
-#
-# Invariants this function guarantees on success:
-#   1. Working tree exists and is a git repo pointing at the smplos remote.
-#   2. HEAD is on branch `main` (never detached; auto-recovers if it was).
-#   3. Local main is exactly equal to origin/main after the call.
-#   4. All error output from git is surfaced to the log — no silent failures.
-#
-# Any deviation from those invariants that cannot be recovered from is a
-# hard `die` — we refuse to silently deploy from a stale checkout.
+# Never discard local work to make an update appear successful.
 pull_updates() {
     header "── smplOS System Files ──"
 
@@ -160,25 +151,20 @@ pull_updates() {
     #    SMPLOS_REPO from pulling arbitrary upstream code onto the system.
     local remote_url
     remote_url=$(as_invoker git -C "$repo" remote get-url origin 2>/dev/null || echo "")
-    if [[ "$remote_url" != *"smpl-os/smplos"* ]]; then
-        die "SMPLOS_REPO ($repo) origin is '$remote_url', expected smpl-os/smplos"
-    fi
+    case "$remote_url" in
+        https://github.com/smpl-os/smplos|https://github.com/smpl-os/smplos.git|git@github.com:smpl-os/smplos.git) ;;
+        *) die "Unexpected smplOS origin: $remote_url" ;;
+    esac
 
-    # 2) Move HEAD to `main` if it drifted (detached HEAD from a manual
-    #    checkout, dev experimenting on a feature branch, prior interrupted
-    #    rebase leaving REBASE_HEAD around, etc.). Without this, `git pull`
-    #    silently does nothing useful on a detached HEAD and we'd never catch
-    #    up. Any in-flight rebase is aborted before we try.
     if [[ -d "$repo/.git/rebase-merge" || -d "$repo/.git/rebase-apply" ]]; then
-        warn "Aborting stale rebase state in $repo"
-        as_invoker git -C "$repo" rebase --abort 2>&1 | while read -r l; do log "  $l"; done || true
+        die "Unfinished rebase in $repo; resolve or back it up before updating."
     fi
     branch=$(as_invoker git -C "$repo" symbolic-ref --short HEAD 2>/dev/null || echo "")
     if [[ "$branch" != "main" ]]; then
-        warn "Repo was on '$branch' (or detached), checking out main"
-        as_invoker git -C "$repo" checkout -B main 2>&1 | while read -r l; do log "  $l"; done \
-            || die "Cannot switch $repo to branch main"
+        die "Repo is on '${branch:-detached HEAD}', not main; preserve local work and select main before updating."
     fi
+    [[ -z "$(as_invoker git -C "$repo" status --porcelain)" ]] \
+        || die "Local changes in $repo; back them up or commit them before updating."
 
     # 3) Fetch. Any network/auth error here MUST surface — this is the single
     #    most common silent-failure point that leaves us stuck on a stale HEAD.
@@ -196,20 +182,9 @@ pull_updates() {
         return 1
     fi
 
-    # 5) Try ff-only first — this is the safest path when local main hasn't
-    #    diverged. If we can fast-forward, do so; no rebase, no merge, no
-    #    surprises. Local changes to tracked files are auto-stashed and
-    #    popped so a dev poking at looknfeel.lua doesn't block the update.
     log "Local: $(as_invoker git -C "$repo" rev-parse --short HEAD)  Remote: $(as_invoker git -C "$repo" rev-parse --short origin/main)"
-    if ! as_invoker git -C "$repo" pull --ff-only --autostash 2>&1 | while read -r l; do log "  $l"; done; then
-        # 6) FF failed → local main has diverged. Rather than silently
-        #    creating a merge or dropping user commits, we hard-reset to
-        #    origin/main. This mirrors the old behavior's intent but with
-        #    LOUD logging so the drift is visible in support tickets.
-        warn "Fast-forward failed; local main has diverged from origin/main."
-        warn "Hard-resetting to origin/main (any local commits on $repo main will be discarded)."
-        as_invoker git -C "$repo" reset --hard "origin/main" 2>&1 | while read -r l; do log "  $l"; done \
-            || die "Hard-reset to origin/main failed — repo is in an inconsistent state"
+    if ! as_invoker git -C "$repo" merge --ff-only "$remote_head" 2>&1 | while read -r l; do log "  $l"; done; then
+        die "Cannot fast-forward $repo; local commits were preserved. Resolve divergence before updating."
     fi
 
     after=$(as_invoker git -C "$repo" rev-parse HEAD 2>/dev/null || echo "unknown")
@@ -257,7 +232,7 @@ check_updates() {
 # ── Sync scripts to /usr/local/bin/ ───────────────────────────────────────────
 sync_scripts() {
     local bin_dir="$SMPLOS_REPO/src/shared/bin"
-    [[ -d "$bin_dir" ]] || { warn "No scripts directory found at $bin_dir"; return; }
+    [[ -d "$bin_dir" ]] || die "No scripts directory found at $bin_dir"
 
     header ""
     header "── Syncing scripts ──"
@@ -275,14 +250,14 @@ sync_scripts() {
         ((n_total++)) || true
 
         # Only copy if changed (compare against the system copy)
-        if [[ -f "$dest" ]] && cmp -s "$script" "$dest"; then
+        if [[ -x "$dest" ]] && cmp -s "$script" "$dest"; then
             continue
         fi
 
-        if sudo install -m755 "$script" "$dest" 2>/dev/null; then
+        if install_system_file "$script" "$dest" 755; then
             ((n_updated++)) || true
         else
-            warn "Failed to install $name (sudo required)"
+            die "Failed to install $name"
         fi
         # Single-copy invariant: do NOT mirror into ~/.local/share/smplos/bin.
         # Historically we did — the intent was "user-local wins on PATH so a
@@ -305,10 +280,10 @@ sync_scripts() {
 # are not executable and cleanup_shadow_bins reasons about bin/ entries).
 sync_libs() {
     local lib_dir="$SMPLOS_REPO/src/shared/lib"
-    [[ -d "$lib_dir" ]] || return 0
+    [[ -d "$lib_dir" ]] || die "No shared library directory found at $lib_dir"
 
     local dest_dir="/usr/local/lib/smplos"
-    sudo mkdir -p "$dest_dir" 2>/dev/null || { warn "Could not create $dest_dir"; return 0; }
+    sudo mkdir -p "$dest_dir" || die "Could not create $dest_dir"
 
     local lib name n_updated=0
     for lib in "$lib_dir"/*.sh "$lib_dir"/*.py; do
@@ -317,15 +292,27 @@ sync_libs() {
         if [[ -f "$dest_dir/$name" ]] && cmp -s "$lib" "$dest_dir/$name"; then
             continue
         fi
-        if sudo install -m644 "$lib" "$dest_dir/$name" 2>/dev/null; then
+        if install_system_file "$lib" "$dest_dir/$name" 644; then
             ((n_updated++)) || true
         else
-            warn "Failed to install lib $name (sudo required)"
+            die "Failed to install lib $name"
         fi
     done
 
     [[ $n_updated -gt 0 ]] && ok "$n_updated shell librar(ies) updated"
     return 0
+}
+
+install_system_file() {
+    local source="$1" destination="$2" mode="$3" temporary
+    temporary=$(sudo mktemp "${destination}.XXXXXX") || return 1
+    if sudo install -m"$mode" "$source" "$temporary" &&
+        sudo mv -f -- "$temporary" "$destination" &&
+        cmp -s "$source" "$destination"; then
+        return 0
+    fi
+    sudo rm -f -- "$temporary"
+    return 1
 }
 
 # ── Sync config files to ~/.config/ ───────────────────────────────────────────
@@ -353,7 +340,10 @@ sync_configs() {
         as_invoker mkdir -p "$eww_dst"
         # Publish included fragments before the entry point so live reloads
         # never see an include that has not reached disk yet.
-        for f in workspace-overview.yuck pad-icons.yuck eww.scss eww.yuck; do
+        local source f
+        for source in "$eww_src"/*.yuck "$eww_src"/*.scss; do
+            f="${source##*/}"
+            case "$f" in eww.yuck|eww.scss|theme-colors.*) continue ;; esac
             if [[ -f "$eww_src/$f" ]] && ! cmp -s "$eww_src/$f" "$eww_dst/$f" 2>/dev/null; then
                 copy_user_config "$eww_src/$f" "$eww_dst/$f"
                 ((n_updated++)) || true
@@ -361,18 +351,24 @@ sync_configs() {
         done
         # Sync scripts directory
         if [[ -d "$eww_src/scripts" ]]; then
-            mkdir -p "$eww_dst/scripts"
+            as_invoker mkdir -p "$eww_dst/scripts"
             for script in "$eww_src/scripts/"*; do
                 [[ -f "$script" ]] || continue
                 local name
                 name=$(basename "$script")
-                if ! cmp -s "$script" "$eww_dst/scripts/$name" 2>/dev/null; then
-                    cp "$script" "$eww_dst/scripts/$name"
-                    chmod +x "$eww_dst/scripts/$name"
+                if [[ ! -x "$eww_dst/scripts/$name" ]] || ! cmp -s "$script" "$eww_dst/scripts/$name" 2>/dev/null; then
+                    copy_user_config "$script" "$eww_dst/scripts/$name"
+                    as_invoker chmod +x "$eww_dst/scripts/$name"
                     ((n_updated++)) || true
                 fi
             done
         fi
+        for f in eww.scss eww.yuck; do
+            if ! cmp -s "$eww_src/$f" "$eww_dst/$f"; then
+                copy_user_config "$eww_src/$f" "$eww_dst/$f"
+                ((n_updated++)) || true
+            fi
+        done
     fi
 
     # smplOS fonts (keypad cheatsheet icons; EWW draws them by family name)
@@ -559,77 +555,11 @@ sync_apps() {
     fi
 }
 
-# ── Transient NOPASSWD sudoers helpers ───────────────────────────────────────
-# The whole Update-OS flow authenticates ONCE via pkexec (the polkit UI prompt).
-# We then run migrations under `runuser -u $SMPLOS_INVOKER_USER`, which starts
-# a FRESH sudo credential context — so `sudo pacman ...` inside a migration
-# would prompt for a password on the terminal. That's what caused the
-# "asked for password 3 more times in the terminal" bug on customer machines.
-#
-# Fix: while we're already root (via pkexec), drop a scoped sudoers.d fragment
-# granting NOPASSWD sudo to the invoker for the exact tools migrations need
-# (pacman, mkinitcpio, tee, systemctl). It's validated with visudo before it
-# takes effect, and removed on ANY exit path via trap. If the file is
-# somehow left behind (kill -9 the shell), it's still safe: it only grants
-# rights the pkexec-authenticated user just proved they have.
-_grant_transient_sudo() {
-    # Only meaningful when we're root and know the invoker.
-    [[ $EUID -eq 0 && -n "${SMPLOS_INVOKER_USER:-}" ]] || return 0
-
-    # Skip if a fragment is already in place (nested invocation, prior run
-    # that didn't clean up — we'll replace it below with a validated one).
-    local frag="/etc/sudoers.d/99-smplos-update-transient"
-
-    # Compose the fragment. Restrict to specific absolute-path binaries so a
-    # compromise of the user account can't escalate to arbitrary root via
-    # this grant.
-    local tmp
-    tmp=$(mktemp /tmp/smplos-sudoers.XXXXXX)
-    cat > "$tmp" <<SUDOERS
-# Auto-managed by smplos-os-update; grants NOPASSWD sudo to the invoker for
-# the tools migrations legitimately need, ONLY for the duration of one
-# Update OS run. Removed on exit via trap. If you find this file after
-# smplos-update has finished, it is safe to delete:
-#   sudo rm -f /etc/sudoers.d/99-smplos-update-transient
-Defaults:$SMPLOS_INVOKER_USER !requiretty
-$SMPLOS_INVOKER_USER ALL=(root) NOPASSWD: /usr/bin/pacman, /usr/bin/mkinitcpio, /usr/bin/tee, /usr/bin/systemctl, /usr/bin/pacman-key
-SUDOERS
-    chmod 0440 "$tmp"
-
-    # Validate before promoting into /etc/sudoers.d — a malformed fragment
-    # would break ALL sudo on the machine. `visudo -cf` returns 0 iff parse OK.
-    if ! visudo -cf "$tmp" >/dev/null 2>&1; then
-        warn "sudoers fragment failed visudo -cf validation; migrations may prompt for password"
-        rm -f "$tmp"
-        return 0
-    fi
-
-    if install -m 0440 -o root -g root "$tmp" "$frag" 2>/dev/null; then
-        rm -f "$tmp"
-        # Register cleanup ONCE per run.
-        if [[ -z "${_SMPLOS_TRANSIENT_SUDO_TRAP:-}" ]]; then
-            _SMPLOS_TRANSIENT_SUDO_TRAP=1
-            trap '_revoke_transient_sudo' EXIT INT TERM HUP
-        fi
-    else
-        warn "could not install $frag; migrations may prompt for password"
-        rm -f "$tmp"
-    fi
-}
-
-_revoke_transient_sudo() {
-    rm -f /etc/sudoers.d/99-smplos-update-transient 2>/dev/null || true
-}
-
 # ── Run migrations ────────────────────────────────────────────────────────────
 run_migrations() {
     if command -v smplos-migrate &>/dev/null; then
         header ""
         header "── Migrations ──"
-        # Grant transient NOPASSWD sudo for the invoker so migrations that
-        # need `sudo pacman ...` don't re-prompt for a password. Cleaned up
-        # via trap in _grant_transient_sudo.
-        _grant_transient_sudo
         # Run as the invoker so:
         #  (a) migration marker files under ~/.local/state/smplos/migrations/
         #      stay user-owned (else the user can never clear them without sudo),
@@ -648,26 +578,27 @@ run_migrations() {
 # ── Sync smplOS version ───────────────────────────────────────────────────────
 sync_version() {
     local version_file="$SMPLOS_REPO/src/VERSION"
-    [[ -f "$version_file" ]] || return
-
-    local new_ver
-    new_ver=$(tr -d '[:space:]' < "$version_file")
-    [[ -z "$new_ver" ]] && return
-
-    # Update /etc/os-release so fastfetch, smplos-settings about, etc. show the correct version
-    if [[ -f /etc/os-release ]]; then
-        local current_ver
-        current_ver=$(grep '^VERSION_ID=' /etc/os-release 2>/dev/null | cut -d'=' -f2 | tr -d '"')
-        if [[ "$current_ver" != "$new_ver" ]]; then
-            local os_release_template="$SMPLOS_REPO/src/shared/system/os-release"
-            if [[ -f "$os_release_template" ]]; then
-                sudo sed "s/@BUILD_VERSION@/${new_ver}/g" "$os_release_template" \
-                    | sudo tee /etc/os-release > /dev/null 2>&1 \
-                    && ok "smplOS version: $current_ver -> $new_ver" \
-                    || warn "Failed to update /etc/os-release"
-            fi
-        fi
+    local template="$SMPLOS_REPO/src/shared/system/os-release"
+    [[ -s "$version_file" && -f "$template" ]] || {
+        warn "Missing OS version or os-release template"; return 1;
+    }
+    local new_ver current_ver destination temporary status=0
+    new_ver=$(tr -d '[:space:]' < "$version_file") || return 1
+    [[ -n "$new_ver" ]] || { warn "OS version is empty"; return 1; }
+    current_ver=$(sed -n 's/^VERSION_ID=//p' /etc/os-release | tr -d '"') || return 1
+    [[ "$current_ver" != "$new_ver" ]] || return 0
+    # Preserve the distribution's os-release symlink, replacing its target.
+    destination=$(readlink -f /etc/os-release) || return 1
+    temporary=$(mktemp) || return 1
+    if ! sed "s/@BUILD_VERSION@/${new_ver}/g" "$template" > "$temporary" ||
+        ! install_system_file "$temporary" "$destination" 644; then
+        warn "Failed to update /etc/os-release"
+        status=1
+    else
+        ok "smplOS version: $current_ver -> $new_ver"
     fi
+    rm -f -- "$temporary"
+    return "$status"
 }
 
 # ── Sync Hyprland compositor configs ─────────────────────────────────────────
@@ -786,14 +717,17 @@ sync_user_units() {
     [[ $changed -eq 1 ]] && log "  + session services target installed"
 
     if smplos_have_hyprland; then
-        [[ $changed -eq 1 ]] && smplos_run_as_user systemctl --user daemon-reload
+        if [[ $changed -eq 1 ]]; then
+            smplos_run_as_user systemctl --user daemon-reload || return 1
+        fi
         if smplos_run_as_user systemctl --user start smplos-session.target; then
             # Stops and reports services that cannot run instead of letting
             # them restart-loop until the next login.
             smplos_run_as_user smplos-session-services --verify \
-                || warn "Some session services are not running; see ~/.cache/smplos/session-services.log"
+                || { warn "Some session services are not running; see ~/.cache/smplos/session-services.log"; return 1; }
         else
             warn "Could not start session services now; they start at the next login."
+            return 1
         fi
     fi
 }
@@ -836,14 +770,18 @@ cleanup_shadow_bins() {
     if command -v smplos-check-shadows &>/dev/null; then
         # --clean removes duplicates; the subsequent --audit exits non-zero
         # if anything slipped past cleanup (permission denied, race, etc.)
-        # so we surface it as a warning rather than silently pretending
-        # everything is fine.
-        smplos-check-shadows --clean
+        # so the update cannot claim success while launching stale code.
+        if ! smplos-check-shadows --clean; then
+            warn "Shadow cleanup failed; inspect smplos-check-shadows"
+            return 1
+        fi
         if ! smplos-check-shadows --audit --quiet; then
             warn "Shadow duplicates persist after clean — check manually with smplos-check-shadows"
+            return 1
         fi
     else
-        warn "smplos-check-shadows not installed; skipping shadow enforcement"
+        warn "smplos-check-shadows not installed; cannot verify launched code"
+        return 1
     fi
 }
 
@@ -906,7 +844,10 @@ restart_updated_apps() {
 }
 
 post_deploy() {
-    sync_version
+    local failed=0
+    if [[ "${SMPLOS_UPDATE_APP_OWNER:-0}" != 1 ]]; then
+        sync_version || failed=1
+    fi
 
     local current_theme
     current_theme=$(theme-current 2>/dev/null || echo "catppuccin")
@@ -914,9 +855,11 @@ post_deploy() {
     # Running theme-set as root leaves current/theme undeletable by the user,
     # so later switches update only theme.name and keep deploying the old colors.
     if smplos_have_session; then
-        smplos_run_as_user theme-set "$current_theme" || warn "theme-set failed"
+        smplos_run_as_user theme-set "$current_theme" || failed=1
+        smplos_run_as_user bar-ctl ensure || failed=1
     else
-        as_invoker theme-set "$current_theme" || warn "theme-set failed"
+        as_invoker theme-set "$current_theme" || failed=1
+        log "No graphical session; bar verification deferred until login."
     fi
 
     if [[ ${#UPDATED_APP_BINS[@]} -gt 0 ]]; then
@@ -926,15 +869,16 @@ post_deploy() {
 
     if hyprctl version &>/dev/null 2>&1; then
         log "Reloading Hyprland config..."
-        hyprctl reload 2>/dev/null || true
+        hyprctl reload || failed=1
     elif smplos_have_hyprland; then
         # We're root under pkexec with a stripped environment, so the bare
         # `hyprctl version` probe above always failed with
         # "HYPRLAND_INSTANCE_SIGNATURE not set!" and this reload never ran.
         # Route it back into the invoker's session instead.
         log "Reloading Hyprland config..."
-        smplos_run_as_user hyprctl reload &>/dev/null || true
+        smplos_run_as_user hyprctl reload || failed=1
     fi
+    return "$failed"
 }
 
 # ── Main ──────────────────────────────────────────────────────────────────────
@@ -947,6 +891,10 @@ if [[ $MIGRATE_ONLY -eq 1 ]]; then
     run_migrations
     exit 0
 fi
+if [[ $FINALIZE_ONLY -eq 1 ]]; then
+    sync_version
+    exit $?
+fi
 
 had_updates="${SMPLOS_OS_HAD_UPDATES:-0}"
 HYPR_CONFIGS_CHANGED=0
@@ -956,7 +904,10 @@ APPS_CHANGED=0
 # reported by post_deploy. Declared here so nounset
 # doesn't trip when sync_apps is skipped (e.g. --scripts) or is a no-op.
 UPDATED_APP_BINS=()
-if pull_updates; then
+if [[ $DEPLOY_ONLY -eq 1 ]]; then
+    [[ -d "$SMPLOS_REPO/.git" ]] || die "No bootstrapped checkout at $SMPLOS_REPO"
+    had_updates=1
+elif pull_updates; then
     had_updates=1
 fi
 
@@ -972,7 +923,7 @@ _pre_sync_hash=""
     _pre_sync_hash=$(sha256sum "$SELF_CANONICAL" 2>/dev/null | cut -d' ' -f1)
 
 if [[ $SCRIPTS_ONLY -eq 0 ]]; then
-    sync_scripts
+    [[ $DEPLOY_ONLY -eq 1 ]] || sync_scripts
 
     # ── Self-reexec if this script just got updated ──────────────────────
     # If we were launched from the old /usr/local/bin/smplos-os-update and
@@ -1006,23 +957,24 @@ if [[ $SCRIPTS_ONLY -eq 0 ]]; then
 
     sync_configs
     sync_themes
-    sync_apps
+    if [[ "${SMPLOS_UPDATE_APP_OWNER:-0}" != 1 ]]; then
+        sync_apps
+    fi
     sync_hypr_configs
     migrations_failed=0
     run_migrations || migrations_failed=1
     # Reconcile even when migrations were already marked done. Verify only
     # after units and the published keypad package have been delivered.
     sync_keypad_support || migrations_failed=1
-    sync_user_units
-    sync_hypridle_config
-    [[ $migrations_failed -eq 0 ]] || die "Some migrations failed; idle reconciliation was attempted. Resolve the reported errors and retry Update OS."
+    sync_user_units || migrations_failed=1
+    sync_hypridle_config || migrations_failed=1
 
     # Unconditional shadow-binary sweep. Runs AFTER sync_apps so we've already
     # deposited the fresh canonical /usr/local/bin/<foo> before deciding whether
     # its shadow is stale. Costs a few hundred stat calls; the payoff is that
     # dev-machine deploy-local.sh drops, hand-copied binaries, and any prior
     # broken update-apps runs all get healed on every OS update.
-    cleanup_shadow_bins
+    cleanup_shadow_bins || migrations_failed=1
 
     # Reload Hyprland whenever EITHER new commits were pulled OR the hypr
     # config sync wrote anything. The latter catches the case where the git
@@ -1035,8 +987,9 @@ if [[ $SCRIPTS_ONLY -eq 0 ]]; then
     if [[ $had_updates -eq 1 || $SELF_UPDATED -eq 1 || $THEMES_CHANGED -eq 1 || $HYPR_CONFIGS_CHANGED -eq 1 || $APPS_CHANGED -eq 1 ]]; then
         header ""
         header "── Post-deploy ──"
-        post_deploy
+        post_deploy || migrations_failed=1
     fi
+    [[ $migrations_failed -eq 0 ]] || die "Some deployment steps failed; desktop reconciliation was attempted. Resolve the reported errors and retry Update OS."
 fi
 
 if [[ $SCRIPTS_ONLY -eq 1 ]]; then

@@ -9,14 +9,32 @@ smplOS uses a **git-based update system**. The repo is cloned to
 `~/.local/share/smplos/repo/` on each user's machine. When they run
 "Update OS" (from app-center or `smplos-update --mode full`), the system:
 
-1. `git pull` the latest repo
-2. Syncs scripts from `src/shared/bin/` to `/usr/local/bin/`
-3. Runs pending migrations from `migrations/`
-4. Bumps `/etc/os-release` from `src/VERSION`
-5. Reapplies the current theme + reloads Hyprland
-6. Updates system packages in one transaction (temporarily unpins Hyprland/EWW after migrations)
-7. Updates forked apps from GitHub releases
-8. Updates AUR + Flatpak packages
+1. Opens a terminal as the desktop user and requires external power on laptops.
+2. Authenticates with sudo once; keeps that tty's authorization alive, without
+   saving passwords or installing passwordless sudo rules.
+3. Fast-forwards a clean `main` checkout, atomically syncs scripts/libraries,
+   and re-executes the refreshed wrapper before package/config deployment.
+4. Inventories installed versions and performs the complete official package
+   upgrade, including the supported Hyprland series, libraries and drivers.
+5. Deploys desktop files, runs pending migrations, reconciles services, reapplies
+   the theme and ensures the EWW bar is actually open.
+6. Updates native apps from published releases, then AUR and Flatpak apps.
+7. Writes a local installed-state report. Only a successful full update records
+   the new OS version and prints **Update complete**.
+
+Run as the desktop user, **not** through sudo/pkexec. Root orchestration and
+later `runuser` contexts were responsible for repeated password prompts and lost
+graphical-session state. Subsequent privileged commands use noninteractive
+sudo: lost authorization is an explicit error, not another password prompt.
+`--mode apps` updates native/Flatpak apps only, without an official/AUR host
+package upgrade or desktop configuration deployment. A release needing newer
+host libraries can fail validation; use a full Update OS instead.
+
+The update lock is per user, not machine-wide; do not run other users' updates
+or a separate package manager concurrently. Logs remain on the machine; there
+is no report upload. AC checks reduce the risk of interruption but **do not
+make Arch updates or installation power-loss-safe**. No disk-layout changes,
+automatic rollback or boot recovery are provided by this flow.
 
 OS-owned changes reach users after merging to `main` and running the updater.
 Changes to independently built apps also require a release in their own repo.
@@ -28,7 +46,7 @@ Changes to independently built apps also require a release in their own repo.
 | What you changed | Where it lives | How it reaches users |
 |---|---|---|
 | Script (bin) | `src/shared/bin/` | `smplos-os-update` syncs to `/usr/local/bin/` |
-| EWW widget | `src/shared/eww/` | OS-owned entry point, overview, styles and scripts sync automatically |
+| EWW widget | `src/shared/eww/` | All stock Yuck/SCSS fragments and scripts sync; generated palettes stay theme-owned |
 | Hyprland config | `src/compositors/hyprland/hypr/` | OS-owned `.conf`/`.lua` files sync automatically; user-owned exceptions below |
 | Theme | `src/shared/themes/` | `post_deploy()` reapplies current theme automatically |
 | Keybindings | `src/shared/configs/smplos/bindings.conf` | Needs migration if format changed |
@@ -376,6 +394,9 @@ but its window app ID is `sync-center`; `smpl-calendar-details` is a window
 from the calendar binary, and `hints-overlay` is owned by `smpl-hintsd`.
 A matching version marker does not bypass missing-binary checks, either in
 the download cache or installed bundle. Optional XR binaries remain optional.
+When included in the installed bundle, they receive the same linkage preflight
+and checksum receipt as the required apps. A replacement release missing an
+already-installed optional binary is rejected before replacing the suite.
 
 Nemo downloads validate `.PKGINFO`, the application and document/archive
 worker paths before installation/cache publication. When the same release
@@ -662,12 +683,19 @@ against (current builds need `GLIBCXX_3.4.36`), so Hyprland cannot start.
 
 `HYPRLAND_SERIES` in `src/shared/update-policy/critical-bundle.conf` is the
 validated series (for example `0.56`): patch releases of it arrive with the
-normal upgrade. While Arch ships a newer series, the packages in
-`critical-packages.txt` (`hyprland`, `xdg-desktop-portal-hyprland`) are held
-back; if other packages already require it, Update OS reports that system
-updates wait for smplOS to validate the series instead of installing a broken
-mix. A failed refresh or upgrade marks the update incomplete, and a changed
+normal upgrade. If Arch ships a newer series, or the available version cannot
+be established, **the entire official upgrade stops**. It does not hold the
+compositor and advance its libraries. Other custom `IgnorePkg`/`IgnoreGroup`
+holds also block the upgrade until the user resolves them. A failed refresh
+or upgrade marks the update incomplete, and a changed
 compositor, kernel or graphics driver triggers the reboot reminder.
+
+The old Hyprland-pin, force-catch-up and QEMU-removal migrations no longer
+start independent upgrades. They acknowledge a completed managed base upgrade,
+or defer standalone. QEMU replacement conflicts are accepted inside the full
+upgrade rather than removing QEMU and trying to restore it later. The EWW fork
+similarly replaces vanilla EWW in one package transaction, never a separate
+uninstall followed by an install.
 
 The critical bundle only re-asserts baseline packages (`linux-lts`,
 `kernel-modules-hook`, and the NVIDIA open driver where it is installed under
@@ -683,8 +711,8 @@ upgrade succeeded.
    (`tests/test_critical_bundle.py` covers the update rules)
 5. Push to `main`
 
-Users will get: migration runs → config fixed → one-transaction upgrade →
-reboot reminder.
+Users get: refreshed updater → complete base upgrade → config/migration
+delivery → native apps → installed-state verification → reboot reminder.
 
 ### Important: manual `pacman -Syu`
 
@@ -712,12 +740,11 @@ When a user clicks "Update OS" in app-center or runs `smplos-update --mode full`
   smplOS Full System Update
 ══════════════════════════════════════
 
-── smplOS System Files ──
-  Checking for updates...
-  ✓ 3 files changed, 42 insertions(+), 12 deletions(-)
+  Power check: OK
+  [one sudo authentication; updater bootstrap and inventory]
 
-── Syncing scripts ──
-  ✓ 2 of 47 scripts updated
+── Pacman ──
+  [complete official upgrade]
 
 ── Migrations ──
   ── Migration 20260316-120000-hyprland-blur-rename ──
@@ -725,12 +752,9 @@ When a user clicks "Update OS" in app-center or runs `smplos-update --mode full`
   Ran 1 migration(s).
 
 ── Post-deploy ──
-  ✓ smplOS version: 0.6.48 -> 0.6.49
   Reapplying theme (catppuccin)...
+  [bar-ctl ensure: recover/verify the bar and apply saved preferences]
   Reloading Hyprland config...
-
-── Pacman ──
-  [standard pacman output]
 
 ── smplOS Apps ──
   ✓ smpl-apps: updated to v0.2.0
@@ -738,16 +762,238 @@ When a user clicks "Update OS" in app-center or runs `smplos-update --mode full`
   ✓ nemo-smpl: up to date (v1.4.2)
 
 ── AUR ──
-  [paru output]
+  [Yay output]
 
 ── Flatpak ──
   [flatpak output]
+
+  [installed files, package versions, native receipts and shared libraries]
+  Critical apps, update tools and runtime libraries (before -> installed; repository target; status):
+  glibc: 2.41-1 -> 2.42-1; target=2.42-1; current
+  pacman: 7.0.0-1 -> 7.0.0-1; target=7.0.0-1; current
+  [all installed package comparisons are retained in JSON]
+  Native smpl-apps: v0.1.9 -> v0.2.0; target=v0.2.0; updated
+  Verification report: ~/.local/state/smplos/update/update-....log.after.json
+  ✓ smplOS version: 0.6.48 -> 0.6.49
 
 ══════════════════════════════════════
   Update complete!
   Reboot recommended to apply kernel/driver changes.
 ══════════════════════════════════════
 ```
+
+Failures produce **Update incomplete**, a nonzero exit status, and a terminal
+that waits for Enter rather than closing over the error. A failed base upgrade
+skips desktop/native/AUR deployment; independent deployment failures still
+attempt desktop reconciliation and final verification. Updated native windows
+are not killed: reopen them when work is saved, and log out/in for changed
+background daemons.
+
+### One administrator authentication
+
+The supported entrypoint is `smplos-update` as the desktop user, without
+`sudo` or `pkexec` around the whole command. It authenticates once with
+`sudo -v`, refreshes that credential during the update, and stops refreshing
+before the terminal waits or closes. It never stores the password or creates
+a passwordless sudoers rule.
+
+Subsequent elevation uses `sudo -n`; Paru also receives explicit noninteractive
+sudo flags instead of starting its own credential loop. User Flatpak apps and
+runtimes update as the user; system Flatpaks update through the same cached sudo
+authorization, not a separate Polkit password dialog. If authorization expires
+or is revoked, the affected operation fails visibly and the update is incomplete,
+rather than asking for the password again mid-update.
+
+### Local diagnostics and retry
+
+`~/.local/state/smplos/update/` contains each update's transcript,
+`*.before.json`, `*.apps.json`, `*.after.json`, and an atomically published `status` file.
+The status records the last stage and complete/failed/interrupted state. A
+power cut cannot execute a trap: a leftover `running` stage is also reported
+as a previous interrupted update on the next run. Bootstrap failures remain
+in the transcript; the stage journal begins after bootstrap.
+
+The final report covers the whole upgrade, not just the bar:
+
+- **Every installed pacman package**, including libraries: before/installed
+  versions, configured repository target and `current`, `pending`,
+  `newer-local`, `not-in-repositories` or `unknown` status. The first configured
+  repository wins; a newer package in a lower-priority repository is not the
+  target. An unchanged version can legitimately mean already current. A
+  pending package or failed repository comparison makes verification fail.
+- **Stability and update-critical packages:** kernels, firmware, GPU/compositor
+  libraries, systemd/login, authentication, networking, Pacman/Yay, Python,
+  Git/Curl, GTK/Qt/WebKit and audio. The audit also discovers package owners
+  of the actual shared libraries resolved by the core apps/update tools,
+  checks those packages' file presence and records their installed versions.
+- **Native releases:** smpl-apps (all 11 required binaries and delivered XR
+  binaries), st, micro, Nemo and Grafium get per-component before/after/target
+  results. Failed API checks or downloads cannot masquerade as current just
+  because an old marker still exists. Same-version repairs are `updated`.
+  Native checksums, executability and runtime library resolution are verified;
+  the installed version must independently satisfy this run's release target.
+- **Brave:** Update OS captures the stable `brave-bin` AUR target before the
+  AUR transaction in `*.brave.json`. The final check requires the installed
+  package to be **equal to or newer than that recorded target**, using Arch's
+  version comparison including package release numbers. An older/missing
+  package, failed target lookup or unreadable record makes the update
+  incomplete. Its package-owned browser ELF, shared libraries and actual
+  `--version` output are also checked against the installed package version,
+  so a new package record with an old browser binary does not pass.
+- **Managed files:** scripts, shared helpers, desktop fragments, stock themes
+  and installed-compositor configuration are compared with the fetched source.
+  Package database/dependency consistency and remaining repo upgrades are
+  checked separately.
+
+`*.apps.json` is written after each native component, including failures, so a
+later failure does not discard the earlier results. The final JSON includes
+`package_status`, `package_changes`, `app_version_changes`,
+`runtime_library_packages`, `native_updates`, `native_files`, `linkage`,
+`errors` and `warnings`. The terminal/transcript ends with the critical-package
+and native-component comparison. The `status` file is the overall orchestrator
+result; the final JSON describes installed-state verification, not proof that
+every preceding phase succeeded.
+
+Full updates also compare stock boot kernel images with installed
+module trees, inspect initramfs contents for that kernel version, and verify
+NVIDIA modules for installed kernels, including DKMS. A running old kernel
+alone is not proof of a failed update.
+Retained trees from `kernel-modules-hook` are excluded using the installed
+kernel package's file list. NVIDIA module version and kernel vermagic must
+match the installed driver/kernel, not merely be present on disk.
+
+These are installed-state checks, **not a boot test**. Kernel checks target
+smplOS's stock `/boot/vmlinuz-*` / `initramfs-*.img` layout, not arbitrary UKIs
+or custom boot layouts. Missing images/modules are an incomplete update:
+repair the reported problem **before rebooting**. No graphical session means
+live bar/Hyprland checks are explicitly deferred. User-owned monitor, idle,
+binding and generated theme files are not compared to stock defaults.
+
+Repository comparisons use local Pacman databases refreshed by the upgrade;
+the verifier itself makes no network calls. Packages outside those databases
+are explicitly identified as AUR/local, not certified as latest by that
+comparison. The managed native releases have their separate captured targets;
+other AUR and Flatpak failures remain visible in the transcript and overall
+update status. No diagnostic data is uploaded.
+
+To rerun diagnostics after repairing a full update (no network/package changes):
+
+```bash
+sudo -v
+smplos-update-check --mode full \
+  --output "$HOME/.local/state/smplos/update/manual-check.json"
+```
+
+To include the release targets/outcomes of a particular update, add
+`--apps-report /path/to/that-update.log.apps.json`. A standalone check without
+that argument verifies installed native files/receipts, not today's online
+release versions.
+
+For Brave, also add `--brave-report /path/to/that-update.log.brave.json`.
+`brave` and `brave_runtime` in the final JSON record the target comparison and
+actual browser version. The browser and its profiles are not closed, reset or
+replaced by diagnostics; restart Brave yourself to use an updated binary in
+already-open windows. Apps-only mode does not upgrade AUR host packages:
+use Update OS for Brave.
+
+### AUR helper: prebuilt Yay, not Paru rebuilds
+
+Update OS uses Yay and removes the old Paru rebuild hook **before** the base
+transaction. After validating the supported base version, old Paru packages
+are removed before upgrading pacman/libalpm: otherwise their old, exact
+libalpm dependency can block the base transaction itself. Removal is
+nonrecursive; unrelated dependencies and both helpers' user configuration and
+caches are preserved. A removal failure stops the base upgrade.
+
+After the base upgrade, `smplos-ensure-yay` installs/repairs the helper and
+verifies both `--version` and a real `-Q pacman` database query. If a later
+step fails, the update is incomplete and must be retried; Paru is not restored
+or rebuilt as a fallback.
+
+If a configured package repository supplies `yay`, enrollment uses pacman to
+install it. Stock Arch's official repositories do not supply Yay, so smplOS
+also ships a pinned `yay-bin` recipe. It downloads the upstream precompiled
+13.0.1 release, validates its SHA256, and packages it for `pacman -U`.
+There is **no Go or Rust compilation** on the target machine; the local
+`makepkg` step only assembles the binary package. Existing usable, sufficiently
+new `yay-bin` installations are reused, and repairs never downgrade a newer
+installed binary package to an older pinned release.
+
+Fresh ISOs package that same recipe into their offline mirror, so installation
+still needs no internet. Legacy `rebuild-paru` is an explicit no-op in case an
+old hook invokes it during enrollment; `heal-paru` reports that it is retired
+instead of rebuilding anything. Neither command is an alias for Yay.
+
+Yay still needs usable pacman/libalpm APIs; changing helpers is not a guarantee
+against every future ABI change. Failed binary/runtime checks stop AUR work
+and remain in the overall update status. The AUR transaction disables Yay's
+own sudo loop (`--sudoloop=false`) and uses the update's cached, noninteractive
+sudo context. Native App Center/Settings must also be delivered in a new
+smpl-apps release with their Yay callers before retiring Paru on a test machine.
+
+### Bringing older fleet machines onto this updater
+
+**Publish/merge this implementation first.** The commands below are not usable
+until this updater is on upstream `main`. Old installed wrappers cannot
+gain the new top-level AC/authentication/bootstrap behavior before fetching
+it. Do not assume the first click on a legacy Update OS is protected.
+
+Start with one bootable test machine and a verified backup of its important
+user data. Connect AC and use its desktop user's terminal, **without sudo**.
+Inspect the existing repo and preserve any local changes or divergent commits;
+do not reset, abort a rebase or overwrite them.
+
+Fetch the enrollment script from the published source and save it locally
+rather than piping a network response into a shell:
+
+```bash
+(
+  set -euo pipefail
+  enrollment=$(mktemp /tmp/smplos-enroll.XXXXXX)
+  trap 'rm -f -- "$enrollment"' EXIT
+  curl --fail --location --proto '=https' --tlsv1.2 \
+    https://raw.githubusercontent.com/smpl-os/smplos/main/src/shared/bin/smplos-update-bootstrap \
+    --output "$enrollment"
+  bash "$enrollment"
+)
+```
+
+Enrollment takes the normal update lock, checks the origin and clean `main`
+checkout, refuses unfinished Git operations, and only fast-forwards. It never
+runs the installed legacy wrapper/helper. A missing checkout is cloned from
+upstream. The new repository wrapper then checks external power, authenticates
+once, installs scripts/helpers and verifies their bytes and command permissions
+against the fetched source. `--bootstrap-only` is preserved through terminal
+launch and self-reexecution.
+
+Enrollment does **not** upgrade packages, install native GUI binaries, deploy
+desktop configuration, run migrations or change the recorded OS version. It
+does refresh the user app index. Its local transcript and
+`*.bootstrap.json` report live under `~/.local/state/smplos/update/`; the JSON
+records the exact source commit and any managed-file failures. Bootstrap
+verification does not require the old machine's native apps to already work.
+It runs before the base upgrade and does not require Python 3.11-only hashing.
+
+Only after enrollment reports **"Updater enrollment verified"**, start the
+actual update separately:
+
+```bash
+/usr/local/bin/smplos-update --mode full
+```
+
+Later normal Update OS runs repeat the complete script/helper gate before any
+package transaction. A missing, stale or nonexecutable managed command, or a
+mismatched helper, stops the update instead of trusting a successful sync exit.
+
+If an inspection, fast-forward or verification fails, stop and preserve/resolve
+the reported problem; do not fall back to the legacy Update OS button. After a
+full update, retain its transcript, `*.before.json`, `*.after.json`,
+`*.apps.json`, `*.brave.json`, `*.bootstrap.json` and `status` for diagnosis. Repair reported
+kernel/initramfs errors before rebooting. This is not transactional rollback or
+a guarantee against interruption during package writes.
+
+This procedure updates bootable machines; it cannot remotely repair a machine
+that no longer boots. No fleet machine is contacted automatically.
 
 ---
 

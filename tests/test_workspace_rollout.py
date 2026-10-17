@@ -156,7 +156,8 @@ as_invoker() {
         script = self.config_sync_script() + r"""
 warn() { echo "$*" >&2; }
 sudo() {
-    [[ "$1" == install && "${@: -1}" == "$TEST_INSTALL_ROOT/"* ]] || {
+    [[ ( "$1" == mktemp || "$1" == install || "$1" == mv || "$1" == rm ) &&
+       "${@: -1}" == "$TEST_INSTALL_ROOT/"* ]] || {
         echo "FORBIDDEN sudo operation" >&2
         return 99
     }
@@ -164,7 +165,7 @@ sudo() {
 }
 sync_libs() { :; }
 """
-        script += function("sync_scripts").replace(
+        script += function("install_system_file") + function("sync_scripts").replace(
             'dest="/usr/local/bin/$name"', 'dest="$TEST_INSTALL_ROOT/$name"')
         script += "\nsync_scripts\nsync_configs\n"
         result = self.run_bash(script)

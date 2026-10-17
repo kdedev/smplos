@@ -354,7 +354,7 @@ as_invoker() { "$@"; }
     def test_every_update_rechecks_commands_even_without_new_commits(self):
         main = (BIN / "smplos-os-update").read_text().split("# ── Main", 1)[1].split("\n", 1)[1]
         stubs = """
-CHECK_ONLY=0; MIGRATE_ONLY=0; SCRIPTS_ONLY=0; QUIET=1
+CHECK_ONLY=0; MIGRATE_ONLY=0; SCRIPTS_ONLY=0; DEPLOY_ONLY=0; FINALIZE_ONLY=0; QUIET=1
 SELF_UPDATED=1; SELF_CANONICAL="$HOME/not-installed"
 pull_updates() { return 1; }
 sync_scripts() { :; }; sync_configs() { :; }; sync_themes() { :; }
@@ -389,7 +389,7 @@ post_deploy() { :; }; rebuild-app-cache() { :; }
         # Run the real migration runner twice: successful and unrelated failure.
         self.env["SMPLOS_PATH"] = str(self.root)
         stubs = f"""
-CHECK_ONLY=0; MIGRATE_ONLY=0; SCRIPTS_ONLY=0; QUIET=1
+CHECK_ONLY=0; MIGRATE_ONLY=0; SCRIPTS_ONLY=0; DEPLOY_ONLY=0; FINALIZE_ONLY=0; QUIET=1
 SELF_UPDATED=1; SELF_CANONICAL="$HOME/not-installed"
 pull_updates() {{ return 1; }}
 sync_scripts() {{ :; }}; sync_configs() {{ :; }}; sync_themes() {{ :; }}
@@ -405,7 +405,7 @@ run_migrations() {{ bash "{BIN / 'smplos-migrate'}"; }}
         self.config.write_text(CUSTOM)
         result = self.run_shell(script, check=False)
         self.assertNotEqual(result.returncode, 0)
-        self.assertIn("idle reconciliation was attempted", result.stderr)
+        self.assertIn("desktop reconciliation was attempted", result.stderr)
         self.assertEqual(self.config.read_text(), MIGRATE.migrate(CUSTOM))
         self.assertFalse(self.pending.exists())
 
@@ -442,13 +442,13 @@ run_migrations() {{ bash "{BIN / 'smplos-migrate'}"; }}
         self.env["LIB_DEST"] = str(self.root / "installed-libs")
         script = r"""
 set -euo pipefail
-ok() { :; }; warn() { echo "$*" >&2; }
+ok() { :; }; warn() { echo "$*" >&2; }; die() { echo "$*" >&2; exit 1; }
 sudo() {
-    [[ "$1" == mkdir || "$1" == install ]] || return 99
+    [[ "$1" == mkdir || "$1" == install || "$1" == mktemp || "$1" == mv || "$1" == rm ]] || return 99
     [[ "${@: -1}" == "$LIB_DEST" || "${@: -1}" == "$LIB_DEST/"* ]] || return 99
     "$@"
 }
-""" + function("sync_libs").replace(
+""" + function("install_system_file") + function("sync_libs").replace(
             'local dest_dir="/usr/local/lib/smplos"', 'local dest_dir="$LIB_DEST"'
         ) + "\nsync_libs\n"
         self.run_shell(script)

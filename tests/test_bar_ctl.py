@@ -28,9 +28,9 @@ class BarApplyTests(unittest.TestCase):
         self.log = self.root / "bar.log"
         self.calls = self.root / "calls"
         self.script = self.root / "bar-ctl"
-        # Redirect the legacy shared startup log; nothing touches the real HOME.
+        # Keep startup logging private even with an inherited XDG_STATE_HOME.
         self.script.write_text((ROOT / "src/shared/bin/bar-ctl").read_text().replace(
-            'LOG="/tmp/eww-startup.log"', f'LOG="{self.log}"'))
+            'LOG="${XDG_STATE_HOME:-$HOME/.local/state}/smplos/eww-startup.log"', f'LOG="{self.log}"'))
         mock_bin = self.root / "bin"
         mock_bin.mkdir()
         eww = mock_bin / "eww"

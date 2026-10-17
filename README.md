@@ -654,12 +654,15 @@ smplos-update
 
 A full update runs through these stages:
 
-1. **OS update** (`smplos-os-update`) — `git pull` latest repo, sync scripts from `src/shared/bin/` to `/usr/local/bin/`, run pending migrations, bump `/etc/os-release`
-2. **App update** (`smplos-update-apps`) — download latest smpl-apps, st-smpl, and nemo-smpl binaries from GitHub releases (skips if already up-to-date)
-3. **Theme refresh** — reapply the current theme + reload Hyprland
-4. **Pacman** — official repo packages (`pacman -Syu`), with Hyprland/EWW held back until after migrations
-5. **AUR** — if paru is installed (`paru -Sua`)
-6. **Flatpak** — if Flatpak apps are installed (`flatpak update -y`)
+1. **Bootstrap** — check external power, authenticate once, safely fast-forward upstream source, refresh and verify all updater commands/helpers.
+2. **Pacman** — complete the official base upgrade, including compositor, libraries and drivers; unsupported stack versions stop the transaction.
+3. **Desktop** — deploy managed configs/themes and run pending migrations only after the base upgrade.
+4. **Native apps** — deliver and verify the complete published smpl-apps suite and other managed native releases.
+5. **AUR** — enroll prebuilt Yay without compiling it, retire Paru rebuilds, record Brave's update target and run `yay -Sua`.
+6. **Flatpak and verification** — update user/system apps and runtimes, compare installed versions/files/libraries, save local reports, and publish the OS version only on complete success.
+
+For older machines, perform scripts-only enrollment **before** using Update OS.
+See [fleet enrollment and diagnostic reports](UPDATING.md#bringing-older-fleet-machines-onto-this-updater).
 
 ### What can be updated
 

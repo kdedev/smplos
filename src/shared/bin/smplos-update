@@ -3,25 +3,29 @@
 # Launched by app-center "Update" buttons or manually.
 # Opens in the user's default terminal.
 #
-# Update order (full mode):
-#   1. smplos-os-update   — git pull smplOS repo, sync scripts, run migrations
-#   2. pacman -Syu        — general system packages, excluding critical stack
-#   3. smplos-update-apps — forked apps from GitHub (smpl-apps, st-smpl, nemo-smpl, micro)
-#   4. paru -Sua          — AUR packages, excluding critical stack
-#   5. flatpak update     — Flatpak apps
-#   6. critical bundle    — optional, explicit kernel/driver/compositor bundle
+# Refresh scripts, upgrade the complete base, deploy the desktop/native apps,
+# then verify installed files, shared libraries, package state and the session.
 #
 # Critical stack policy is source-controlled in the smplOS repo so App Center
 # and CLI both follow the same behavior.
 
-# Parse --mode flag: 'apps' skips kernel/drivers; 'full' is a complete system update
+set -o pipefail
+
+# Apps mode never performs a partial host-package upgrade.
 UPDATE_MODE="full"
-for arg in "$@"; do
-    case "$arg" in
-        --mode) ;;
-        apps)   UPDATE_MODE="apps" ;;
-        full)   UPDATE_MODE="full" ;;
+BOOTSTRAP_ONLY=0
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --mode)
+            [[ "${2:-}" == full || "${2:-}" == apps ]] || {
+                echo "Usage: smplos-update [--mode full|apps]" >&2; exit 1;
+            }
+            UPDATE_MODE="$2"; shift ;;
+        --bootstrap-only) BOOTSTRAP_ONLY=1 ;;
+        -h|--help) echo "Usage: smplos-update [--mode full|apps] [--bootstrap-only]"; exit 0 ;;
+        *) echo "Unknown option: $1" >&2; exit 1 ;;
     esac
+    shift
 done
 
 # ── Notification helper ──────────────────────────────────────────────────────
@@ -36,18 +40,50 @@ notify() {
     echo "smplOS Update: $1${2:+ — $2}" >&2
 }
 
-# Resolve our own absolute path — pkexec requires one — regardless of how we
-# were invoked (`smplos-update`, `bash smplos-update`, a relative path, …).
+# Resolve the entrypoint before opening a terminal or refreshing scripts.
 SELF="$(readlink -f "$0")"
+
+check_update_power() {
+    local supplies="${1:-/sys/class/power_supply}" path type status scope
+    local batteries=0 online=0 charging=0 discharging=0
+    [[ -d "$supplies" && -r "$supplies" ]] || {
+        echo "ERROR: cannot inspect system power supplies; update not started." >&2
+        return 1
+    }
+    for path in "$supplies"/*; do
+        [[ -e "$path" ]] || continue
+        type=$(cat "$path/type") || return 1
+        scope=""
+        if [[ -f "$path/scope" ]]; then
+            scope=$(cat "$path/scope") || return 1
+        fi
+        [[ "$scope" != Device ]] || continue
+        case "${path##*/}" in hid-*|hidpp_battery_*) continue ;; esac
+        if [[ "$type" == Battery ]]; then
+            if [[ -f "$path/present" && "$(cat "$path/present")" == 0 ]]; then
+                continue
+            fi
+            batteries=$((batteries + 1))
+            status=$(cat "$path/status") || return 1
+            echo "  Battery ${path##*/}: $status$(if [[ -r "$path/capacity" ]]; then printf ' (%s%%)' "$(cat "$path/capacity")"; fi)"
+            [[ "$status" != Charging ]] || charging=1
+            [[ "$status" != Discharging ]] || discharging=1
+        elif [[ -f "$path/online" ]]; then
+            [[ "$(cat "$path/online")" != 1 ]] || online=1
+        fi
+    done
+    if [[ $batteries -gt 0 && ( $discharging -eq 1 || ( $online -eq 0 && $charging -eq 0 ) ) ]]; then
+        echo "ERROR: connect the laptop to external power, then retry Update OS." >&2
+        echo "  Even a full battery is not a substitute for plugged-in power." >&2
+        return 1
+    fi
+    echo "  Power check: OK"
+}
 
 # ── Presentation ─────────────────────────────────────────────────────────────
 # The update must show its progress in a terminal window. Crucially, we do NOT
-# open that window as root: pkexec sanitizes the environment (drops
-# WAYLAND_DISPLAY, XDG_RUNTIME_DIR, DISPLAY, DBUS_SESSION_BUS_ADDRESS), so a
-# root-owned terminal has no compositor to connect to and silently fails — the
-# App Center just asks for a password and then nothing appears. Instead we open
-# the terminal as the *user* (who can see the compositor) first, then elevate
-# with pkexec inline on that terminal's tty.
+# open that window as root: the desktop user owns the session and sudo's tty
+# credential context. Only individual system operations elevate.
 #
 # `[[ -t 1 ]]` is true when we already have a terminal: a real CLI invocation,
 # or the child we re-spawn inside a fresh terminal window just below.
@@ -68,67 +104,128 @@ if [[ ! -t 1 && $EUID -ne 0 ]]; then
         notify "smplOS Update" "No terminal emulator found"
         exit 1
     fi
-    exec "$TERM_BIN" -e bash "$SELF" "$@"
+    launch_args=(--mode "$UPDATE_MODE")
+    [[ $BOOTSTRAP_ONLY -eq 0 ]] || launch_args+=(--bootstrap-only)
+    exec "$TERM_BIN" -e bash "$SELF" "${launch_args[@]}"
 fi
 
-# ── Elevate to root — inline, on the current terminal ────────────────────────
-# We now have a tty (a real CLI, or the window we opened as the user above), so
-# pkexec prompts right here and all update output stays in this terminal. No
-# environment needs to survive pkexec: we're already displaying in a terminal.
-if [[ $EUID -ne 0 ]]; then
-    exec pkexec bash "$SELF" "$@"
-fi
-
-# ── Restore invoker context after pkexec ─────────────────────────────────────
-# pkexec strips the environment, so once we re-enter as root, $HOME is /root
-# and $USER is root. But every smplOS path — SMPLOS_PATH, the git repo,
-# migration markers, update log dir, hypr configs — is anchored on the
-# INVOKING user's $HOME. Without this block, the entire update silently
-# no-ops against /root/.local/share/smplos/repo (which does not exist), and
-# nothing ever lands on disk. This bug ("I press Update OS but nothing
-# happens") was invisible because git errors were being swallowed downstream.
-#
-# We derive the invoker from PKEXEC_UID (set by pkexec) or SUDO_UID (set by
-# sudo), resolve /etc/passwd, then rewrite HOME/USER/LOGNAME. Also expose
-# SMPLOS_INVOKER_* so nested scripts (smplos-os-update, smplos-migrate) can
-# runuser back to the invoker for user-owned file operations.
+# Keep one user's tty/sudo credential context for the entire run. Root-owned
+# orchestration followed by runuser created unrelated authentication contexts.
 if [[ $EUID -eq 0 ]]; then
-    _invoker_uid="${PKEXEC_UID:-${SUDO_UID:-}}"
-    if [[ -n "${_invoker_uid:-}" && "$_invoker_uid" != "0" ]]; then
-        _invoker_ent="$(getent passwd "$_invoker_uid" 2>/dev/null || true)"
-        if [[ -n "$_invoker_ent" ]]; then
-            export SMPLOS_INVOKER_UID="$_invoker_uid"
-            export SMPLOS_INVOKER_USER="$(cut -d: -f1 <<<"$_invoker_ent")"
-            export SMPLOS_INVOKER_HOME="$(cut -d: -f6 <<<"$_invoker_ent")"
-            export HOME="$SMPLOS_INVOKER_HOME"
-            export USER="$SMPLOS_INVOKER_USER"
-            export LOGNAME="$SMPLOS_INVOKER_USER"
-        fi
+    echo "Run smplos-update as your desktop user, without sudo or pkexec." >&2
+    exit 1
+fi
+export PATH="/usr/local/sbin:/usr/local/bin:$PATH"
+SMPLOS_PATH="${SMPLOS_PATH:-$HOME/.local/share/smplos}"
+LOG_DIR="$HOME/.local/state/smplos/update"
+mkdir -p "$LOG_DIR" || exit 1
+if [[ "${SMPLOS_UPDATE_LOCKED:-0}" != 1 ]]; then
+    exec 9>"$LOG_DIR/update.lock" || exit 1
+fi
+flock -n 9 || { echo "Another smplOS update is already running." >&2; exit 1; }
+export SMPLOS_UPDATE_LOCKED=1
+export SMPLOS_UPDATE_LOG_FILE="${SMPLOS_UPDATE_LOG_FILE:-$LOG_DIR/update-$(date +%Y%m%d-%H%M%S)-$$.log}"
+UPDATE_SCRIPT=""
+stop_sudo_keepalive() {
+    if [[ -n "${SMPLOS_SUDO_KEEPALIVE_PID:-}" ]]; then
+        kill "$SMPLOS_SUDO_KEEPALIVE_PID" 2>/dev/null || true
+        wait "$SMPLOS_SUDO_KEEPALIVE_PID" 2>/dev/null || true
+        unset SMPLOS_SUDO_KEEPALIVE_PID
     fi
-    unset _invoker_uid _invoker_ent
+}
+bootstrap_fail() {
+    echo "ERROR: $* Log: $SMPLOS_UPDATE_LOG_FILE" | tee -a "$SMPLOS_UPDATE_LOG_FILE" >&2
+    [[ -z "$UPDATE_SCRIPT" ]] || rm -f -- "$UPDATE_SCRIPT"
+    stop_sudo_keepalive
+    [[ ! -t 0 ]] || read -r -p "Update could not start. Press Enter to close. " _
+    exit 1
+}
+
+if ! check_update_power 2>&1 | tee -a "$SMPLOS_UPDATE_LOG_FILE"; then
+    [[ ! -t 0 ]] || read -r -p "Plug in power, then press Enter to close and retry. " _
+    exit 1
+fi
+if [[ "${SMPLOS_SUDO_READY:-0}" != 1 ]]; then
+    sudo -v || bootstrap_fail "Authentication failed; update not started."
+    (
+        trap - EXIT INT HUP
+        sleeper=""
+        trap '[[ -z "$sleeper" ]] || kill "$sleeper" 2>/dev/null; exit' TERM
+        while true; do
+            sleep 30 & sleeper=$!
+            wait "$sleeper" || exit
+            command sudo -n -v || exit
+        done
+    ) 9>&- >/dev/null 2>&1 &
+    export SMPLOS_SUDO_KEEPALIVE_PID=$!
+fi
+trap stop_sudo_keepalive EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+trap 'exit 129' HUP
+sudo() { command sudo -n "$@"; }
+export -f sudo
+export SMPLOS_SUDO_READY=1
+
+# Refresh the orchestration itself before migrations or package transactions.
+# Never let a legacy installed helper perform the first Git synchronization.
+source_updater="$SMPLOS_PATH/repo/src/shared/bin/smplos-os-update"
+source_checker="$SMPLOS_PATH/repo/src/shared/bin/smplos-update-check"
+if [[ ! -r "$source_updater" || ! -r "$source_checker" ]] ||
+    ! grep -qxF 'SMPLOS_UPDATE_PROTOCOL=1' "$source_updater"; then
+    bootstrap_fail "Legacy/incomplete source checkout. Run the published smplos-update-bootstrap enrollment first."
+fi
+if [[ "${SMPLOS_UPDATER_REFRESHED:-0}" != 1 ]]; then
+    before=$(sha256sum "$SELF") || bootstrap_fail "Cannot read updater entrypoint."
+    set -o pipefail
+    if ! bash "$source_updater" --scripts 2>&1 | tee -a "$SMPLOS_UPDATE_LOG_FILE"; then
+        bootstrap_fail "Updater bootstrap failed."
+    fi
+    fresh=/usr/local/bin/smplos-update
+    if [[ ! -x "$fresh" ]]; then
+        bootstrap_fail "Updater bootstrap did not install $fresh."
+    fi
+    after=$(sha256sum "$fresh") || bootstrap_fail "Cannot verify refreshed updater."
 fi
 
-UPDATE_SCRIPT=$(mktemp /tmp/smplos-update.XXXXXX.sh)
+if ! SMPLOS_PATH="$SMPLOS_PATH" python3 "$source_checker" --mode bootstrap \
+    --output "$SMPLOS_UPDATE_LOG_FILE.bootstrap.json" 2>&1 | tee -a "$SMPLOS_UPDATE_LOG_FILE"; then
+    bootstrap_fail "Updater commands/helpers do not match the fetched source. No package upgrade was started."
+fi
+if [[ "${SMPLOS_UPDATER_REFRESHED:-0}" != 1 ]]; then
+    export SMPLOS_UPDATER_REFRESHED=1
+    if [[ "${before%% *}" != "${after%% *}" ]]; then
+        # The inherited lock belongs to the same open file description.
+        reexec_args=(--mode "$UPDATE_MODE")
+        [[ $BOOTSTRAP_ONLY -eq 0 ]] || reexec_args+=(--bootstrap-only)
+        exec bash "$fresh" "${reexec_args[@]}"
+    fi
+fi
+if [[ $BOOTSTRAP_ONLY -eq 1 ]]; then
+    echo "Updater enrollment verified. No host packages, native apps or desktop configs were updated." |
+        tee -a "$SMPLOS_UPDATE_LOG_FILE"
+    echo "Bootstrap report: $SMPLOS_UPDATE_LOG_FILE.bootstrap.json"
+    echo "When ready, run smplos-update --mode full as this desktop user."
+    exit 0
+fi
+
+UPDATE_SCRIPT=$(mktemp /tmp/smplos-update.XXXXXX.sh) || bootstrap_fail "Cannot prepare updater."
 
 # Write mode into the script (unquoted heredoc for variable substitution)
-cat > "$UPDATE_SCRIPT" << PREAMBLE
+cat > "$UPDATE_SCRIPT" << PREAMBLE || bootstrap_fail "Cannot write update preamble."
 #!/bin/bash
 UPDATE_MODE="$UPDATE_MODE"
 PREAMBLE
+declare -f check_update_power stop_sudo_keepalive >> "$UPDATE_SCRIPT" || bootstrap_fail "Cannot write update helpers."
 
 # Append the body (single-quoted: no substitution; uses UPDATE_MODE set above)
-cat >> "$UPDATE_SCRIPT" << 'EOF'
+cat >> "$UPDATE_SCRIPT" << 'EOF' || bootstrap_fail "Cannot write updater body."
 set -o pipefail
 UPDATE_FAILED=0
 # Set only when this run's system upgrade completed; gates the bundle.
 SYSTEM_UPGRADED=0
 
-# pkexec sanitizes PATH to a hardcoded minimal set that does NOT include
-# /usr/local/bin — but every smplOS management script (smplos-os-update,
-# smplos-update-apps, smplos-migrate, heal-paru, smplos-check-shadows, …)
-# lives there. Without this line, `command -v smplos-os-update` returns
-# nothing under pkexec and steps 1 and 3 silently no-op, which is exactly
-# the "Update OS button appears to run but nothing gets updated" bug.
+# Prefer canonical scripts over historical user-local shadow copies.
 export PATH="/usr/local/sbin:/usr/local/bin:$PATH"
 
 SMPLOS_PATH="${SMPLOS_PATH:-$HOME/.local/share/smplos}"
@@ -157,6 +254,41 @@ CRITICAL_IGNORE=""
 APPS_MODE_IGNORE=""
 HYPRLAND_SERIES=""
 NETWORK_OK=1
+CURRENT_STAGE=starting
+FINISHED=0
+
+record_update_state() {
+    local status="$1" temporary
+    temporary=$(mktemp "$STATE_DIR/.status.XXXXXX") || return 1
+    printf 'status=%s\nstage=%s\nlog=%s\n' "$status" "$CURRENT_STAGE" "$LOG_FILE" > "$temporary" &&
+        sync -f "$temporary" &&
+        mv -f -- "$temporary" "$STATE_DIR/status" &&
+        sync -f "$STATE_DIR"
+}
+
+update_stage() {
+    CURRENT_STAGE="$1"
+    record_update_state running || { echo "ERROR: cannot persist update progress" >&2; exit 1; }
+}
+
+finish_update() {
+    local status=$?
+    if [[ $FINISHED -eq 0 ]]; then
+        record_update_state interrupted || echo "ERROR: cannot record interrupted update" >&2
+    fi
+    stop_sudo_keepalive
+    rm -f -- "$0"
+    if [[ $FINISHED -eq 0 ]]; then
+        echo "Update stopped during $CURRENT_STAGE. Log: $LOG_FILE" >&2
+        [[ ! -t 0 ]] || read -r -p "Update stopped. Press Enter to close. " _
+    fi
+    return "$status"
+}
+
+# Noninteractive calls fail visibly instead of requesting another password.
+sudo() { command sudo -n "$@"; }
+export -f sudo
+export SMPLOS_SUDO_READY=1
 
 csv_join() {
     local IFS=,
@@ -221,13 +353,7 @@ mark_reboot_pending() {
     return 0
 }
 
-# Upgrade the whole system in ONE transaction. While Arch ships the Hyprland
-# series smplOS validated, the stack moves with everything else: holding
-# hyprland back while its libraries move is a partial upgrade that fails
-# ("installing aquamarine breaks dependency ... required by hyprland"), and
-# installing it separately later can pair it with older system libraries than
-# it was built against (Hyprland then cannot start). A newer series stays
-# held back until smplOS validates it by raising HYPRLAND_SERIES.
+# Never upgrade libraries underneath a held compositor.
 system_upgrade() {
     local available before held=0
     if ! sudo pacman -Sy --noconfirm; then
@@ -237,27 +363,44 @@ system_upgrade() {
     fi
     # pacman translates field labels; read them in the C locale.
     available=$(LC_ALL=C pacman -Si hyprland 2>/dev/null | awk '/^Version/ {print $3; exit}')
-    if [[ -z "$HYPRLAND_SERIES" || -z "$available" ]]; then
-        # Without a known series or version, keep the previous behaviour.
+    if pacman -Q hyprland >/dev/null 2>&1 && [[ -z "$HYPRLAND_SERIES" || -z "$available" ]]; then
         held=1
-        echo "  Holding Hyprland: could not compare its version with the supported series."
-    elif [[ "$available" != "$HYPRLAND_SERIES".* ]]; then
+        echo "  ERROR: could not compare Hyprland with the supported series."
+    elif pacman -Q hyprland >/dev/null 2>&1 && [[ "${available#*:}" != "$HYPRLAND_SERIES".* ]]; then
         held=1
-        echo "  Holding Hyprland $available: smplOS supports the $HYPRLAND_SERIES series."
+        echo "  ERROR: Hyprland $available is outside the supported $HYPRLAND_SERIES series."
+    fi
+    if [[ $held -eq 1 ]]; then
+        echo "  Stopping the entire system upgrade; no partial library/driver upgrade will be attempted."
+        UPDATE_FAILED=1
+        return 0
+    fi
+    # A retired helper's pinned libalpm dependency must not block the base upgrade.
+    local package retired=()
+    for package in paru paru-bin paru-git; do
+        if pacman -Qq "$package" >/dev/null 2>&1; then
+            retired+=("$package")
+        fi
+    done
+    if [[ ${#retired[@]} -gt 0 ]]; then
+        echo "  Retiring Paru before the libalpm upgrade; dependencies and user caches are preserved."
+        if ! sudo pacman -R --noconfirm "${retired[@]}"; then
+            echo "  ERROR: cannot retire Paru safely; system upgrade stopped."
+            UPDATE_FAILED=1
+            return 0
+        fi
     fi
     before=$(stack_versions)
-    if [[ $held -eq 0 ]] && sudo pacman -Su --noconfirm; then
-        SYSTEM_UPGRADED=1
-        refresh_bundle_snapshot
-    elif [[ $held -eq 1 ]] && sudo pacman -Su --noconfirm --ignore "$CRITICAL_IGNORE"; then
+    local conflict_args=()
+    if pacman -Qq qemu-block-gluster >/dev/null 2>&1; then
+        # Accept the official replacement conflict inside the full transaction.
+        conflict_args=(--ask 4)
+    fi
+    if sudo pacman -Su --noconfirm "${conflict_args[@]}"; then
         SYSTEM_UPGRADED=1
         refresh_bundle_snapshot
     else
         echo "  WARNING: system update failed"
-        if [[ $held -eq 1 ]]; then
-            echo "  Other packages already need Hyprland $available, which smplOS has not"
-            echo "  validated yet. System updates resume once an smplOS update supports it."
-        fi
         UPDATE_FAILED=1
     fi
     if [[ "$(stack_versions)" != "$before" ]]; then
@@ -269,6 +412,10 @@ system_upgrade() {
 critical_bundle_prompt_and_apply() {
     [[ "$UPDATE_MODE" == "full" ]] || return 0
     [[ -f "$CRITICAL_BUNDLE_FILE" ]] || return 0
+    if ! check_update_power; then
+        UPDATE_FAILED=1
+        return 0
+    fi
     if [[ "$NETWORK_OK" -eq 0 ]]; then
         echo "── Critical bundle ──"
         echo "  Skipped: no internet connection"
@@ -280,6 +427,7 @@ critical_bundle_prompt_and_apply() {
     source "$CRITICAL_BUNDLE_FILE" 2>/dev/null || {
         echo "── Critical bundle ──"
         echo "  WARNING: could not parse critical-bundle.conf"
+        UPDATE_FAILED=1
         echo
         return 0
     }
@@ -342,6 +490,7 @@ critical_bundle_prompt_and_apply() {
         fi
     else
         echo "  WARNING: critical bundle install failed (safe to retry)"
+        UPDATE_FAILED=1
     fi
     echo
 }
@@ -382,49 +531,48 @@ detect_network() {
 prepare_pacman_transaction() {
     [[ "$NETWORK_OK" -eq 1 ]] || return 0
 
-    if ! pacman -Qq qemu-block-gluster >/dev/null 2>&1; then
-        return 0
-    fi
-
-    echo "── Pacman preflight ──"
-    if ! sudo pacman -Sy --noconfirm >/dev/null 2>&1; then
-        echo "  WARNING: could not refresh package database for preflight"
-        echo
-        return 0
-    fi
-
-    if ! pacman -Si qemu-common 2>/dev/null | grep -qE '^Conflicts With.*qemu-block-gluster'; then
-        echo "  qemu-block-gluster installed, but current qemu-common does not conflict"
-        echo
-        return 0
-    fi
-
-    echo "  Removing obsolete qemu-block-gluster update blocker"
-    if pacman -Qq qemu-full >/dev/null 2>&1; then
-        echo "  Temporarily removing old qemu-full meta-package"
-        if sudo pacman -R --noconfirm qemu-full qemu-block-gluster; then
-            sudo pacman -S --needed --noconfirm qemu-full \
-                && echo "  Restored qemu-full meta-package without qemu-block-gluster" \
-                || echo "  WARNING: qemu-full restore failed; concrete QEMU packages remain installed"
-        else
-            echo "  WARNING: could not remove qemu-full/qemu-block-gluster"
+    local migration
+    for migration in 20260805-100050-clear-ignorepkg-hyprland-eww.sh \
+                     20260805-100060-remove-dropped-lib32-gstreamer.sh; do
+        if ! bash "$SMPLOS_PATH/repo/migrations/$migration"; then
+            echo "  ERROR: package preflight failed: $migration"
+            UPDATE_FAILED=1
+            return 1
         fi
-    elif ! sudo pacman -R --noconfirm qemu-block-gluster; then
-        echo "  WARNING: could not remove qemu-block-gluster"
-    fi
-    echo
-}
+    done
 
-# Note: We're already running as root (elevated via pkexec),
-# so sudo calls are just for safety/compatibility. No password needed.
+    local directive values
+    for directive in IgnorePkg IgnoreGroup; do
+        values=$(pacman-conf "$directive") || {
+            echo "ERROR: cannot inspect pacman $directive policy"
+            return 1
+        }
+        if [[ -n "$values" ]]; then
+            echo "ERROR: custom $directive holds prevent a complete upgrade: $values"
+            echo "Resolve those holds before Update OS; they were not changed."
+            return 1
+        fi
+    done
+}
 
 # Log all output to file for debugging
 LOG_DIR="$HOME/.local/state/smplos/update"
-LOG_FILE="$LOG_DIR/update-$(date +%Y%m%d-%H%M%S).log"
+LOG_FILE="$SMPLOS_UPDATE_LOG_FILE"
 mkdir -p "$LOG_DIR"
 
 # Create a simple wrapper that tees to both terminal and log
 {
+    trap finish_update EXIT
+    trap 'exit 130' INT
+    trap 'exit 143' TERM
+    trap 'exit 129' HUP
+    sudo rm -f /etc/sudoers.d/99-smplos-update-transient || exit 1
+    sudo rm -f /etc/pacman.d/hooks/90-rebuild-paru.hook || exit 1
+    if [[ -f "$STATE_DIR/status" ]] && grep -q '^status=\(running\|interrupted\)$' "$STATE_DIR/status"; then
+        echo "WARNING: the previous update was interrupted. Previous progress:"
+        cat "$STATE_DIR/status"
+    fi
+    update_stage preflight
     echo "════════════════════════════════════════"
     echo "  smplOS System Update"
     echo "  $(date)"
@@ -433,6 +581,12 @@ mkdir -p "$LOG_DIR"
 
 load_critical_packages
 detect_network
+if ! check_update_power; then exit 1; fi
+if ! command -v smplos-update-check >/dev/null; then
+    echo "ERROR: update verification tool was not installed by the bootstrap."
+    exit 1
+fi
+smplos-update-check --snapshot --output "$LOG_FILE.before.json" || exit 1
 warn_if_critical_stack_drifted
 if [[ "$UPDATE_MODE" == "apps" ]]; then
     echo "══════════════════════════════════════"
@@ -442,7 +596,7 @@ if [[ "$UPDATE_MODE" == "apps" ]]; then
 else
     echo "══════════════════════════════════════"
     echo "  smplOS Full System Update"
-    echo "  (critical stack via explicit bundle)"
+    echo "  (complete base upgrade, then desktop and apps)"
     echo "══════════════════════════════════════"
 fi
 if [[ "$NETWORK_OK" -eq 0 ]]; then
@@ -451,7 +605,7 @@ if [[ "$NETWORK_OK" -eq 0 ]]; then
 fi
 echo
 
-# ── Step 1: smplOS system files (git pull + sync scripts + migrations) ───────
+# ── Step 1: smplOS system files (bootstrap already completed) ──────────────
 # Only in full mode — these aren't "app" updates.
 # Always print the section header BEFORE the guard so a silent skip is
 # impossible to hide. Every failure mode has an audit trail in the log.
@@ -462,112 +616,135 @@ elif ! command -v smplos-os-update &>/dev/null; then
     echo "  WARNING: smplos-os-update not found in PATH (\$PATH=$PATH)"
     UPDATE_FAILED=1
 else
-    smplos-os-update 2>&1 || { echo "  WARNING: smplos-os-update failed (exit $?)"; UPDATE_FAILED=1; }
-    # Reload the critical-packages list AFTER smplos-os-update has git-pulled
-    # the repo. Otherwise the ignore list handed to pacman -Syu below is the
-    # STALE one from before the pull — meaning a policy change (e.g. removing
-    # linux-lts from ignore) doesn't take effect until the SECOND click. This
-    # was the whole reason customer machines never rolled forward hyprland.
+    echo "  Updater scripts refreshed; desktop deployment follows the system upgrade."
     load_critical_packages
 fi
 echo
 
 # ── Step 2: Official repos ───────────────────────────────────────────────────
-prepare_pacman_transaction
+update_stage system-packages
 if [[ "$UPDATE_MODE" == "apps" ]]; then
-    echo "── Pacman (apps only) ──"
-    if [[ "$NETWORK_OK" -eq 0 ]]; then
-        echo "  Skipped: no internet connection"
-    elif ! sudo pacman -Syu --noconfirm --ignore "$APPS_MODE_IGNORE"; then
-        echo "  WARNING: pacman update failed (check internet/mirrors)"
-    fi
+    echo "  Host packages are updated only by Update OS; no partial pacman upgrade."
 else
     echo "── Pacman ──"
     if [[ "$NETWORK_OK" -eq 0 ]]; then
         echo "  Skipped: no internet connection"
-    else
+        UPDATE_FAILED=1
+    elif check_update_power && prepare_pacman_transaction; then
         system_upgrade
+    else
+        UPDATE_FAILED=1
     fi
 fi
 echo
+
+update_stage desktop
+if [[ "$UPDATE_MODE" == full && $SYSTEM_UPGRADED -eq 1 ]] && check_update_power; then
+    export SMPLOS_SYSTEM_UPGRADED=1
+    export SMPLOS_UPDATE_APP_OWNER=1
+    smplos-os-update --deploy 2>&1 || {
+        echo "  ERROR: smplos-os-update failed (exit $?)"
+        UPDATE_FAILED=1
+    }
+    critical_bundle_prompt_and_apply
+elif [[ "$UPDATE_MODE" == full ]]; then
+    echo "  Desktop deployment skipped: the base upgrade and external power are required."
+    UPDATE_FAILED=1
+fi
 
 # ── Step 4: Forked smplOS apps (GitHub releases) ────────────────────────────
 # Always print the header BEFORE the guard: a silent skip here was the bug
 # where Update OS would appear to succeed but never actually fetch new
 # settings/app-center/etc. binaries from GitHub.
 echo "── smplOS Apps ──"
-if [[ "$NETWORK_OK" -eq 0 ]]; then
+update_stage native-apps
+if [[ "$UPDATE_MODE" == full && $SYSTEM_UPGRADED -ne 1 ]]; then
+    echo "  Skipped: incomplete system upgrade"
+    UPDATE_FAILED=1
+elif [[ "$NETWORK_OK" -eq 0 ]]; then
     echo "  Skipped: no internet connection"
+    UPDATE_FAILED=1
+elif ! check_update_power; then
     UPDATE_FAILED=1
 elif ! command -v smplos-update-apps &>/dev/null; then
     echo "  WARNING: smplos-update-apps not found in PATH (\$PATH=$PATH)"
     UPDATE_FAILED=1
 else
-    # Signal to smplos-update-apps that sudo credentials are already primed
-    # (we're root via pkexec) so it doesn't try `sudo -v` against a pkexec
-    # environment where cached credentials may not carry over.
-    SMPLOS_SUDO_READY=1 smplos-update-apps 2>&1 \
+    # Reuse the same user's tty credential context.
+    SMPLOS_SUDO_READY=1 smplos-update-apps --report "$LOG_FILE.apps.json" 2>&1 \
         || { echo "  WARNING: smplos-update-apps failed (exit $?)"; UPDATE_FAILED=1; }
 fi
 echo
 
-# ── Step 5: AUR packages (paru) — auto-heal if libalpm was bumped ────────────
-paru_ok() { paru --version &>/dev/null 2>&1; }
-if command -v paru &>/dev/null && ! paru_ok; then
-    echo "── Healing paru (libalpm mismatch) ──"
-    heal-paru || echo "WARNING: paru heal failed, AUR updates skipped"
-    echo
-fi
-if paru_ok; then
-    # Run paru at background CPU/IO priority so AUR compilation (e.g. webkit2gtk,
+# ── Step 5: AUR packages (prebuilt Yay) ────────────────────────────────────
+update_stage aur
+if [[ "$UPDATE_MODE" == full && $SYSTEM_UPGRADED -eq 1 ]] && check_update_power; then
+if SMPLOS_SYSTEM_UPGRADED=1 smplos-ensure-yay; then
+    # Run Yay at background CPU/IO priority so AUR compilation (e.g. webkit2gtk,
     # edk2) never starves Hyprland and causes input event drops / apparent
     # keybinding failures. nice -n 10 keeps compile threads below interactive
     # priority; ionice -c 3 (idle) ensures disk I/O doesn't block the compositor.
-    _paru_run() {
+    _yay_run() {
         if command -v ionice &>/dev/null; then
-            nice -n 10 ionice -c 3 paru "$@"
+            nice -n 10 ionice -c 3 yay "$@"
         else
-            nice -n 10 paru "$@"
+            nice -n 10 yay "$@"
         fi
     }
-    if [[ "$UPDATE_MODE" == "apps" ]]; then
-        echo "── AUR (apps only, background priority) ──"
-        if [[ "$NETWORK_OK" -eq 0 ]]; then
-            echo "  Skipped: no internet connection"
-        elif ! _paru_run -Sua --noconfirm --sudoloop --ignore "$APPS_MODE_IGNORE"; then
-            echo "  WARNING: AUR update failed (check internet/mirrors)"
-        fi
-    else
         echo "── AUR (excluding critical stack, background priority) ──"
         if [[ "$NETWORK_OK" -eq 0 ]]; then
             echo "  Skipped: no internet connection"
-        elif ! _paru_run -Sua --noconfirm --sudoloop --ignore "$CRITICAL_IGNORE"; then
-            echo "  WARNING: AUR update failed (check internet/mirrors)"
+            UPDATE_FAILED=1
+        else
+            smplos-update-check --capture-brave-target --output "$LOG_FILE.brave.json" || UPDATE_FAILED=1
+            if ! _yay_run -Sua --noconfirm --sudoloop=false --sudo sudo --sudoflags=-n --ignore "$CRITICAL_IGNORE"; then
+                echo "  WARNING: AUR update failed (check internet/mirrors)"
+                UPDATE_FAILED=1
+            fi
         fi
-    fi
     echo
+else
+    echo "  ERROR: Yay enrollment failed; AUR updates were not completed."
+    UPDATE_FAILED=1
+fi
+else
+    echo "  AUR host packages require a completed full system upgrade."
+    [[ "$UPDATE_MODE" != full || $SYSTEM_UPGRADED -ne 1 ]] || UPDATE_FAILED=1
 fi
 
 # ── Step 6: Flatpak (always safe — sandboxed, no kernel interaction) ─────────
+update_stage flatpak
 if command -v flatpak &>/dev/null; then
-    installed=$(flatpak list --app 2>/dev/null | wc -l)
-    if [[ "$installed" -gt 0 ]]; then
-        echo "── Flatpak ──"
+    echo "── Flatpak ──"
+    for scope in user system; do
+        if ! installed=$(flatpak list "--$scope" --columns=ref); then
+            echo "  ERROR: cannot inventory $scope Flatpak apps/runtimes"
+            UPDATE_FAILED=1
+            continue
+        fi
+        [[ -n "$installed" ]] || continue
+        echo "  Updating $scope apps and runtimes..."
         if [[ "$NETWORK_OK" -eq 0 ]]; then
             echo "  Skipped: no internet connection"
-        elif ! flatpak update -y --noninteractive; then
+            UPDATE_FAILED=1
+        elif ! check_update_power; then
+            UPDATE_FAILED=1
+        elif [[ "$scope" == system ]]; then
+            sudo flatpak --system update -y --noninteractive || {
+                echo "  ERROR: system Flatpak update failed; no extra authentication was requested."
+                UPDATE_FAILED=1
+            }
+        elif ! flatpak --user update -y --noninteractive; then
             echo "  WARNING: flatpak update failed (check internet/remotes)"
+            UPDATE_FAILED=1
         fi
-        echo
-    fi
+    done
+    echo
 fi
-
-# ── Step 6: Critical bundle (explicit opt-in) ───────────────────────────────
-critical_bundle_prompt_and_apply
 
 # ── Final Hyprland reload ─────────────────────────────────────────────────────
 # Reload config after all compilation is done so any state lost during heavy
-# CPU load (e.g. paru building webkit2gtk) is cleanly restored.
+# CPU load (e.g. Yay building webkit2gtk) is cleanly restored.
 # pkexec strips HYPRLAND_INSTANCE_SIGNATURE, so we probe the invoker's
 # environment (via SMPLOS_INVOKER_UID) to find the running instance instead of
 # relying on our own env — otherwise this step silently skips every time.
@@ -577,6 +754,7 @@ critical_bundle_prompt_and_apply
 # inline: smplos-update is the elevation entry point for the whole update, and
 # giving it a hard dependency on a file that a not-yet-updated machine may not
 # have on disk would be a worse failure mode than the duplication.
+update_stage verification
 echo "── Reloading Hyprland ──"
 if ! command -v hyprctl &>/dev/null; then
     echo "  Skipped: hyprctl not installed"
@@ -592,15 +770,34 @@ else
     if [[ -z "$_his" ]]; then
         echo "  Skipped: no running Hyprland instance"
     else
-        HYPRLAND_INSTANCE_SIGNATURE="$_his" \
+        if HYPRLAND_INSTANCE_SIGNATURE="$_his" \
         XDG_RUNTIME_DIR="/run/user/${SMPLOS_INVOKER_UID:-$UID}" \
-        hyprctl reload 2>/dev/null \
-            && echo "  Config reloaded" \
-            || echo "  Reload failed (safe to ignore)"
+        hyprctl reload; then
+            echo "  Config reloaded"
+        else
+            echo "  ERROR: Hyprland reload failed"
+            UPDATE_FAILED=1
+        fi
     fi
     unset _his _runtime
 fi
 echo
+
+check_args=(--before "$LOG_FILE.before.json" --output "$LOG_FILE.after.json"
+    --apps-report "$LOG_FILE.apps.json" --mode "$UPDATE_MODE")
+[[ "$UPDATE_MODE" != full ]] || check_args+=(--brave-report "$LOG_FILE.brave.json")
+smplos-update-check "${check_args[@]}" || UPDATE_FAILED=1
+if [[ "$UPDATE_MODE" == full && $UPDATE_FAILED -eq 0 ]]; then
+    smplos-os-update --finalize || UPDATE_FAILED=1
+fi
+CURRENT_STAGE=finished
+if [[ $UPDATE_FAILED -eq 0 ]]; then
+    record_update_state complete || UPDATE_FAILED=1
+else
+    record_update_state failed || echo "ERROR: could not record update failure"
+fi
+FINISHED=1
+stop_sudo_keepalive
 
 echo "══════════════════════════════════════"
 if [[ "$UPDATE_FAILED" -eq 0 ]]; then
@@ -612,9 +809,12 @@ echo "  Log: $LOG_FILE"
 echo "══════════════════════════════════════"
 echo
 
-# Auto-close terminal after 3 seconds (user can press Ctrl+C to keep it open)
-echo "Closing in 3 seconds... (Ctrl+C to cancel)"
-sleep 3
+if [[ $UPDATE_FAILED -eq 0 ]]; then
+    echo "Closing in 3 seconds... (Ctrl+C to cancel)"
+    sleep 3
+elif [[ -t 0 ]]; then
+    read -r -p "Update incomplete. Press Enter to close this window. " _
+fi
 
 # After the terminal closes, fire a reboot notification if needed: detached so
 # closing the window cannot kill it, and as the user, whose session bus shows
@@ -632,8 +832,7 @@ fi
 [[ "$UPDATE_FAILED" -eq 0 ]]
 } 2>&1 | tee -a "$LOG_FILE"
 EOF
-chmod +x "$UPDATE_SCRIPT"
+chmod +x "$UPDATE_SCRIPT" || bootstrap_fail "Cannot prepare updater permissions."
 
-# We are always root on a real terminal here (a CLI invocation, or the window we
-# opened as the user before elevating), so run the update inline.
+# The same desktop user and tty own orchestration, builds and sudo credentials.
 exec bash "$UPDATE_SCRIPT"

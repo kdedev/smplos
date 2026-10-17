@@ -14,7 +14,7 @@
 # Each app is only downloaded if a newer version exists on GitHub.
 # Version state is tracked in ~/.local/state/smplos/app-versions/
 #
-# Usage: smplos-update-apps [--check | --quiet]
+# Usage: smplos-update-apps [--check | --quiet] [--report PATH]
 
 set -euo pipefail
 
@@ -41,25 +41,53 @@ if ! declare -F smplos_app_bundle_valid >/dev/null; then
 fi
 mkdir -p "$STATE_DIR" "$SMPLOS_BIN"
 
-CHECK_ONLY=0; QUIET=0
-for arg in "$@"; do
-    case "$arg" in
+CHECK_ONLY=0; QUIET=0; REPORT_FILE=""
+while [[ $# -gt 0 ]]; do
+    case "$1" in
         --check) CHECK_ONLY=1 ;;
         --quiet) QUIET=1 ;;
+        --report)
+            [[ -n "${2:-}" ]] || { echo "ERROR: --report needs a path" >&2; exit 1; }
+            REPORT_FILE="$2"; shift ;;
         -h|--help)
-            echo "Usage: smplos-update-apps [--check | --quiet]"
+            echo "Usage: smplos-update-apps [--check | --quiet] [--report PATH]"
             exit 0 ;;
+        *) echo "ERROR: unknown option: $1" >&2; exit 1 ;;
     esac
+    shift
 done
+REPORT_FILE="${REPORT_FILE:-$HOME/.local/state/smplos/update/apps-$(date +%Y%m%d-%H%M%S)-$$.json}"
+REPORT_WORK=$(mktemp -d /tmp/smplos-app-results.XXXXXX)
+_SUDO_PID=""
+cleanup_app_update() {
+    if [[ -n "$_SUDO_PID" ]]; then
+        kill "$_SUDO_PID" 2>/dev/null || true
+        wait "$_SUDO_PID" 2>/dev/null || true
+    fi
+    rm -rf -- "$REPORT_WORK"
+}
+trap cleanup_app_update EXIT
 
 # ── Ensure sudo is ready ─────────────────────────────────────────────────────
 # When called from smplos-update, SMPLOS_SUDO_READY is set and credentials are
 # already cached. When run standalone, authenticate once and start a keepalive.
 if [[ "${SMPLOS_SUDO_READY:-0}" != "1" && $CHECK_ONLY -eq 0 ]]; then
     sudo -v || { echo "ERROR: sudo authentication failed" >&2; exit 1; }
-    ( while kill -0 $$ 2>/dev/null; do sudo -n -v; sleep 30; done ) &
+    (
+        trap - EXIT INT HUP
+        sleeper=""
+        trap '[[ -z "$sleeper" ]] || kill "$sleeper" 2>/dev/null; exit' TERM
+        while true; do
+            sleep 30 & sleeper=$!
+            wait "$sleeper" || exit
+            command sudo -n -v || exit
+        done
+    ) >/dev/null 2>&1 &
     _SUDO_PID=$!
-    trap 'kill $_SUDO_PID 2>/dev/null' EXIT
+fi
+if [[ $CHECK_ONLY -eq 0 ]]; then
+    sudo() { command sudo -n "$@"; }
+    export -f sudo
 fi
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -79,7 +107,10 @@ _gh_api() {
     local url="$1"
     _gh_json=""
     _gh_json=$(curl -fsSL --connect-timeout 15 --max-time 30 "$url" 2>/dev/null) || return 1
-    [[ -n "$_gh_json" ]]
+    [[ -n "$_gh_json" ]] || return 1
+    if [[ -n "${SMPLOS_APP_RESULT_FILE:-}" ]]; then
+        printf '%s\n' "$_gh_json" > "$SMPLOS_APP_RESULT_FILE" || return 1
+    fi
 }
 
 _cached_ver() {
@@ -87,11 +118,111 @@ _cached_ver() {
     [[ -f "$STATE_DIR/$name" ]] && cat "$STATE_DIR/$name" || echo ""
 }
 
+component_files_current() {
+    local receipt="$STATE_DIR/$1.sha256"
+    shift
+    [[ -s "$receipt" && $# -gt 0 ]] || return 1
+    local file
+    for file in "$@"; do
+        [[ -x "$file" ]] || return 1
+        grep -qFx "$(sha256sum "$file")" "$receipt" || return 1
+    done
+    sha256sum --check --status "$receipt"
+}
+
+repair_release_allowed() {
+    if [[ -n "$2" ]] && _version_gt "$2" "$3"; then
+        warn "$1: installed release $2 needs repair but GitHub latest is older ($3); refusing a downgrade"
+        return 1
+    fi
+}
+
+record_component_files() {
+    local component="$1" temporary
+    shift
+    temporary=$(mktemp "$STATE_DIR/.receipt.XXXXXX") || return 1
+    if sha256sum "$@" > "$temporary" &&
+        mv -f -- "$temporary" "$STATE_DIR/$component.sha256"; then
+        return 0
+    fi
+    rm -f -- "$temporary"
+    warn "$component: could not record installed release checksums"
+    return 1
+}
+
+installed_component_version() {
+    local version package=""
+    case "$1" in nemo-smpl) package=nemo-smpl ;; grafium) package=grafium-bin ;; esac
+    if [[ -n "$package" ]]; then
+        version=$(pacman -Q "$package" 2>/dev/null) || version=""
+        printf '%s\n' "${version#* }"
+    else
+        _cached_ver "$1"
+    fi
+}
+
+record_app_result() {
+    python3 - "$REPORT_FILE" "$REPORT_WORK" "$@" <<'PY'
+from datetime import datetime, timezone
+import json
+import os
+from pathlib import Path
+import sys
+import tempfile
+
+path, work = map(Path, sys.argv[1:3])
+component, before, after, status = sys.argv[3:]
+report = {"schema": 1, "components": {}}
+if component:
+    report = json.loads(path.read_text())
+    metadata = work / (component + ".json")
+    target = None
+    if metadata.exists():
+        try:
+            target = json.loads(metadata.read_text()).get("tag_name")
+        except (ValueError, AttributeError):
+            print(f"{component}: invalid release metadata", file=sys.stderr)
+    if not target and status != "failed":
+        status = "failed"
+    report["components"][component] = {
+        "before": before or None, "after": after or None, "target": target, "status": status,
+    }
+report["time"] = datetime.now(timezone.utc).isoformat()
+path.parent.mkdir(parents=True, exist_ok=True)
+fd, temporary = tempfile.mkstemp(prefix=".app-results-", dir=path.parent)
+try:
+    with os.fdopen(fd, "w") as stream:
+        json.dump(report, stream, indent=2, sort_keys=True)
+        stream.write("\n")
+        stream.flush()
+        os.fsync(stream.fileno())
+    os.replace(temporary, path)
+    directory = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        os.fsync(directory)
+    finally:
+        os.close(directory)
+finally:
+    if os.path.exists(temporary):
+        os.unlink(temporary)
+sys.exit(status == "failed")
+PY
+}
+
 n_updated=0
 
 # ── smpl-apps ─────────────────────────────────────────────────────────────────
 update_smpl_apps() {
     local cached_ver remote_ver
+    local app xrbin installed=()
+    for app in "${SMPLOS_APP_BINS[@]}"; do installed+=("/usr/local/bin/$app"); done
+    for xrbin in xr-workspace xrctl xr-game xr-glasses-hotplugd; do
+        if [[ -e "/usr/local/bin/$xrbin" || -L "/usr/local/bin/$xrbin" ]] ||
+            { [[ -f "$STATE_DIR/smpl-apps.sha256" ]] &&
+              grep -qF "  /usr/local/bin/$xrbin" "$STATE_DIR/smpl-apps.sha256"; }; then
+            installed+=("/usr/local/bin/$xrbin")
+        fi
+    done
     cached_ver=$(_cached_ver smpl-apps)
 
     if ! _gh_api "https://api.github.com/repos/smpl-os/smpl-apps/releases/latest"; then
@@ -104,10 +235,12 @@ update_smpl_apps() {
 
     if [[ -n "$cached_ver" ]] && ! _version_gt "$remote_ver" "$cached_ver" \
         && smplos_app_binaries_valid /usr/local/bin \
+        && component_files_current smpl-apps "${installed[@]}" \
         && [[ -f "${XDG_STATE_HOME:-$HOME/.local/state}/smplos/calendar-service/last-installed.service" ]]; then
         ok "smpl-apps: up to date ($cached_ver)"
         return
     fi
+    repair_release_allowed smpl-apps "$cached_ver" "$remote_ver" || return 1
 
     if [[ $CHECK_ONLY -eq 1 ]]; then
         log "smpl-apps: update available ${cached_ver:-none} -> $remote_ver"
@@ -134,6 +267,18 @@ update_smpl_apps() {
         warn "smpl-apps: incomplete or failed download; version not recorded"
         return 1
     fi
+
+    # Check the entire bundle against this machine before replacing any app.
+    for app in "${SMPLOS_APP_BINS[@]}"; do
+        smplos_app_linkage_valid "$tmpdir/$app" || return 1
+    done
+    for xrbin in xr-workspace xrctl xr-game xr-glasses-hotplugd; do
+        if [[ " ${installed[*]} " == *" /usr/local/bin/$xrbin "* && ! -f "$tmpdir/$xrbin" ]]; then
+            warn "smpl-apps: release omits installed optional binary $xrbin; not replacing the bundle"
+            return 1
+        fi
+        [[ ! -f "$tmpdir/$xrbin" ]] || smplos_app_linkage_valid "$tmpdir/$xrbin" || return 1
+    done
 
     # Atomic rename preserves already-running mappings; never kill user work.
     for app in "${SMPLOS_APP_BINS[@]}"; do
@@ -175,10 +320,13 @@ update_smpl_apps() {
     # XR glasses module — same story as apps above: canonical install goes to
     # /usr/local/bin only, then scrub the shadow dirs so PATH lookup can't
     # possibly resolve to a stale copy.
-    local xr_installed=0 xrbin
+    installed=()
+    for app in "${SMPLOS_APP_BINS[@]}"; do installed+=("/usr/local/bin/$app"); done
+    local xr_installed=0
     for xrbin in xr-workspace xrctl xr-game xr-glasses-hotplugd; do
         [[ -f "$tmpdir/$xrbin" ]] || continue
         smplos_install_app_binary "$tmpdir/$xrbin" "/usr/local/bin/$xrbin" || return 1
+        installed+=("/usr/local/bin/$xrbin")
         for shadow in \
             "$HOME/.local/share/smplos/bin/$xrbin" \
             "$HOME/.local/bin/$xrbin" \
@@ -190,21 +338,10 @@ update_smpl_apps() {
     done
     if [[ $xr_installed -eq 1 ]]; then
         log "XR module: binaries updated"
-        # Nudge the watcher service so the new build takes effect without a
-        # re-login (the unit is config/migration owned; Restart=always covers
-        # the rest once ConditionPathExists is satisfied).
-        if command -v systemctl &>/dev/null; then
-            systemctl --user daemon-reload 2>/dev/null || true
-            systemctl --user try-restart xr-glasses.service 2>/dev/null || true
-        fi
-        # If the renderer is live, swap it for the new build.
-        if pgrep -x xr-workspace &>/dev/null; then
-            pkill -x xr-workspace 2>/dev/null || true
-            command -v xr-glasses-hotplugd &>/dev/null && \
-                (xr-glasses-hotplugd --once 2>/dev/null || true)
-        fi
+        log "XR module: log out/in to load changed background binaries; the current session was not stopped."
     fi
 
+    record_component_files smpl-apps "${installed[@]}" || return 1
     echo "$remote_ver" > "$STATE_DIR/smpl-apps"
     ok "smpl-apps: updated to $remote_ver"
     log "Close and reopen apps for the new code; log out/in for background daemons. Running native apps were not stopped."
@@ -218,16 +355,18 @@ update_st_smpl() {
 
     if ! _gh_api "https://api.github.com/repos/smpl-os/st-smpl/releases/latest"; then
         warn "st-smpl: GitHub unreachable"
-        return
+        return 1
     fi
 
     remote_ver=$(echo "$_gh_json" | grep -oP '"tag_name"\s*:\s*"\K[^"]+' || true)
-    [[ -z "$remote_ver" ]] && { warn "st-smpl: could not parse version"; return; }
+    [[ -z "$remote_ver" ]] && { warn "st-smpl: could not parse version"; return 1; }
 
-    if [[ -n "$cached_ver" ]] && ! _version_gt "$remote_ver" "$cached_ver"; then
+    if [[ -n "$cached_ver" ]] && ! _version_gt "$remote_ver" "$cached_ver" \
+        && [[ -x /usr/local/bin/st-wl ]] && component_files_current st-smpl /usr/local/bin/st-wl; then
         ok "st-smpl: up to date ($cached_ver)"
         return
     fi
+    repair_release_allowed st-smpl "$cached_ver" "$remote_ver" || return 1
 
     if [[ $CHECK_ONLY -eq 1 ]]; then
         log "st-smpl: update available ${cached_ver:-none} -> $remote_ver"
@@ -241,7 +380,7 @@ update_st_smpl() {
 
     if [[ -z "$asset_url" ]]; then
         warn "st-smpl: no binary asset in release $remote_ver"
-        return
+        return 1
     fi
 
     log "st-smpl: updating ${cached_ver:-none} -> $remote_ver"
@@ -252,7 +391,7 @@ update_st_smpl() {
 
     if curl -fSL --connect-timeout 30 --retry 3 --progress-bar \
             "$asset_url" -o "$tmpfile"; then
-        sudo install -m755 "$tmpfile" "/usr/local/bin/st-wl"
+        smplos_install_app_binary "$tmpfile" "/usr/local/bin/st-wl" || return 1
         # Single-copy invariant: scrub the shadow instead of mirroring the
         # binary into it. See the apps loop above for the full rationale.
         local st_shadow
@@ -274,20 +413,24 @@ update_st_smpl() {
             local tmpinfo
             tmpinfo=$(mktemp /tmp/st-wl-info.XXXXXX)
             if curl -fsSL --connect-timeout 15 "$info_url" -o "$tmpinfo" 2>/dev/null; then
-                sudo tic -sx "$tmpinfo" 2>/dev/null || true
-                tic -sx "$tmpinfo" 2>/dev/null || true   # user terminfo too
+                sudo tic -sx "$tmpinfo" || return 1
+                tic -sx "$tmpinfo" || return 1
                 rm -f "$tmpinfo"
                 log "  terminfo updated"
             else
                 rm -f "$tmpinfo"
+                warn "st-smpl: matching terminfo download failed"
+                return 1
             fi
         fi
 
+        record_component_files st-smpl /usr/local/bin/st-wl || return 1
         echo "$remote_ver" > "$STATE_DIR/st-smpl"
         ok "st-smpl: updated to $remote_ver"
         ((n_updated++)) || true
     else
         warn "st-smpl: download failed"
+        return 1
     fi
 }
 
@@ -366,16 +509,18 @@ update_micro_smpl() {
 
     if ! _gh_api "https://api.github.com/repos/smpl-os/micro/releases/latest"; then
         warn "micro-smpl: GitHub unreachable"
-        return
+        return 1
     fi
 
     remote_ver=$(echo "$_gh_json" | grep -oP '"tag_name"\s*:\s*"\K[^"]+' || true)
-    [[ -z "$remote_ver" ]] && { warn "micro-smpl: could not parse version"; return; }
+    [[ -z "$remote_ver" ]] && { warn "micro-smpl: could not parse version"; return 1; }
 
-    if [[ -n "$cached_ver" ]] && ! _version_gt "$remote_ver" "$cached_ver"; then
+    if [[ -n "$cached_ver" ]] && ! _version_gt "$remote_ver" "$cached_ver" \
+        && [[ -x /usr/local/bin/micro ]] && component_files_current micro-smpl /usr/local/bin/micro; then
         ok "micro-smpl: up to date ($cached_ver)"
         return
     fi
+    repair_release_allowed micro-smpl "$cached_ver" "$remote_ver" || return 1
 
     if [[ $CHECK_ONLY -eq 1 ]]; then
         log "micro-smpl: update available ${cached_ver:-none} -> $remote_ver"
@@ -389,7 +534,7 @@ update_micro_smpl() {
 
     if [[ -z "$asset_url" ]]; then
         warn "micro-smpl: no linux64 tarball in release $remote_ver"
-        return
+        return 1
     fi
 
     log "micro-smpl: updating ${cached_ver:-none} -> $remote_ver"
@@ -404,7 +549,7 @@ update_micro_smpl() {
         local micro_bin
         micro_bin=$(find "$tmpdir" -name micro -type f | head -1)
         if [[ -n "$micro_bin" ]]; then
-            sudo install -m755 "$micro_bin" "/usr/local/bin/micro"
+            smplos_install_app_binary "$micro_bin" "/usr/local/bin/micro" || return 1
             # Single-copy invariant: scrub shadows rather than mirror.
             local m_shadow
             for m_shadow in \
@@ -414,14 +559,17 @@ update_micro_smpl() {
             do
                 [[ -e "$m_shadow" || -L "$m_shadow" ]] && rm -f "$m_shadow" 2>/dev/null || true
             done
+            record_component_files micro-smpl /usr/local/bin/micro || return 1
             echo "$remote_ver" > "$STATE_DIR/micro-smpl"
             ok "micro-smpl: updated to $remote_ver"
             ((n_updated++)) || true
         else
             warn "micro-smpl: binary not found in tarball"
+            return 1
         fi
     else
         warn "micro-smpl: download failed"
+        return 1
     fi
 }
 
@@ -555,13 +703,30 @@ update_grafium() {
 [[ $QUIET -eq 0 ]] && echo "── smplOS App Updates ──"
 
 failed=0
-for component in update_smpl_apps update_st_smpl update_nemo_smpl update_micro_smpl update_grafium; do
+record_app_result "" "" "" "" || { warn "Cannot initialize app update report"; exit 1; }
+for component in smpl-apps st-smpl nemo-smpl micro-smpl grafium; do
+    before=$(installed_component_version "$component")
+    status=current
+    function_name="update_${component//-/_}"
     # A separate shell retains errexit inside each component; independent apps
     # still run after a failure, and no failed install gets a version stamp.
-    if ! bash -e -o pipefail -c "$(declare -f); $(declare -p STATE_DIR SMPLOS_PATH CHECK_ONLY QUIET SMPLOS_APP_BINS); n_updated=0; $component"; then
+    if ! SMPLOS_APP_RESULT_FILE="$REPORT_WORK/$component.json" \
+        bash -e -o pipefail -c "$(declare -f); $(declare -p STATE_DIR SMPLOS_PATH CHECK_ONLY QUIET SMPLOS_APP_BINS); n_updated=0; $function_name; printf '%s\n' \"\$n_updated\" > \"\$SMPLOS_APP_RESULT_FILE.installed\""; then
+        status=failed
         failed=1
     fi
+    after=$(installed_component_version "$component")
+    if [[ "$status" != failed ]] &&
+        { [[ "$before" != "$after" ]] || [[ "$(< "$REPORT_WORK/$component.json.installed")" != 0 ]]; }; then
+        status=updated
+    fi
+    if [[ $CHECK_ONLY -eq 1 && "$status" != failed ]]; then status=checked; fi
+    record_app_result "$component" "$before" "$after" "$status" || {
+        warn "$component: release check/install or result recording failed"
+        failed=1
+    }
 done
+log "App release results: $REPORT_FILE"
 
 if [[ $CHECK_ONLY -eq 0 ]]; then
     rebuild-app-cache || { warn "App cache refresh failed"; exit 1; }

@@ -102,18 +102,23 @@ class KeybindHelpTests(unittest.TestCase):
         original_bindings = bindings.read_bytes()
         updater = (ROOT / "src/shared/bin/smplos-os-update").read_text()
         sync = updater.split("sync_scripts() {", 1)[1].split("\n}\n", 1)[0]
-        # Exercise the production sync loop while redirecting its one privileged
-        # install to a fixture, never invoking the real updater or sudo.
+        sync = sync.replace('dest="/usr/local/bin/$name"', 'dest="$TEST_INSTALLED"')
+        atomic = updater.split("install_system_file() {", 1)[1].split("\n}\n", 1)[0]
+        # Exercise atomic publication entirely within a private fixture.
         script = """
 set -euo pipefail
 header() { :; }
 ok() { :; }
 warn() { echo "$*" >&2; exit 1; }
+die() { echo "$*" >&2; exit 1; }
 sync_libs() { :; }
-cmp() { return 1; }
 sudo() {
-    [[ "$1" == install && "$2" == -m755 && "$4" == /usr/local/bin/keybind-help ]]
-    install "$2" "$3" "$TEST_INSTALLED"
+    [[ "$1" == mktemp || "$1" == install || "$1" == mv || "$1" == rm ]] || return 99
+    [[ "${@: -1}" == "$TEST_INSTALLED" || "${@: -1}" == "$TEST_INSTALLED."* ]] || return 99
+    "$@"
+}
+install_system_file() {
+""" + atomic + """
 }
 sync_scripts() {
 """ + sync + "\n}\nsync_scripts\n"

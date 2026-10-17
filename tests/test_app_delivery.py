@@ -107,6 +107,7 @@ class AppDeliveryTests(unittest.TestCase):
         for name in ("sudo", "pkill", "pacman", "makepkg", "podman", "docker", "nohup"):
             self.mock(name, f'#!/bin/bash\necho "FORBIDDEN: {name}" >&2\nexit 99\n')
         self.mock("pgrep", "#!/bin/bash\nexit 1\n")
+        self.mock("ldd", "#!/bin/bash\necho 'libc.so.6 => /usr/lib/libc.so.6'\n")
         self.mock("systemctl", '#!/bin/bash\necho "FORBIDDEN: systemctl" >&2\nexit 99\n')
         self.publish()
 
@@ -338,7 +339,8 @@ download_prebuilt_apps
         (state / "smpl-apps").write_text("v0.8.22\n")
         script = f'source "{LIB}"\n'
         script += "\n".join(function(path, name) for name in
-                            ("_gh_api", "_version_gt", "_cached_ver", "update_smpl_apps"))
+                            ("_gh_api", "_version_gt", "_cached_ver",
+                             "repair_release_allowed", "update_smpl_apps"))
         script += """
 STATE_DIR="$HOME/.local/state/smplos/app-versions"
 CHECK_ONLY=0; QUIET=0; n_updated=0
@@ -376,7 +378,9 @@ esac
         source = function(path, "update_smpl_apps").replace("/usr/local/bin", str(installed))
         script = f'source "{LIB}"\n'
         script += "\n".join(function(path, name) for name in
-                            ("_gh_api", "_version_gt", "_cached_ver"))
+                            ("_gh_api", "_version_gt", "_cached_ver",
+                             "component_files_current", "record_component_files",
+                             "repair_release_allowed"))
         script += "\n" + source + """
 STATE_DIR="$HOME/.local/state/smplos/app-versions"
 CHECK_ONLY=0; QUIET=0; n_updated=0
@@ -399,6 +403,27 @@ update_smpl_apps
         result = self.shell(script)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(self.requests.read_text().count("/releases/download/"), 2)
+        (installed / "settings").write_bytes(b"\x7fELFtampered")
+        result = self.shell(script)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assert_new_bundle(installed)
+        self.assertEqual(self.requests.read_text().count("/releases/download/"), 3)
+        (installed / "settings").chmod(0o644)
+        result = self.shell(script)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assert_new_bundle(installed)
+        receipt = state / "smpl-apps.sha256"
+        receipt.write_text(receipt.read_text().splitlines()[0] + "\n")
+        result = self.shell(script)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(len(receipt.read_text().splitlines()), len(APPS) + 1)
+        self.assertIn(str(installed / "xrctl"), receipt.read_text())
+        (state / "smpl-apps").write_text("v99.0.0\n")
+        receipt.unlink()
+        result = self.shell(script)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("refusing a downgrade", result.stderr)
+        self.assert_new_bundle(installed)
 
     def test_iso_assembly_installs_same_bundle_for_live_and_installed_system(self):
         binaries = self.base / "app-binaries"
@@ -542,8 +567,11 @@ sync_apps
             path = ROOT / "src/shared/bin" / name
             main = path.read_text().split("# ── Main", 1)[1].split("\n", 1)[1]
             stubs = """
-CHECK_ONLY=0; MIGRATE_ONLY=0; SCRIPTS_ONLY=0; QUIET=1; n_updated=0
+CHECK_ONLY=0; MIGRATE_ONLY=0; SCRIPTS_ONLY=0; DEPLOY_ONLY=0; FINALIZE_ONLY=0; QUIET=1; n_updated=0
 STATE_DIR="$HOME/state"; SMPLOS_PATH="$HOME/data"; SMPLOS_APP_BINS=()
+REPORT_FILE="$HOME/apps.json"; REPORT_WORK="$HOME/results"
+mkdir -p "$REPORT_WORK"
+installed_component_version() { :; }; record_app_result() { :; }; log() { :; }
 SELF_UPDATED=1; SELF_CANONICAL="$HOME/no-installed-script"
 header() { :; }; ok() { :; }; warn() { echo "$*" >&2; }
 die() { echo "$*" >&2; exit 1; }
@@ -915,6 +943,9 @@ package
         main = (ROOT / "src/shared/bin/smplos-update-apps").read_text().split("# ── Main", 1)[1].split("\n", 1)[1]
         script = """
 STATE_DIR="$HOME/state"; SMPLOS_PATH="$HOME/data"; CHECK_ONLY=0; QUIET=1; SMPLOS_APP_BINS=()
+REPORT_FILE="$HOME/apps.json"; REPORT_WORK="$HOME/results"
+mkdir -p "$REPORT_WORK"
+installed_component_version() { :; }; record_app_result() { :; }; log() { :; }
 n_updated=0
 warn() { echo "$*" >&2; }; ok() { :; }
 update_smpl_apps() { echo native-start; false; echo must-not-reach; }
@@ -931,13 +962,46 @@ rebuild-app-cache() { echo cache; }
             self.assertIn(name, result.stdout)
         self.assertIn("incomplete", result.stderr)
 
-    def test_full_wrapper_records_component_failures_and_executes_new_app_script_after_os(self):
+    def test_native_results_persist_each_target_and_failure_instead_of_trusting_old_markers(self):
+        path = ROOT / "src/shared/bin/smplos-update-apps"
+        main = path.read_text().split("# ── Main", 1)[1].split("\n", 1)[1]
+        script = function(path, "record_app_result") + """
+STATE_DIR="$HOME/state"; SMPLOS_PATH="$HOME/data"; CHECK_ONLY=0; QUIET=1; SMPLOS_APP_BINS=()
+REPORT_FILE="$HOME/apps.json"; REPORT_WORK="$HOME/results"; n_updated=0
+mkdir -p "$REPORT_WORK"
+installed_component_version() { echo v1.0; }
+warn() { echo "$*" >&2; }; log() { :; }
+release_target() { echo '{"tag_name":"v2.0"}' > "$SMPLOS_APP_RESULT_FILE"; }
+update_smpl_apps() { release_target; echo attempted-new-suite; false; echo must-not-reach; }
+update_st_smpl() { release_target; n_updated=1; }
+update_nemo_smpl() { release_target; }
+update_micro_smpl() { release_target; }
+update_grafium() { release_target; }
+rebuild-app-cache() { echo refreshed; }
+""" + main
+        result = self.shell(script)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertNotIn("must-not-reach", result.stdout)
+        report = json.loads((self.home / "apps.json").read_text())
+        self.assertEqual(len(report["components"]), 5)
+        self.assertEqual(report["components"]["smpl-apps"],
+                         {"before": "v1.0", "after": "v1.0", "target": "v2.0", "status": "failed"})
+        # Same-version repairs must be reported as updated, not already current.
+        self.assertEqual(report["components"]["st-smpl"]["status"], "updated")
+        self.assertEqual(report["components"]["micro-smpl"]["status"], "current")
+        self.assertIn("refreshed", result.stdout)
+
+    def test_full_wrapper_records_deployment_and_native_failures(self):
         source = (ROOT / "src/shared/bin/smplos-update").read_text()
-        os_phase = source.split('# ── Step 1:', 1)[1].split('# ── Step 2:', 1)[0].split("\n", 1)[1]
+        os_phase = source.split('update_stage desktop', 1)[1].split('# ── Step 4:', 1)[0]
         apps_phase = source.split('# ── Step 4:', 1)[1].split('# ── Step 5:', 1)[0].split("\n", 1)[1]
         result = self.shell("""
-UPDATE_MODE=full; NETWORK_OK=1; UPDATE_FAILED=0
+UPDATE_MODE=full; NETWORK_OK=1; UPDATE_FAILED=0; SYSTEM_UPGRADED=1
+LOG_FILE="$HOME/update.log"
 load_critical_packages() { :; }
+update_stage() { :; }
+check_update_power() { :; }
+critical_bundle_prompt_and_apply() { :; }
 smplos-os-update() { echo refreshed > "$HOME/script-version"; return 1; }
 smplos-update-apps() { [[ "$(cat "$HOME/script-version")" == refreshed ]]; return 1; }
 """ + os_phase + apps_phase + '\n[[ "$UPDATE_FAILED" -eq 0 ]]\n')

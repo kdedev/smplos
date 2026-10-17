@@ -8,6 +8,7 @@ SMPLOS_APP_BINS=(
 
 smplos_install_app_binary() {
     local source="$1" destination="$2" staged
+    smplos_app_linkage_valid "$source" || return 1
     staged=$(sudo mktemp "${destination}.XXXXXX") || return 1
     if sudo install -m755 "$source" "$staged" &&
         sudo mv -f -- "$staged" "$destination" &&
@@ -17,6 +18,20 @@ smplos_install_app_binary() {
     sudo rm -f -- "$staged"
     echo "smpl-apps: failed to install $destination; retry Update OS" >&2
     return 1
+}
+
+smplos_app_linkage_valid() {
+    local binary="$1" output status=0
+    smplos_app_is_elf "$binary" || {
+        echo "smpl-apps: missing or invalid ELF binary: $binary" >&2
+        return 1
+    }
+    output=$(LC_ALL=C ldd "$binary" 2>&1) || status=$?
+    if [[ "$output" == *"not found"* ]] ||
+        { [[ $status -ne 0 ]] && [[ "$output" != *"statically linked"* && "$output" != *"not a dynamic executable"* ]]; }; then
+        echo "smpl-apps: incompatible runtime for $binary: $output" >&2
+        return 1
+    fi
 }
 
 smplos_app_is_elf() {

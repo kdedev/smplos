@@ -161,18 +161,7 @@ fi
 # Deploy pacman hooks
 echo "==> Installing pacman hooks..."
 sudo mkdir -p /etc/pacman.d/hooks
-sudo tee /etc/pacman.d/hooks/90-rebuild-paru.hook >/dev/null << 'PARUHOOK'
-[Trigger]
-Type = Package
-Operation = Upgrade
-Target = pacman
-
-[Action]
-Description = Checking if paru needs rebuild after pacman upgrade...
-When = PostTransaction
-Exec = /usr/local/bin/rebuild-paru
-NeedsTargets
-PARUHOOK
+sudo rm -f /etc/pacman.d/hooks/90-rebuild-paru.hook
 
 # Rebuild start-menu app index after any package install/remove/upgrade.
 # Pacman hooks run as root; we sudo to the real user so the cache lands in

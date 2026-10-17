@@ -90,6 +90,7 @@ class SystemUpgradeTests(unittest.TestCase):
                         'PACKAGES_IF_INSTALLED="nvidia-open-dkms nvidia-utils"\n' + conf_extra)
         script = "\n".join([
             "UPDATE_MODE=full", "NETWORK_OK=1", "UPDATE_FAILED=0", "SYSTEM_UPGRADED=0",
+            "check_update_power() { :; }",
             f"STATE_DIR={shlex.quote(str(self.state))}",
             'APPLIED_BUNDLE_FILE="$STATE_DIR/critical-bundle-applied"',
             'BUNDLE_SNAPSHOT_FILE="$STATE_DIR/critical-bundle-versions"',
@@ -119,22 +120,23 @@ class SystemUpgradeTests(unittest.TestCase):
         notifier = (ROOT / "src/shared/bin/smplos-reboot-notify").read_text()
         self.assertIn('MARKER="$HOME/.local/state/smplos/reboot-pending"', notifier)
 
-    def test_unvalidated_series_is_held(self):
+    def test_unvalidated_series_stops_the_entire_upgrade(self):
         out, calls = self.run_updater_step("system_upgrade", AVAILABLE="0.57.0-1")
-        self.assertEqual(calls, ["-Sy --noconfirm", "-Su --noconfirm --ignore hyprland,xdg-desktop-portal-hyprland"])
-        self.assertIn("Holding Hyprland 0.57.0-1", out)
-        self.assertIn("RESULT failed=0 upgraded=1", out)
+        self.assertEqual(calls, ["-Sy --noconfirm"])
+        self.assertIn("Hyprland 0.57.0-1", out)
+        self.assertIn("RESULT failed=1 upgraded=0", out)
         self.assertFalse((self.home / ".local/state/smplos/reboot-pending").exists())
 
-    def test_an_unknown_version_is_held_like_before(self):
+    def test_an_unknown_version_stops_the_entire_upgrade(self):
         out, calls = self.run_updater_step("system_upgrade", AVAILABLE="")
-        self.assertEqual(calls, ["-Sy --noconfirm", "-Su --noconfirm --ignore hyprland,xdg-desktop-portal-hyprland"])
+        self.assertEqual(calls, ["-Sy --noconfirm"])
         self.assertIn("could not compare", out)
+        self.assertIn("RESULT failed=1 upgraded=0", out)
 
     def test_held_series_that_blocks_the_upgrade_is_reported(self):
         out, _ = self.run_updater_step("system_upgrade", AVAILABLE="0.57.0-1", SU_FAIL="1")
         self.assertIn("RESULT failed=1 upgraded=0", out)
-        self.assertIn("has not", out)
+        self.assertIn("no partial library/driver upgrade", out)
 
     def test_failed_refresh_or_upgrade_is_reported_not_hidden(self):
         out, calls = self.run_updater_step("system_upgrade", AVAILABLE="0.56.2-4", SY_FAIL="1")
@@ -142,6 +144,12 @@ class SystemUpgradeTests(unittest.TestCase):
         self.assertIn("RESULT failed=1 upgraded=0", out)
         out, _ = self.run_updater_step("system_upgrade", AVAILABLE="0.56.2-4", SU_FAIL="1")
         self.assertIn("RESULT failed=1 upgraded=0", out)
+
+    def test_qemu_conflict_is_accepted_only_in_the_full_upgrade_transaction(self):
+        out, calls = self.run_updater_step(
+            "system_upgrade", AVAILABLE="0.56.2-4", QQ_qemu_block_gluster="qemu-block-gluster")
+        self.assertEqual(calls, ["-Sy --noconfirm", "-Su --noconfirm --ask 4"])
+        self.assertIn("RESULT failed=0 upgraded=1", out)
 
     def test_bundle_waits_for_a_completed_upgrade(self):
         out, calls = self.run_updater_step("critical_bundle_prompt_and_apply")

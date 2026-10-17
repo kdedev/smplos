@@ -147,36 +147,22 @@ class MigrationOrderTests(unittest.TestCase):
 
 
 class CatchupMigrationTests(MigrationHarness):
-    def setUp(self):
-        super().setUp()
-        policy = self.root / "smplos/repo/src/shared/update-policy"
-        policy.mkdir(parents=True)
-        (policy / "critical-packages.txt").write_text("hyprland\nxdg-desktop-portal-hyprland\n")
-        (policy / "critical-bundle.conf").write_text(
-            'BUNDLE_ID="test-1"\nHYPRLAND_SERIES="0.56"\nPACKAGES="linux-lts hyprland"\n')
-        self.env["SMPLOS_PATH"] = str(self.root / "smplos")
-        self.applied = self.root / "home/.local/state/smplos/update/critical-bundle-applied"
+    RETIRED = (CATCHUP, MIGRATIONS / "20260805-100100-hyprland-0.56-pin.sh",
+               MIGRATIONS / "20260907-183500-qemu-gluster-update-blocker.sh")
 
-    def test_bundle_is_not_installed_after_a_failed_system_upgrade(self):
-        result, calls = self.run_migration(CATCHUP, SYU_FAIL="1")
-        self.assertEqual(result.returncode, 1, result.stdout)
-        self.assertFalse([c for c in calls if c.startswith("-S --noconfirm --needed")])
-        self.assertFalse(self.applied.exists())
+    def test_standalone_migrations_defer_without_any_partial_or_independent_upgrade(self):
+        for migration in self.RETIRED:
+            with self.subTest(migration=migration.name):
+                result, calls = self.run_migration(migration, SMPLOS_SYSTEM_UPGRADED="0")
+                self.assertEqual(result.returncode, 75, result.stdout)
+                self.assertEqual(calls, [])
 
-    def test_validated_series_upgrades_the_stack_in_the_same_transaction(self):
-        _, calls = self.run_migration(CATCHUP, IN_REPO="hyprland", VER_hyprland="0.56.2-4")
-        self.assertIn("-Su --noconfirm", calls)
-        self.assertFalse([c for c in calls if c.startswith("-Su") and "--ignore" in c])
-
-    def test_unvalidated_series_is_held(self):
-        _, calls = self.run_migration(CATCHUP, IN_REPO="hyprland", VER_hyprland="0.57.0-1")
-        self.assertIn("-Su --noconfirm --ignore hyprland,xdg-desktop-portal-hyprland", calls)
-
-    def test_bundle_is_installed_after_a_successful_system_upgrade(self):
-        result, calls = self.run_migration(CATCHUP)
-        self.assertEqual(result.returncode, 0, result.stdout)
-        self.assertIn("-S --noconfirm --needed linux-lts hyprland", calls)
-        self.assertEqual(self.applied.read_text().strip(), "test-1")
+    def test_managed_migrations_acknowledge_the_completed_full_upgrade(self):
+        for migration in self.RETIRED:
+            with self.subTest(migration=migration.name):
+                result, calls = self.run_migration(migration, SMPLOS_SYSTEM_UPGRADED="1")
+                self.assertEqual(result.returncode, 0, result.stdout)
+                self.assertEqual(calls, [])
 
 
 if __name__ == "__main__":

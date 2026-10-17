@@ -15,9 +15,8 @@
 #
 # Safety:  Idempotent — exits early if eww-smplos is already installed. Never
 #          uninstalls the running eww if the build/install fails (the old
-#          package stays functional). Exits 0 even on failure so it doesn't
-#          block other migrations; the user can re-run smplos-migrate later
-#          when they're online or after installing base-devel.
+#          package stays functional). Failed delivery remains unmarked and
+#          makes the update incomplete while unrelated migrations continue.
 
 set -uo pipefail
 
@@ -46,7 +45,7 @@ PKGBUILD_DIR="$SMPLOS_PATH/repo/src/shared/pkgbuilds/eww-smplos"
 if [[ ! -f "$PKGBUILD_DIR/PKGBUILD" ]]; then
     echo "  WARNING: $PKGBUILD_DIR/PKGBUILD not found — skipping"
     echo "  Re-run smplos-migrate after the next 'Update OS'."
-    exit 0
+    exit 1
 fi
 
 # Bootstrap build tools if missing. On customer machines that never touched
@@ -112,27 +111,16 @@ if [[ ! -f "$PKG_FILE" ]]; then
     exit 1
 fi
 
-if ! sudo pacman -U --noconfirm "$PKG_FILE"; then
-    # pacman -U --noconfirm defaults to N on conflict prompts. If the
-    # customer already has vanilla `eww` installed (which every pre-fork
-    # machine does), the prompt "eww-smplos and eww are in conflict.
-    # Remove eww? [y/N]" is answered No automatically, and the transaction
-    # aborts. Remove eww explicitly and retry.
-    if pacman -Q eww &>/dev/null; then
-        echo "  Retry: removing vanilla eww to resolve conflict..."
-        if ! sudo pacman -R --noconfirm eww; then
-            echo "  ERROR: could not remove vanilla eww — will retry on next update"
-            exit 1
-        fi
-        if ! sudo pacman -U --noconfirm "$PKG_FILE"; then
-            echo "  ERROR: pacman -U failed after removing eww — will retry on next update"
-            exit 1
-        fi
-    else
-        echo "  ERROR: pacman -U failed — will retry on next update"
-        exit 1
-    fi
+# ALPM question bit 4 accepts the declared eww conflict in this transaction.
+# Never remove the working package in a separate transaction before installing.
+if ! sudo pacman -U --noconfirm --ask 4 "$PKG_FILE"; then
+    echo "  ERROR: eww replacement transaction failed; existing package retained"
+    exit 1
 fi
+
+# Keep the old daemon alive if the replacement cannot load this host's libs.
+source "$SMPLOS_PATH/repo/src/shared/lib/smplos-app-bundle.sh" || exit 1
+smplos_app_linkage_valid /usr/bin/eww || exit 1
 
 # ── Restart the bar so the user picks up the fixed binary immediately ────────
 # SAFETY INVARIANT: never tear the bar down unless we can bring it back up.
@@ -175,6 +163,7 @@ elif restart_bar; then
     echo "  Bar restarted with fixed eww binary"
 else
     echo "  WARNING: bar restart failed — run 'bar-ctl start' to load eww-smplos"
+    exit 1
 fi
 
 echo "  Installed eww-smplos $(pacman -Q eww-smplos 2>/dev/null | awk '{print $2}')"

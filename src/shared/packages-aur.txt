@@ -3,7 +3,7 @@
 # Custom packages (src/shared/pkgbuilds/*) are also listed here.
 
 # AUR helper (so users can install AUR packages after install)
-paru-bin
+yay-bin
 
 # EWW - Universal widget system (works on Wayland and X11)
 # smplOS fork with Wayland button-grab fixes (see pkgbuilds/eww-smplos).

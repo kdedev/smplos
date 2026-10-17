@@ -46,12 +46,10 @@ read -r -p "  Continue? [y/N] " ans
 # ── Install packages (skip if already installed) ──────────────────────────────
 if ! $already_installed; then
     log "Installing wtype and voxtype-bin..."
-    if command -v paru &>/dev/null; then
-        paru -S --noconfirm --needed wtype voxtype-bin
-    elif command -v yay &>/dev/null; then
+    if command -v yay &>/dev/null && yay -Q pacman &>/dev/null; then
         yay -S --noconfirm --needed wtype voxtype-bin
     else
-        die "No AUR helper found. Install paru first: paru -S paru-bin"
+        die "Yay is unavailable. Run Update OS to install prebuilt Yay, then retry."
     fi
 fi
 

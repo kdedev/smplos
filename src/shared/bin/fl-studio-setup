@@ -34,8 +34,8 @@ ensure_deps() {
     [[ ${#missing[@]} -eq 0 ]] && return 0
 
     log "Installing dependencies: ${missing[*]}"
-    if command -v paru &>/dev/null && paru --version &>/dev/null; then
-        paru -S --noconfirm "${missing[@]}" || die "Failed to install dependencies"
+    if command -v yay &>/dev/null && yay -Q pacman &>/dev/null; then
+        yay -S --noconfirm "${missing[@]}" || die "Failed to install dependencies"
     else
         pkexec pacman -S --noconfirm "${missing[@]}" || die "Failed to install dependencies"
     fi
