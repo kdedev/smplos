@@ -70,6 +70,7 @@ required**. This is separate from the running-update lock. Failed/interrupted
 updates remain retryable, scripts-only enrollment and apps mode are not blocked,
 and a marker from a previous boot does not prevent updating. The refusal releases
 the lock before its final prompt and does not publish a success receipt.
+It also re-shows the actionable reboot reminder without retaining the lock.
 
 The red reboot notification has a default click action. Clicking it opens a
 second **Restart smplOS now?** confirmation notification: save your work, then

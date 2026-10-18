@@ -140,18 +140,7 @@ if "-A" in sys.argv or "--wait" in sys.argv:
         tools = ("dbus-run-session", "xvfb-run", "dunst", "dunstctl", "dunstify", "gdbus")
         if not all(shutil.which(tool) for tool in tools):
             self.skipTest("Isolated Dunst/Xvfb action test dependencies are missing")
-        self.command("dunstify", f"""#!{sys.executable}
-import os, pathlib, subprocess, sys
-client = subprocess.Popen(
-    ["stdbuf", "-oL", "/usr/bin/dunstify", "--print-id", *sys.argv[1:]],
-    stdout=subprocess.PIPE, text=True)
-notification_id = client.stdout.readline().strip()
-assert notification_id.isdigit(), notification_id
-with pathlib.Path(os.environ["CALL_LOG"]).open("a") as stream:
-    stream.write(" ".join(sys.argv[1:]) + "\\n")
-sys.stdout.write(client.stdout.read())
-sys.exit(client.wait())
-""")
+        self.command("dunstify", '#!/bin/bash\nexec /usr/bin/dunstify "$@"\n')
         probe = r"""
 import os, pathlib, signal, subprocess, sys, time
 def wait_for(check):
@@ -167,33 +156,46 @@ def bus_ready():
          "--object-path", "/org/freedesktop/DBus", "--method",
          "org.freedesktop.DBus.NameHasOwner", "org.freedesktop.Notifications"],
         capture_output=True, text=True, check=True).stdout
-daemon = subprocess.Popen(["dunst", "-config", sys.argv[2]],
-                          stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+daemon_log = pathlib.Path(os.environ["HOME"]) / "dunst.stderr"
+daemon_stream = daemon_log.open("w")
+daemon = subprocess.Popen(["stdbuf", "-oL", "dunst", "-print", "-config", sys.argv[2]],
+                          stdout=daemon_stream, stderr=subprocess.STDOUT)
 notifier = None
+success = False
+out = err = ""
 try:
     wait_for(bus_ready)
     notifier = subprocess.Popen(["bash", sys.argv[1]],
                                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
                                start_new_session=True)
-    log = pathlib.Path(os.environ["CALL_LOG"])
-    wait_for(lambda: log.exists() and "smplOS: Reboot required" in log.read_text())
+    wait_for(lambda: "smplOS: Reboot required" in daemon_log.read_text())
     subprocess.run(["dunstctl", "action", "0"], check=True)
-    wait_for(lambda: "Restart smplOS now?" in log.read_text())
+    wait_for(lambda: "Restart smplOS now?" in daemon_log.read_text())
     assert not pathlib.Path(os.environ["REBOOT_LOG"]).exists()
     subprocess.run(["dunstctl", "action", "0"], check=True)
     out, err = notifier.communicate(timeout=8)
     assert notifier.returncode == 0, out + err
     assert pathlib.Path(os.environ["REBOOT_LOG"]).read_text() == "reboot\n"
+    success = True
 finally:
     if notifier is not None and notifier.poll() is None:
         os.killpg(notifier.pid, signal.SIGTERM)
-        notifier.communicate(timeout=5)
+        out, err = notifier.communicate(timeout=5)
     daemon.terminate()
     daemon.wait(timeout=5)
+    daemon_stream.close()
+    if not success:
+        print(out + err, file=sys.stderr)
+        print(daemon_log.read_text(), file=sys.stderr)
 """
+        runtime = self.home / "runtime"
+        runtime.mkdir(mode=0o700)
+        env = {**self.env, "XDG_RUNTIME_DIR": str(runtime), "XDG_SESSION_TYPE": "x11"}
+        env.pop("WAYLAND_DISPLAY", None)
+        env.pop("WAYLAND_SOCKET", None)
         result = subprocess.run(
             ["dbus-run-session", "--", "xvfb-run", "-a", sys.executable, "-c", probe,
              str(NOTIFIER), str(ROOT / "src/shared/configs/dunst/dunstrc")],
-            env={**self.env, "WAYLAND_DISPLAY": ""}, capture_output=True, text=True, timeout=35,
+            env=env, capture_output=True, text=True, timeout=35,
         )
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)

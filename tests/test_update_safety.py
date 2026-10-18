@@ -1429,6 +1429,9 @@ PY
                                 'check_update_power() {\n return 0\n}')
         script = self.base / "reboot-gate"
         script.write_text(source + "\necho READY-FOR-UPDATE\n")
+        (self.repo / "src/shared/bin/smplos-reboot-notify").write_text(
+            '#!/bin/bash\n[[ ! -e /proc/$$/fd/9 && "${SMPLOS_UPDATE_LOCKED:-0}" != 1 ]] && '
+            'echo closed > "$HOME/reboot-notifier-descriptor"\n')
         (self.bin / "sleep").unlink()
         completed = "stage=finished\ncore_verified=1\nmode=full\n"
         for status, current_boot, args, blocked in (
@@ -1456,6 +1459,9 @@ PY
                     self.assertNotIn("already running", result.stderr)
                     self.assertEqual(self.calls.read_text(), "")
                     self.assertFalse(Path(str(self.log) + ".result").exists())
+                    descriptor = self.home / "reboot-notifier-descriptor"
+                    self.assertEqual(self.wait_for_file(descriptor), "closed\n")
+                    descriptor.unlink()
                 else:
                     self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
                 self.assertEqual(subprocess.run(
