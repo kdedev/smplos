@@ -7,11 +7,14 @@ import io
 import json
 import os
 from pathlib import Path
+import pty
 import re
 import shutil
 import shlex
+import signal
 import subprocess
 import tempfile
+import time
 import unittest
 from unittest import mock
 
@@ -227,6 +230,8 @@ class InstalledStateTests(unittest.TestCase):
                 status, out = 1, "libhyprutils.so.99 => not found\n"
             else:
                 out = "libc.so.6 => /usr/lib/libc.so.6\n"
+        elif args[:2] == ("bash", "-n"):
+            return subprocess.run(args, capture_output=True, text=True, timeout=5)
         elif args[0] == "modinfo":
             status = int(self.modinfo_error)
             out = {"filename": "/usr/lib/modules/6.12-test/updates/dkms/nvidia.ko.zst",
@@ -311,6 +316,23 @@ class InstalledStateTests(unittest.TestCase):
     def test_shared_library_abi_failure_is_explicit(self):
         self.ldd_error = "Hyprland"
         self.assertIn("libhyprutils.so.99", "\n".join(self.audit()["errors"]))
+
+    def test_only_optional_xrctl_accepts_a_verified_bash_control_client(self):
+        state = self.home / ".local/state/smplos/app-versions"
+        optional = self.root / "usr/local/bin/xrctl"
+        self.write(optional, "#!/usr/bin/env bash\nexit 97\n")
+        self.write(state / "smpl-apps-retained.sha256", f"{CHECK.digest(optional)}  {optional}\n")
+        report = self.audit()
+        self.assertEqual(report["errors"], [])
+        self.assertIn("syntax verified", report["linkage"][str(optional)])
+        self.assertFalse(any(args == ("ldd", str(optional)) for args in self.calls))
+        self.write(optional, "#!/usr/bin/env bash\nif then\n")
+        self.write(state / "smpl-apps-retained.sha256", f"{CHECK.digest(optional)}  {optional}\n")
+        self.assertIn("Invalid XR control script", "\n".join(self.audit()["errors"]))
+        self.write(optional, "#!/usr/bin/python3\npass\n")
+        self.assertIn("not an ELF binary", "\n".join(self.audit()["errors"]))
+        self.write(self.root / "usr/local/bin/settings", "#!/usr/bin/env bash\nexit 0\n")
+        self.assertIn("not an ELF binary", "\n".join(self.audit()["errors"]))
 
     def test_ignored_or_remaining_repository_updates_cannot_report_success(self):
         self.pending = "glibc 2.41-1 -> 2.42-1\n"
@@ -945,8 +967,12 @@ class UpdaterFlowTests(unittest.TestCase):
         policy.mkdir(parents=True)
         (policy / "critical-bundle.conf").write_text('HYPRLAND_SERIES="0.56"\n')
         for name in ("20260805-100050-clear-ignorepkg-hyprland-eww.sh",
-                     "20260805-100060-remove-dropped-lib32-gstreamer.sh"):
-            (self.repo / "migrations" / name).write_text("exit 0\n")
+                     "20260805-100060-remove-dropped-lib32-gstreamer.sh",
+                     "20261018-000000-remove-orphaned-lib32-mpg123.sh"):
+            body = ('echo "orphan-mpg123 $SMPLOS_SYSTEM_UPGRADED" >> "$CALLS"\n'
+                    'exit "${ORPHAN_CLEANUP_FAIL:-0}"\n'
+                    if name.startswith("20261018-") else "exit 0\n")
+            (self.repo / "migrations" / name).write_text(body)
         self.env = {
             "HOME": str(self.home), "PATH": f"{self.bin}:/usr/bin:/bin", "LC_ALL": "C",
             "CALLS": str(self.calls), "SMPLOS_UPDATE_LOG_FILE": str(self.log),
@@ -1037,6 +1063,14 @@ exit "${AUR_FAIL:-0}"
 if [[ "$1" == list && "${FLATPAK_INSTALLED:-0}" == 1 ]]; then
     echo 'runtime/org.example.Platform/x86_64/stable'
 fi
+if [[ "${2:-}" == update && "${FLATPAK_FETCH_FALLBACK:-0}" == 1 ]] &&
+    { [[ "${FLATPAK_FETCH_ALWAYS:-0}" == 1 ]] || [[ ! -f "$HOME/flatpak-refreshed-$1" ]]; }; then
+    echo "F: Warning: Treating remote fetch error as non-fatal since runtime/org.example.Platform/x86_64/stable is already installed: No such ref in remote flathub"
+fi
+if [[ "${2:-}" == remote-ls ]]; then
+    [[ "${FLATPAK_METADATA_FAIL:-0}" != 1 ]] || exit 1
+    touch "$HOME/flatpak-refreshed-$1"
+fi
 """)
         self.mock("hyprctl", "exit 0\n")
         self.mock("sleep", "exit 0\n")
@@ -1046,26 +1080,166 @@ fi
         path.write_text("#!/bin/bash\n" + text)
         path.chmod(0o755)
 
-    def run_body(self, mode="full", **variables):
+    def body_script(self, mode="full"):
         body = self.source.split('cat >> "$UPDATE_SCRIPT" << \'EOF\'', 1)[1].split("\n", 1)[1].split("\nEOF\n", 1)[0]
         script = self.base / "run-update.sh"
-        script.write_text(function(BIN / "smplos-update", "stop_sudo_keepalive") +
+        helpers = "\n".join(function(BIN / "smplos-update", name) for name in
+                            ("stop_sudo_keepalive", "release_update_lock"))
+        script.write_text(helpers +
                           f'\nUPDATE_MODE={mode}\n' + """
+mkdir -p "$HOME/.local/state/smplos/update"
+exec 9>>"$HOME/.local/state/smplos/update/update.lock"
+flock -n 9 || exit 99
+export SMPLOS_UPDATE_LOCKED=1
 power_checks=0
 check_update_power() {
+    [[ "${INTERRUPT_PREFLIGHT:-0}" == 0 ]] || kill -TERM "$BASHPID"
     power_checks=$((power_checks + 1))
     [[ "${POWER_FAIL:-0}" == 0 && $power_checks -le "${POWER_FAIL_AFTER:-999}" ]]
 }
 """ + body)
+        return script
+
+    def run_body(self, mode="full", **variables):
+        script = self.body_script(mode)
         result = subprocess.run(["bash", str(script)], text=True, capture_output=True,
                                 env={**self.env, **variables}, timeout=10)
         self.assertNotIn("FORBIDDEN", result.stdout + result.stderr)
         return result
 
+    def wait_for_file(self, path):
+        deadline = time.monotonic() + 5
+        while not path.exists() and time.monotonic() < deadline:
+            time.sleep(0.01)
+        self.assertTrue(path.is_file(), f"Expected file was not published: {path}")
+        return path.read_text()
+
+    def lock_available(self):
+        return subprocess.run(
+            ["flock", "-n", str(self.home / ".local/state/smplos/update/update.lock"), "true"],
+            capture_output=True, timeout=5,
+        ).returncode == 0
+
+    def test_real_lock_excludes_active_work_and_releases_before_failed_terminal_acknowledgement(self):
+        gate = self.home / "continue-update"
+        os.mkfifo(gate)
+        active = self.home / "native-active"
+        self.mock("smplos-update-apps", """echo "native-apps $*" >> "$CALLS"
+if [[ "$*" == *"--group core"* ]]; then
+    echo active > "$HOME/native-active"
+    read -r _ < "$HOME/continue-update"
+fi
+""")
+        master, slave = pty.openpty()
+        process = subprocess.Popen(
+            ["bash", str(self.body_script())], stdin=slave,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+            env={**self.env, "DEPLOY_FAIL": "1"}, start_new_session=True,
+        )
+        os.close(slave)
+        try:
+            self.wait_for_file(active)
+            lock = self.home / ".local/state/smplos/update/update.lock"
+            inode = lock.stat().st_ino
+            self.assertFalse(self.lock_available())
+            self.assertFalse(Path(str(self.log) + ".result").exists())
+            with gate.open("w") as stream:
+                stream.write("continue\n")
+            receipt = self.wait_for_file(Path(str(self.log) + ".result"))
+            self.assertIn("protocol=1\n", receipt)
+            self.assertIn("status=failed\n", receipt)
+            self.assertIn("lock_released=1\n", receipt)
+            self.assertIn(f"log={self.log}\n", receipt)
+            self.assertIsNone(process.poll(), "Failed terminal must still be waiting for Enter")
+            self.assertTrue(self.lock_available())
+            self.assertEqual(lock.stat().st_ino, inode)
+            state = self.home / ".local/state/smplos/update/status"
+            state.write_text("status=running\nlog=newer-update.log\n")
+            os.write(master, b"\n")
+            output, errors = process.communicate(timeout=5)
+            self.assertNotEqual(process.returncode, 0, output + errors)
+            self.assertEqual(state.read_text(), "status=running\nlog=newer-update.log\n")
+        finally:
+            os.close(master)
+            if process.poll() is None:
+                os.killpg(process.pid, signal.SIGTERM)
+            process.communicate(timeout=5)
+
+    def test_interrupted_run_publishes_only_its_own_result_after_releasing_lock(self):
+        result = self.run_body(INTERRUPT_PREFLIGHT="1")
+        self.assertEqual(result.returncode, 143, result.stdout + result.stderr)
+        receipt = Path(str(self.log) + ".result").read_text()
+        self.assertIn("status=interrupted\n", receipt)
+        self.assertIn("lock_released=1\n", receipt)
+        self.assertIn("core_verified=0\n", receipt)
+        self.assertTrue(self.lock_available())
+
+    def test_flatpak_zero_exit_with_missing_refs_refreshes_metadata_and_retries_once(self):
+        result = self.run_body(FLATPAK_INSTALLED="1", FLATPAK_FETCH_FALLBACK="1")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertNotIn("Update complete with warnings", result.stdout)
+        calls = self.calls.read_text()
+        for scope in ("user", "system"):
+            self.assertEqual(calls.splitlines().count(f"flatpak --{scope} update -y --noninteractive"), 2)
+            self.assertIn(f"flatpak --{scope} remote-ls --columns=ref", calls)
+            self.assertIn("Treating remote fetch error", Path(f"{self.log}.flatpak-{scope}-1.log").read_text())
+            self.assertNotIn("Treating remote fetch error", Path(f"{self.log}.flatpak-{scope}-2.log").read_text())
+        self.assertNotIn("remote-modify", calls)
+        self.assertNotIn("repair", calls)
+        self.assertNotIn("--delete-data", calls)
+
+    def test_unresolved_flatpak_refs_or_failed_metadata_refresh_are_optional_not_false_success(self):
+        for failure in ("FLATPAK_FETCH_ALWAYS", "FLATPAK_METADATA_FAIL"):
+            with self.subTest(failure=failure):
+                self.calls.write_text("")
+                for scope in ("user", "system"):
+                    (self.home / f"flatpak-refreshed---{scope}").unlink(missing_ok=True)
+                result = self.run_body(
+                    FLATPAK_INSTALLED="1", FLATPAK_FETCH_FALLBACK="1", **{failure: "1"},
+                )
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertIn("Update complete with warnings", result.stdout)
+                receipt = Path(str(self.log) + ".result").read_text()
+                self.assertIn("status=complete-with-warnings\n", receipt)
+                self.assertIn("optional_phase_warnings=2\n", receipt)
+                calls = self.calls.read_text()
+                for scope in ("user", "system"):
+                    self.assertLessEqual(calls.splitlines().count(f"flatpak --{scope} update -y --noninteractive"), 2)
+                self.assertIn("os-update --finalize", calls)
+                self.assertEqual(calls.count("sudo -n -v"), 0)
+
+    def test_detached_reboot_notifier_never_retains_lock_descriptor(self):
+        marker = self.home / ".local/state/smplos/reboot-pending"
+        marker.parent.mkdir(parents=True)
+        marker.touch()
+        self.mock("smplos-reboot-notify", """exec python3 - <<'PY'
+import json, os, pathlib, time
+try:
+    descriptor = os.readlink("/proc/self/fd/9")
+except FileNotFoundError:
+    descriptor = "closed"
+pathlib.Path(os.environ["HOME"], "notifier.json").write_text(
+    json.dumps({"pid": os.getpid(), "fd9": descriptor}))
+time.sleep(30)
+PY
+""")
+        notifier = None
+        try:
+            result = self.run_body()
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            notifier = json.loads(self.wait_for_file(self.home / "notifier.json"))
+            self.assertEqual(notifier["fd9"], "closed")
+            self.assertTrue(self.lock_available())
+        finally:
+            if notifier:
+                os.kill(notifier["pid"], signal.SIGTERM)
+
     def test_core_packages_native_and_configs_are_verified_before_any_optional_work(self):
         result = self.run_body()
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         calls = self.calls.read_text()
+        self.assertLess(calls.index("pacman -Su"), calls.index("orphan-mpg123 1"))
+        self.assertLess(calls.index("orphan-mpg123 1"), calls.index("enroll-yay"))
         self.assertLess(calls.index("pacman -Su"), calls.index("os-update --deploy"))
         self.assertLess(calls.index("native-apps --group core"), calls.index("os-update --deploy --core"))
         self.assertLess(calls.index("os-update --deploy --core"), calls.index("check --core-only"))
@@ -1078,19 +1252,25 @@ check_update_power() {
         self.assertTrue(self.log.is_file())
         self.assertTrue(Path(str(self.log) + ".before.json").is_file())
         self.assertTrue(Path(str(self.log) + ".after.json").is_file())
+        receipt = Path(str(self.log) + ".result").read_text()
+        self.assertIn("status=complete\n", receipt)
+        self.assertIn("stage=finished\n", receipt)
+        self.assertIn("core_verified=1\n", receipt)
+        self.assertIn("lock_released=1\n", receipt)
+        self.assertTrue(self.lock_available())
 
     def test_failed_base_skips_configs_native_and_aur_but_still_writes_report(self):
         result = self.run_body(BASE_FAIL="1")
         self.assertNotEqual(result.returncode, 0, result.stdout)
         calls = self.calls.read_text()
-        for forbidden in ("--deploy", "native-apps", "yay ", "enroll-yay", "--finalize"):
+        for forbidden in ("--deploy", "native-apps", "yay ", "enroll-yay", "--finalize", "orphan-mpg123"):
             self.assertNotIn(forbidden, calls)
         self.assertIn("check --before", calls)
         self.assertNotIn("Update complete!", result.stdout)
         self.assertIn("status=failed", (self.home / ".local/state/smplos/update/status").read_text())
 
     def test_deployment_native_and_audit_failures_never_publish_os_version_or_success(self):
-        for failure in ("DEPLOY_FAIL", "APPS_FAIL", "VERIFY_FAIL", "FINALIZE_FAIL"):
+        for failure in ("DEPLOY_FAIL", "APPS_FAIL", "VERIFY_FAIL", "FINALIZE_FAIL", "ORPHAN_CLEANUP_FAIL"):
             with self.subTest(failure=failure):
                 self.calls.write_text("")
                 result = self.run_body(**{failure: "1"})
@@ -1112,6 +1292,7 @@ check_update_power() {
         self.assertNotIn("--finalize", calls)
         self.assertNotIn("--capture-brave-target", calls)
         self.assertNotIn("--brave-report", calls)
+        self.assertNotIn("orphan-mpg123", calls)
 
     def test_brave_target_capture_precedes_optional_aur_and_failure_is_a_warning(self):
         result = self.run_body()

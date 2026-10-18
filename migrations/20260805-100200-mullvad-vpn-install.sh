@@ -77,14 +77,14 @@ echo "  Building mullvad-vpn-bin (fetch + verify signed .deb from cdn.mullvad.ne
 if [[ $EUID -eq 0 ]]; then
     sudo useradd -m -r _mvbuild 2>/dev/null || true
     sudo chown -R _mvbuild:_mvbuild "$BUILD_DIR"
-    if ! sudo -u _mvbuild bash -c "cd '$BUILD_DIR' && makepkg -s --noconfirm --skippgpcheck"; then
+    if ! sudo -u _mvbuild bash -c "cd '$BUILD_DIR' && makepkg -s --noconfirm"; then
         echo "  ERROR: makepkg failed — will retry on next update"
         sudo userdel -r _mvbuild 2>/dev/null || true
         exit 1
     fi
     sudo userdel -r _mvbuild 2>/dev/null || true
 else
-    if ! (cd "$BUILD_DIR" && makepkg -s --noconfirm --skippgpcheck); then
+    if ! (cd "$BUILD_DIR" && makepkg -s --noconfirm); then
         echo "  ERROR: makepkg failed — will retry on next update"
         exit 1
     fi

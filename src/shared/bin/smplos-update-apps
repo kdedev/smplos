@@ -300,8 +300,7 @@ update_smpl_apps() {
         if (( retain_xr )); then
             [[ " ${installed[*]} " == *" /usr/local/bin/$xrbin "* ]] || continue
             if [[ ! -x "/usr/local/bin/$xrbin" ]] ||
-                ! smplos_app_is_elf "/usr/local/bin/$xrbin" ||
-                ! smplos_app_linkage_valid "/usr/local/bin/$xrbin"; then
+                ! smplos_xr_file_valid "/usr/local/bin/$xrbin"; then
                 warn "smpl-apps: cannot safely retain optional binary $xrbin omitted by $remote_ver"
                 return 1
             fi
@@ -317,7 +316,7 @@ update_smpl_apps() {
             warn "smpl-apps: $remote_ver omits part of the installed optional XR module; retaining verified $xrbin (not upgraded)"
             continue
         fi
-        [[ ! -f "$tmpdir/$xrbin" ]] || smplos_app_linkage_valid "$tmpdir/$xrbin" || return 1
+        [[ ! -f "$tmpdir/$xrbin" ]] || smplos_xr_file_valid "$tmpdir/$xrbin" || return 1
     done
 
     # Atomic rename preserves already-running mappings; never kill user work.
@@ -366,7 +365,7 @@ update_smpl_apps() {
     for xrbin in xr-workspace xrctl xr-game xr-glasses-hotplugd; do
         (( retain_xr == 0 )) || break
         [[ -f "$tmpdir/$xrbin" ]] || continue
-        smplos_install_app_binary "$tmpdir/$xrbin" "/usr/local/bin/$xrbin" || return 1
+        smplos_install_app_binary "$tmpdir/$xrbin" "/usr/local/bin/$xrbin" smplos_xr_file_valid || return 1
         installed+=("/usr/local/bin/$xrbin")
         for shadow in \
             "$HOME/.local/share/smplos/bin/$xrbin" \

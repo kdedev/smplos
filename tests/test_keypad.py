@@ -836,7 +836,8 @@ class MigrationTests(KeypadCase):
                 self.env["PKG_VERSION"] = version
                 output = self.migrate()
                 calls = self.calls_made()
-                self.assertIn("makepkg -s --noconfirm --skippgpcheck", calls)
+                self.assertIn("makepkg -s --noconfirm", calls)
+                self.assertNotIn("--skippgpcheck", calls)
                 self.assertTrue(any(c.startswith("pacman -U --noconfirm ") and
                                     c.endswith(f"/control-surface-{self.pkgver}-1-x86_64.pkg.tar.zst") for c in calls), calls)
                 self.assertIn("Installed control-surface", output)
@@ -1075,13 +1076,15 @@ class EwwPassthroughMigrationTests(KeypadCase):
     def test_pkgbuild_pins_the_passthrough_commit(self):
         pkgbuild = EWW_PKGBUILD.read_text()
         self.assertIn("_commit=0eb460422278dfaec64e5a527c1fd35dd3b35a1b\n", pkgbuild)
-        self.assertIn("pkgrel=2\n", pkgbuild)
+        self.assertIn("pkgrel=3\n", pkgbuild)
+        self.assertIn("options=(!debug)", pkgbuild)
         self.assertIn("Verified on X11 only", (ROOT / "KEYPAD.md").read_text())
 
     def test_rebuilds_only_an_older_eww_smplos_and_never_restarts_the_bar(self):
         code, output, calls = self.migrate("0.6.0.r840.g78105f3-1")
         self.assertEqual(code, 0, output)
-        self.assertIn("makepkg -s --noconfirm --skippgpcheck", calls)
+        self.assertIn("makepkg -s --noconfirm", calls)
+        self.assertNotIn("--skippgpcheck", calls)
         self.assertTrue(any(c.startswith("pacman -U --noconfirm ") for c in calls), calls)
         self.assertFalse(any("eww" in c and "kill" in c or "bar-ctl" in c for c in calls))
         for version, expected in (("0.6.0.r841.g0eb4604-2", "already at 0eb4604"), ("", "not installed")):

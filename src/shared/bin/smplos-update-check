@@ -253,15 +253,28 @@ class Audit:
         if unit.is_file():
             self.compare(unit, self.home / ".config/systemd/user/smplos-session.target")
 
-    def linkage(self, path):
+    def linkage(self, path, *, allow_xr_script=False):
         try:
             if not path.is_file():
                 self.error(f"Missing application: {path}")
                 return
             if not os.access(path, os.X_OK):
                 self.error(f"Application is not executable: {path}")
+            if allow_xr_script and path.is_symlink():
+                self.error(f"Optional XR application must not be a symlink: {path}")
+                return
             with path.open("rb") as stream:
                 if stream.read(4) != b"\x7fELF":
+                    stream.seek(0)
+                    if allow_xr_script and path.name == "xrctl" and stream.readline(64) in (
+                            b"#!/usr/bin/env bash\n", b"#!/bin/bash\n"):
+                        result = self.command("bash", "-n", path)
+                        if result is not None:
+                            if result.returncode:
+                                self.error(f"Invalid XR control script {path}: {result.stderr.strip()}")
+                            else:
+                                self.report["linkage"][str(path)] = "Bash XR control client; syntax verified"
+                        return
                     self.error(f"Application is not an ELF binary: {path}")
                     return
         except OSError as error:
@@ -580,7 +593,7 @@ class Audit:
                 path = self.root / "usr/local/bin" / name
                 if path.exists() or path.is_symlink() or str(path) in recorded:
                     expected.add(str(path))
-                    self.linkage(path)
+                    self.linkage(path, allow_xr_script=True)
             retained_receipt = state / "smpl-apps-retained.sha256"
             if retained_receipt.is_file():
                 optional_paths = {str(self.root / "usr/local/bin" / name) for name in optional}
@@ -593,7 +606,7 @@ class Audit:
                     retained[fields[1]] = fields[0]
                     if fields[1] not in expected:
                         expected.add(fields[1])
-                        self.linkage(Path(fields[1]))
+                        self.linkage(Path(fields[1]), allow_xr_script=True)
                     entries.append(line)
         checked = set()
         files = self.report.setdefault("native_files", {})

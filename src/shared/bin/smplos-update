@@ -46,6 +46,8 @@ notify() {
 
 startup_fail() {
     notify "Update OS could not start" "$1${STARTUP_LOG:+ Startup log: $STARTUP_LOG}"
+    stop_sudo_keepalive
+    release_update_lock || exit 1
     [[ ! -t 0 || "${SMPLOS_UPDATE_NO_HOLD:-0}" == 1 ]] ||
         read -r -p "Update could not start. Press Enter to close. " _
     exit 1
@@ -146,6 +148,14 @@ stop_sudo_keepalive() {
         unset SMPLOS_SUDO_KEEPALIVE_PID
     fi
 }
+release_update_lock() {
+    if [[ "${SMPLOS_UPDATE_LOCKED:-0}" == 1 ]]; then
+        flock -u 9 || { echo "ERROR: cannot release the update lock" >&2; return 1; }
+        exec 9>&-
+        unset SMPLOS_UPDATE_LOCKED
+    fi
+    UPDATE_LOCK_RELEASED=1
+}
 authenticate_update() {
     [[ "${SMPLOS_SUDO_READY:-0}" != 1 ]] || return 0
     command sudo -v || startup_fail "Authentication failed; update not started."
@@ -171,7 +181,7 @@ repair_update_state() {
     echo "Checking legacy updater-state ownership."
     command sudo -n python3 "$helper" --repair-state --uid "$UID"
 }
-trap stop_sudo_keepalive EXIT
+trap 'stop_sudo_keepalive; release_update_lock' EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
 trap 'exit 129' HUP
@@ -204,6 +214,7 @@ bootstrap_fail() {
     echo "ERROR: $* Log: $SMPLOS_UPDATE_LOG_FILE" | tee -a "$SMPLOS_UPDATE_LOG_FILE" >&2
     [[ -z "$UPDATE_SCRIPT" ]] || rm -f -- "$UPDATE_SCRIPT"
     stop_sudo_keepalive
+    release_update_lock || exit 1
     [[ ! -t 0 || "${SMPLOS_UPDATE_NO_HOLD:-0}" == 1 ]] ||
         read -r -p "Update could not start. Press Enter to close. " _
     exit 1
@@ -215,6 +226,8 @@ if [[ -n "$LEGACY_HANDOFF" ]]; then
         bootstrap_fail "Automatic updater handoff failed; no package upgrade was started."
 fi
 if ! check_update_power 2>&1 | tee -a "$SMPLOS_UPDATE_LOG_FILE"; then
+    stop_sudo_keepalive
+    release_update_lock || exit 1
     [[ ! -t 0 || "${SMPLOS_UPDATE_NO_HOLD:-0}" == 1 ]] ||
         read -r -p "Plug in power, then press Enter to close and retry. " _
     exit 1
@@ -279,7 +292,7 @@ cat > "$UPDATE_SCRIPT" << PREAMBLE || bootstrap_fail "Cannot write update preamb
 #!/bin/bash
 UPDATE_MODE="$UPDATE_MODE"
 PREAMBLE
-declare -f check_update_power stop_sudo_keepalive >> "$UPDATE_SCRIPT" || bootstrap_fail "Cannot write update helpers."
+declare -f check_update_power stop_sudo_keepalive release_update_lock >> "$UPDATE_SCRIPT" || bootstrap_fail "Cannot write update helpers."
 
 # Append the body (single-quoted: no substitution; uses UPDATE_MODE set above)
 cat >> "$UPDATE_SCRIPT" << 'EOF' || bootstrap_fail "Cannot write updater body."
@@ -321,15 +334,21 @@ HYPRLAND_SERIES=""
 NETWORK_OK=1
 CURRENT_STAGE=starting
 FINISHED=0
+UPDATE_LOCK_RELEASED=0
 
 record_update_state() {
-    local status="$1" temporary
-    temporary=$(mktemp "$STATE_DIR/.status.XXXXXX") || return 1
-    printf 'status=%s\nstage=%s\nlog=%s\nmode=%s\ncore_verified=%s\noptional_phase_warnings=%s\n' \
-        "$status" "$CURRENT_STAGE" "$LOG_FILE" "$UPDATE_MODE" "$CORE_VERIFIED" "${#OPTIONAL_WARNINGS[@]}" > "$temporary" &&
+    local status="$1" destination="${2:-$STATE_DIR/status}" temporary
+    temporary=$(mktemp "${destination}.XXXXXX") || return 1
+    {
+        printf 'status=%s\nstage=%s\nlog=%s\nmode=%s\ncore_verified=%s\noptional_phase_warnings=%s\n' \
+            "$status" "$CURRENT_STAGE" "$LOG_FILE" "$UPDATE_MODE" "$CORE_VERIFIED" "${#OPTIONAL_WARNINGS[@]}"
+        if [[ $# -eq 2 ]]; then
+            printf 'protocol=1\nlock_released=%s\n' "$UPDATE_LOCK_RELEASED"
+        fi
+    } > "$temporary" &&
         sync -f "$temporary" &&
-        mv -f -- "$temporary" "$STATE_DIR/status" &&
-        sync -f "$STATE_DIR"
+        mv -f -- "$temporary" "$destination" &&
+        sync -f "$(dirname -- "$destination")"
 }
 
 update_stage() {
@@ -344,7 +363,10 @@ finish_update() {
     fi
     stop_sudo_keepalive
     rm -f -- "$0"
+    release_update_lock || return 1
     if [[ $FINISHED -eq 0 ]]; then
+        record_update_state interrupted "$LOG_FILE.result" ||
+            echo "ERROR: cannot publish interrupted update result" >&2
         echo "Update stopped during $CURRENT_STAGE. Log: $LOG_FILE" >&2
         [[ $CORE_VERIFIED -ne 1 ]] || echo "Core update was verified before optional work was interrupted." >&2
         [[ ! -t 0 ]] || read -r -p "Update stopped. Press Enter to close. " _
@@ -376,6 +398,30 @@ run_optional() {
         local status=$?
         optional_warning "$label failed (exit $status); pending for retry. See $LOG_FILE."
     fi
+}
+
+update_flatpak_scope() {
+    local scope="$1" attempt transcript status
+    local flatpak_command=(flatpak "--$scope")
+    [[ "$scope" != system ]] || flatpak_command=(sudo "${flatpak_command[@]}")
+    for attempt in 1 2; do
+        transcript="$LOG_FILE.flatpak-$scope-$attempt.log"
+        LC_ALL=C "${flatpak_command[@]}" update -y --noninteractive 2>&1 | tee "$transcript" || return 1
+        if grep -qF 'Warning: Treating remote fetch error as non-fatal since ' "$transcript"; then
+            :
+        else
+            status=$?
+            [[ $status -eq 1 ]] || return "$status"
+            return 0
+        fi
+        if [[ $attempt -eq 2 ]]; then
+            echo "ERROR: $scope Flatpak refs remain unavailable; some installed versions were retained. See $transcript." >&2
+            return 1
+        fi
+        check_update_power || return 1
+        echo "  Refreshing $scope Flatpak remote metadata before one retry..."
+        LC_ALL=C "${flatpak_command[@]}" remote-ls --columns=ref >/dev/null || return 1
+    done
 }
 
 _yay_run() {
@@ -734,6 +780,10 @@ AUR_POLICY_READY=0
 CORE_AUR_PACKAGES=""
 OPTIONAL_AUR_PACKAGES=""
 if [[ "$UPDATE_MODE" == full && $SYSTEM_UPGRADED -eq 1 ]] && check_update_power; then
+    if ! SMPLOS_SYSTEM_UPGRADED=1 bash "$SMPLOS_PATH/repo/migrations/20261018-000000-remove-orphaned-lib32-mpg123.sh"; then
+        echo "  ERROR: retired dependency cleanup failed."
+        UPDATE_FAILED=1
+    fi
     critical_bundle_prompt_and_apply
     echo "── Required AUR drivers, libraries and update tools ──"
     if SMPLOS_SYSTEM_UPGRADED=1 smplos-ensure-yay &&
@@ -869,10 +919,8 @@ if [[ $CORE_VERIFIED -eq 1 ]] && command -v flatpak &>/dev/null; then
             optional_warning "$scope Flatpak updates deferred: no internet connection."
         elif ! check_update_power; then
             optional_warning "$scope Flatpak updates deferred: external power is required."
-        elif [[ "$scope" == system ]]; then
-            run_optional "system Flatpak update" sudo flatpak --system update -y --noninteractive
         else
-            run_optional "user Flatpak update" flatpak --user update -y --noninteractive
+            run_optional "$scope Flatpak update" update_flatpak_scope "$scope"
         fi
     done
     echo
@@ -945,12 +993,24 @@ if [[ $UPDATE_FAILED -eq 0 ]]; then
     if [[ ${#OPTIONAL_WARNINGS[@]} -gt 0 || $AUDIT_WARNINGS -eq 1 ]]; then
         completion=complete-with-warnings
     fi
-    record_update_state "$completion" || UPDATE_FAILED=1
+    if ! record_update_state "$completion"; then
+        echo "ERROR: could not record update completion" >&2
+        UPDATE_FAILED=1
+        completion=failed
+    fi
 else
+    completion=failed
     record_update_state failed || echo "ERROR: could not record update failure"
 fi
-FINISHED=1
 stop_sudo_keepalive
+# Publish shared state while still exclusive; only this run's receipt follows
+# the unlock, so an old terminal cannot overwrite a newer run's progress.
+FINISHED=1
+release_update_lock || exit 1
+record_update_state "$completion" "$LOG_FILE.result" || {
+    echo "ERROR: could not publish update completion result" >&2
+    UPDATE_FAILED=1
+}
 
 echo "══════════════════════════════════════"
 if [[ "$UPDATE_FAILED" -eq 0 && "$completion" == complete-with-warnings ]]; then
@@ -980,9 +1040,9 @@ if [[ -f "$REBOOT_MARKER" ]] && command -v smplos-reboot-notify &>/dev/null; the
         setsid -f runuser -u "$SMPLOS_INVOKER_USER" -- env \
             XDG_RUNTIME_DIR="/run/user/$SMPLOS_INVOKER_UID" \
             DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/$SMPLOS_INVOKER_UID/bus" \
-            sh -c 'sleep 1; exec smplos-reboot-notify' >/dev/null 2>&1
+            sh -c 'sleep 1; exec smplos-reboot-notify' 9>&- >/dev/null 2>&1
     else
-        setsid -f sh -c 'sleep 1; exec smplos-reboot-notify' >/dev/null 2>&1
+        setsid -f sh -c 'sleep 1; exec smplos-reboot-notify' 9>&- >/dev/null 2>&1
     fi
 fi
 [[ "$UPDATE_FAILED" -eq 0 ]]

@@ -126,7 +126,7 @@ class AppDeliveryTests(unittest.TestCase):
             source = source.replace(path, str(self.base / "system-units") + path)
         return source
 
-    def publish(self, missing=None, corrupt=None, asset=True):
+    def publish(self, missing=None, corrupt=None, asset=True, xr_script=None):
         url = "https://github.com/smpl-os/smpl-apps/releases/download/v0.8.23/smpl-apps-0.8.23-x86_64.tar.gz"
         self.release.write_text(json.dumps({
             "tag_name": "v0.8.23",
@@ -137,6 +137,8 @@ class AppDeliveryTests(unittest.TestCase):
                 if app == missing:
                     continue
                 data = b"broken" if app == corrupt else b"\x7fELFnew-" + app.encode()
+                if app == "xrctl" and xr_script is not None:
+                    data = xr_script
                 info = tarfile.TarInfo(app)
                 info.size = len(data)
                 info.mode = 0o755
@@ -359,7 +361,7 @@ update_smpl_apps
         self.assertEqual((state / "smpl-apps").read_text(), "v0.8.22\n")
         self.assertIn("version not recorded", result.stderr)
 
-    def test_app_updater_installs_complete_release_without_modifying_pins(self):
+    def app_updater_fixture(self):
         path = ROOT / "src/shared/bin/smplos-update-apps"
         state = self.home / ".local/state/smplos/app-versions"
         installed = self.home / "installed"
@@ -391,6 +393,10 @@ CHECK_ONLY=0; QUIET=0; n_updated=0
 log() { :; }; ok() { :; }; warn() { echo "$*" >&2; }
 update_smpl_apps
 """
+        return state, installed, pins, script
+
+    def test_app_updater_installs_complete_release_without_modifying_pins(self):
+        state, installed, pins, script = self.app_updater_fixture()
         result = self.shell(script, FAIL_INSTALL="1")
         self.assertNotEqual(result.returncode, 0)
         self.assertEqual((state / "smpl-apps").read_text(), "v0.8.22\n")
@@ -492,6 +498,38 @@ echo 'libc.so.6 => /usr/lib/libc.so.6'
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("refusing a downgrade", result.stderr)
         self.assert_new_bundle(installed)
+
+    def test_app_updater_retains_or_delivers_xrctl_bash_without_executing_it(self):
+        state, installed, _, script = self.app_updater_fixture()
+        optional = installed / "xrctl"
+        legacy = b'#!/usr/bin/env bash\nprintf bad > "$HOME/xr-was-executed"\n'
+        optional.write_bytes(legacy)
+        optional.chmod(0o755)
+        self.publish(missing="xrctl")
+        result = self.shell(script)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assert_new_bundle(installed)
+        self.assertEqual(optional.read_bytes(), legacy)
+        self.assertIn(str(optional), (state / "smpl-apps-retained.sha256").read_text())
+        self.assertNotIn(str(optional), (state / "smpl-apps.sha256").read_text())
+        self.assertFalse((self.home / "xr-was-executed").exists())
+        downloads = self.requests.read_text().count("/releases/download/")
+        result = self.shell(script)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(self.requests.read_text().count("/releases/download/"), downloads)
+        optional.write_bytes(legacy + b"# changed\n")
+        result = self.shell(script)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("differs from its checksum receipt", result.stderr)
+        fresh = b'#!/bin/bash\nprintf fresh > "$HOME/xr-was-executed"\n'
+        self.publish(xr_script=fresh)
+        result = self.shell(script)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(optional.read_bytes(), fresh)
+        self.assertTrue(os.access(optional, os.X_OK))
+        self.assertIn(str(optional), (state / "smpl-apps.sha256").read_text())
+        self.assertEqual((state / "smpl-apps-retained.sha256").read_text(), "")
+        self.assertFalse((self.home / "xr-was-executed").exists())
 
     def test_iso_assembly_installs_same_bundle_for_live_and_installed_system(self):
         binaries = self.base / "app-binaries"

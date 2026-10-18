@@ -8,6 +8,28 @@ smplos_pkg_version() {
     { pacman -Q "$1" 2>/dev/null || true; } | awk '{print $2}'
 }
 
+smplos_remove_retired_orphan() {
+    local pkg="$1"
+    if ! pacman -Qq "$pkg" >/dev/null 2>&1; then
+        echo "  $pkg not installed - nothing to do"
+        return 0
+    fi
+    if ! pacman -Qdtq "$pkg" >/dev/null 2>&1; then
+        echo "  $pkg is used by another package or was installed explicitly - kept"
+        return 0
+    fi
+    if ! pacman -Qmq "$pkg" >/dev/null 2>&1 || pacman -Si "$pkg" >/dev/null 2>&1; then
+        echo "  $pkg is provided by a repository - kept"
+        return 0
+    fi
+    echo "  Removing orphaned $pkg (no longer shipped by Arch)"
+    if ! sudo pacman -R --noconfirm "$pkg"; then
+        echo "  ERROR: removal failed - will retry on next update"
+        return 1
+    fi
+    echo "  Removed $pkg"
+}
+
 # smplos_pkgbuild_install DIR [PACMAN_FLAGS...]: package a scratch copy as the
 # invoking user, then `sudo pacman -U` the package. Non-zero on any failure
 # (offline, build error); the installed package, if any, is left as it was.
@@ -25,7 +47,7 @@ smplos_pkgbuild_install() {
     fi
     build=$(mktemp -d "${TMPDIR:-/tmp}/smplos-pkgbuild.XXXXXX") || return 1
     cp "$dir/PKGBUILD" "$build/"
-    if (cd "$build" && makepkg -s --noconfirm --skippgpcheck); then
+    if (cd "$build" && makepkg -s --noconfirm); then
         pkg=$(find "$build" -maxdepth 1 -name '*.pkg.tar.*' ! -name '*-debug-*' | head -1)
         [[ -n "$pkg" ]] && sudo pacman -U --noconfirm "$@" "$pkg" && rc=0
     fi

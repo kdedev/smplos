@@ -7,8 +7,8 @@ SMPLOS_APP_BINS=(
 )
 
 smplos_install_app_binary() {
-    local source="$1" destination="$2" staged
-    smplos_app_linkage_valid "$source" || return 1
+    local source="$1" destination="$2" validator="${3:-smplos_app_linkage_valid}" staged
+    "$validator" "$source" || return 1
     staged=$(sudo mktemp "${destination}.XXXXXX") || return 1
     if sudo install -m755 "$source" "$staged" &&
         sudo mv -f -- "$staged" "$destination" &&
@@ -37,6 +37,22 @@ smplos_app_linkage_valid() {
 smplos_app_is_elf() {
     [[ -f "$1" && ! -L "$1" ]] &&
         [[ "$(head -c 4 -- "$1")" == $'\x7fELF' ]]
+}
+
+smplos_xr_file_valid() {
+    local file="$1" header
+    if [[ "${file##*/}" == xrctl && -f "$file" && ! -L "$file" ]] &&
+        ! smplos_app_is_elf "$file"; then
+        IFS= read -r header < "$file" || header=""
+        if [[ "$header" == '#!/usr/bin/env bash' || "$header" == '#!/bin/bash' ]]; then
+            bash -n "$file" || {
+                echo "smpl-apps: invalid XR control script: $file" >&2
+                return 1
+            }
+            return 0
+        fi
+    fi
+    smplos_app_linkage_valid "$file"
 }
 
 smplos_app_binaries_valid() {
@@ -138,7 +154,9 @@ smplos_stage_app_bundle() (
     smplos_app_bundle_valid "$unpacked" || return 1
     mkdir -p "$destination" || return 1
     for file in "$unpacked"/*; do
-        smplos_app_is_elf "$file" || continue
+        if ! smplos_app_is_elf "$file"; then
+            [[ "${file##*/}" == xrctl ]] && smplos_xr_file_valid "$file" || continue
+        fi
         install -m755 "$file" "$destination/${file##*/}" || return 1
     done
     install -m644 "$unpacked/smpl-calendar-alertd.service" \

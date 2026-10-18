@@ -668,6 +668,15 @@ failures still produce **Update incomplete**. Official packages stay together in
 one complete Arch transaction; the priority split never creates partial library
 upgrades.
 
+The update lock is released before the terminal's final Enter-to-close prompt
+and reboot notification, so a completed window cannot block the next update.
+App Center releases supporting [per-update completion receipts](UPDATING.md#completion-receipts-and-app-center)
+can offer **Restart App Center** after verifying completion and that their
+installed executable actually changed. An already-running older App Center
+still needs closing/reopening after its first successful native update.
+Flatpak remote-fetch fallbacks refresh metadata and retry once; unresolved refs
+remain visible optional warnings rather than a false claim that all apps updated.
+
 Supported older Git-based updaters automatically stop their old runner and
 reopen the current updater from the same button click; no separate enrollment
 command is required. The first migration from a Polkit-based updater asks once

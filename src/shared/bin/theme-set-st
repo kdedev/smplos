@@ -49,7 +49,9 @@ while read -r pid; do
   comm=$(cat "/proc/$pid/comm" 2>/dev/null) || continue
   pty_index=$(awk '$1 == "tty-index:" { print $2; exit }' "/proc/$pid"/fdinfo/* 2>/dev/null)
   if [[ ! "$pty_index" =~ ^[0-9]+$ ]]; then
-    [[ -d "/proc/$pid" ]] || continue
+    # Unreaped terminals still have /proc entries, but no live PTY to refresh.
+    state=$(awk '$1 == "State:" { print $2 }' "/proc/$pid/status" 2>/dev/null)
+    [[ -n "$state" && "$state" != Z && "$state" != X ]] || continue
     echo "theme-set-st: Cannot find PTY for $comm ($pid)" >&2
     status=1
     continue

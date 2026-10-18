@@ -5,6 +5,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from test_app_delivery import function
 
@@ -26,6 +27,24 @@ case "$name" in
   bar-ctl) exit "${FAIL_RELOAD:-0}" ;;
   theme-set-st) exit "${FAIL_TERMINAL:-0}" ;;
   theme-set-copilot) exit "${FAIL_COPILOT:-0}" ;;
+  hyprctl)
+    case "$1" in
+      eval)
+        if [[ "${2:-}" == assert* ]]; then
+          case "${HYPR_PROVIDER:-lua}" in
+            lua) echo ok ;;
+            legacy) echo 'eval is only supported with the lua config manager' ;;
+            *) echo 'unknown request'; exit 1 ;;
+          esac
+        else
+          echo "${HYPR_ENV_REPLY:-ok}"
+          exit "${HYPR_ENV_STATUS:-0}"
+        fi ;;
+      keyword)
+        echo "${HYPR_ENV_REPLY:-ok}"
+        exit "${HYPR_ENV_STATUS:-0}" ;;
+      version) echo "Hyprland ${HYPR_VERSION:-0.54.3} built from fixture" ;;
+    esac ;;
   code|codium|cursor) exit 0 ;;
 esac
 """
@@ -351,6 +370,53 @@ class ThemeSwitchingTests(unittest.TestCase):
         )
         self.assertEqual(result.returncode, 42)
 
+    def test_hyprland_environment_uses_running_lua_or_legacy_provider_not_setenv(self):
+        for provider in ("lua", "legacy", "old"):
+            with self.subTest(provider=provider):
+                self.log.write_text("")
+                result = self.switch(
+                    "new", WAYLAND_DISPLAY="wayland-test",
+                    HYPRLAND_INSTANCE_SIGNATURE="fixture", HYPR_PROVIDER=provider,
+                )
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                calls = self.log.read_text()
+                self.assertNotIn("hyprctl setenv ", calls)
+                self.assertNotIn("unknown request", result.stdout + result.stderr)
+                if provider == "lua":
+                    self.assertIn("hyprctl eval hl.env('GTK_THEME', 'Adwaita:dark'); "
+                                  "hl.env('XCURSOR_THEME', 'Adwaita')", calls)
+                    self.assertNotIn("hyprctl keyword env", calls)
+                else:
+                    self.assertIn("hyprctl keyword env GTK_THEME,Adwaita:dark", calls)
+                    self.assertIn("hyprctl keyword env XCURSOR_THEME,Adwaita", calls)
+
+    def test_hyprland_environment_rejects_unknown_apis_and_success_exit_with_error_reply(self):
+        for extra in (
+            {"HYPR_PROVIDER": "unknown", "HYPR_VERSION": "0.56.2"},
+            {"HYPR_ENV_REPLY": "unknown request"},
+            {"HYPR_ENV_STATUS": "1", "HYPR_ENV_REPLY": "connection refused"},
+        ):
+            with self.subTest(extra=extra):
+                result = self.switch(
+                    "new", WAYLAND_DISPLAY="wayland-test",
+                    HYPRLAND_INSTANCE_SIGNATURE="fixture", **extra,
+                )
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("theme-set:", result.stderr)
+                self.assertNotIn("Theme set to:", result.stdout)
+
+    def test_no_hyprland_environment_request_for_x11_or_other_wayland_compositors(self):
+        for wayland, signature in (("", "stale"), ("niri-test", "")):
+            self.log.write_text("")
+            result = self.switch(
+                "new", WAYLAND_DISPLAY=wayland, HYPRLAND_INSTANCE_SIGNATURE=signature,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            calls = self.log.read_text()
+            self.assertNotIn("hyprctl eval ", calls)
+            self.assertNotIn("hyprctl keyword env ", calls)
+            self.assertNotIn("hyprctl setenv ", calls)
+
     def refresh_terminal(self, name, paused=False):
         child = subprocess.Popen(
             [sys.executable, "-c", TERMINAL_CHILD, name, str(paused)],
@@ -390,6 +456,28 @@ class ThemeSwitchingTests(unittest.TestCase):
         self.assertIn("Cannot update /dev/pts/", result.stderr)
         self.assertEqual(payload, b"")
         self.assertEqual(signalled, "False")
+
+    def test_exited_unreaped_terminal_has_no_pty_and_is_not_a_refresh_failure(self):
+        self.assertEqual(self.switch("new").returncode, 0)
+        child = subprocess.Popen(
+            [sys.executable, "-c", 'open("/proc/self/comm", "w").write("st-wl")'],
+            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        )
+        try:
+            status = Path(f"/proc/{child.pid}/status")
+            deadline = time.monotonic() + 5
+            while "\nState:\tZ " not in status.read_text() and time.monotonic() < deadline:
+                time.sleep(0.01)
+            self.assertIn("\nState:\tZ ", status.read_text())
+            result = subprocess.run(
+                ["bash", str(BIN / "theme-set-st")],
+                env={**self.env, "ST_PID": str(child.pid)},
+                text=True, capture_output=True, timeout=5,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertNotIn("Cannot find PTY", result.stderr)
+        finally:
+            child.wait(timeout=5)
 
     def test_post_deploy_drops_privileges_without_retrying_failed_switch(self):
         source = (BIN / "smplos-os-update").read_text()

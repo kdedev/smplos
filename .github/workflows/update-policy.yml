@@ -18,12 +18,14 @@ on:
       - "src/shared/bin/rebuild-paru"
       - "src/shared/lib/smplos-pkgbuild.sh"
       - "src/shared/pkgbuilds/yay-bin/**"
+      - "src/shared/pkgbuilds/eww-smplos/**"
       - "src/shared/packages-aur.txt"
       - "src/shared/packages-flatpak.txt"
       - "src/shared/packages-appimage.txt"
       - "src/editions/productivity/**"
       - "src/builder/build.sh"
       - "src/shared/bin/theme-set"
+      - "src/shared/bin/theme-set-st"
       - "src/shared/installer/install.sh"
       - "src/shared/bin/bar-ctl"
       - "src/shared/lib/smplos-app-bundle.sh"
@@ -56,12 +58,14 @@ on:
       - "src/shared/bin/rebuild-paru"
       - "src/shared/lib/smplos-pkgbuild.sh"
       - "src/shared/pkgbuilds/yay-bin/**"
+      - "src/shared/pkgbuilds/eww-smplos/**"
       - "src/shared/packages-aur.txt"
       - "src/shared/packages-flatpak.txt"
       - "src/shared/packages-appimage.txt"
       - "src/editions/productivity/**"
       - "src/builder/build.sh"
       - "src/shared/bin/theme-set"
+      - "src/shared/bin/theme-set-st"
       - "src/shared/installer/install.sh"
       - "src/shared/bin/bar-ctl"
       - "src/shared/lib/smplos-app-bundle.sh"
@@ -94,12 +98,12 @@ jobs:
       - name: Check shell syntax
         run: |
           for script in src/shared/bin/smplos-update src/shared/bin/smplos-os-update \
-            src/shared/bin/smplos-migrate src/shared/bin/theme-set src/builder/build.sh \
+            src/shared/bin/smplos-migrate src/shared/bin/theme-set src/shared/bin/theme-set-st src/builder/build.sh \
             src/shared/lib/smplos-update-entry.sh \
             src/shared/lib/smplos-session-env.sh src/fetch-apps.sh src/fetch-org.sh \
             src/shared/bin/smplos-update-apps src/shared/bin/smplos-update-bootstrap src/shared/bin/bar-ctl \
             src/shared/bin/smplos-ensure-yay src/shared/bin/heal-paru src/shared/bin/rebuild-paru \
-            src/shared/pkgbuilds/yay-bin/PKGBUILD src/shared/lib/smplos-pkgbuild.sh \
+            src/shared/pkgbuilds/yay-bin/PKGBUILD src/shared/pkgbuilds/eww-smplos/PKGBUILD src/shared/lib/smplos-pkgbuild.sh \
             src/shared/lib/smplos-app-bundle.sh src/shared/installer/automated_script.sh \
             src/shared/update-policy/critical-bundle.conf migrations/*.sh; do
             bash -n "$script" || exit 1

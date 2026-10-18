@@ -47,6 +47,31 @@ toml_get() {
   }' "$file"
 }
 
+hyprland_request() {
+  local reply
+  reply=$(timeout 3 hyprctl "$@" 2>&1) || die "Hyprland request failed ($*): $reply"
+  [[ "$reply" == ok ]] || die "Hyprland request rejected ($*): $reply"
+}
+
+apply_hyprland_environment() {
+  [[ -n "${WAYLAND_DISPLAY:-}" && -n "${HYPRLAND_INSTANCE_SIGNATURE:-}" ]] || return 0
+  local probe probe_status=0 version
+  probe=$(timeout 3 hyprctl eval "assert(type(hl.env) == 'function')" 2>&1) || probe_status=$?
+  if [[ $probe_status -eq 0 && "$probe" == ok ]]; then
+    hyprland_request eval "hl.env('GTK_THEME', '$GTK_THEME'); hl.env('XCURSOR_THEME', '$_cursor_theme')"
+    return
+  fi
+  if [[ $probe_status -ne 0 || "$probe" != "eval is only supported with the lua config manager" ]]; then
+    version=$(timeout 3 hyprctl version 2>&1) || die "Cannot query running compositor: $version"
+    if [[ ! "$version" =~ ^Hyprland[[:space:]]v?0\.([0-9]+)\.([0-9]+)[[:space:]] ]] \
+        || (( 10#${BASH_REMATCH[1]} > 54 )); then
+      die "Unsupported/unavailable Hyprland environment API: $probe"
+    fi
+  fi
+  hyprland_request keyword env "GTK_THEME,$GTK_THEME"
+  hyprland_request keyword env "XCURSOR_THEME,$_cursor_theme"
+}
+
 # Normalize theme name: strip markup, lowercase, spaces to hyphens
 THEME_NAME=$(echo "${1:-}" | sed -E 's/<[^>]+>//g' | tr '[:upper:]' '[:lower:]' | tr ' ' '-')
 
@@ -317,8 +342,7 @@ export GTK_THEME="$_gtk_env"
 mkdir -p "$HOME/.config/environment.d"
 printf 'GTK_THEME=%s\nXCURSOR_THEME=%s\n' "$_gtk_env" "$_cursor_theme" > "$HOME/.config/environment.d/gtk.conf"
 # Push to Hyprland + systemd so portal services see the change without reboot
-command -v hyprctl &>/dev/null && hyprctl setenv GTK_THEME "$GTK_THEME" 2>/dev/null || true
-command -v hyprctl &>/dev/null && hyprctl setenv XCURSOR_THEME "$_cursor_theme" 2>/dev/null || true
+apply_hyprland_environment
 systemctl --user import-environment GTK_THEME XCURSOR_THEME 2>/dev/null || true
 # Restart portal-gtk so it picks up the new GTK_THEME
 systemctl --user restart xdg-desktop-portal-gtk 2>/dev/null || true

@@ -11,23 +11,8 @@
 # Named to run with the other cleanup before the 20260805 catch-up migrations.
 set -uo pipefail
 
-pkg=webkit2gtk
-if ! pacman -Qq "$pkg" >/dev/null 2>&1; then
-    echo "  $pkg not installed - nothing to do"
-    exit 0
-fi
-if ! pacman -Qdtq "$pkg" >/dev/null 2>&1; then
-    echo "  $pkg is used by another package or was installed explicitly - kept"
-    exit 0
-fi
-if ! pacman -Qmq "$pkg" >/dev/null 2>&1; then
-    echo "  $pkg is provided by a repository - kept"
-    exit 0
-fi
-
-echo "  Removing orphaned $pkg (no longer shipped by Arch)"
-if ! sudo pacman -R --noconfirm "$pkg"; then
-    echo "  ERROR: removal failed - will retry on next update"
+source "${BASH_SOURCE[0]%/*}/../src/shared/lib/smplos-pkgbuild.sh" || {
+    echo "  ERROR: retired-package cleanup helper is missing"
     exit 1
-fi
-echo "  Removed $pkg"
+}
+smplos_remove_retired_orphan webkit2gtk

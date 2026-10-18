@@ -12,6 +12,7 @@ ROOT = Path(__file__).resolve().parents[1]
 MIGRATIONS = ROOT / "migrations"
 LIB32 = MIGRATIONS / "20260805-100060-remove-dropped-lib32-gstreamer.sh"
 WEBKIT = MIGRATIONS / "20260805-100070-remove-orphaned-webkit2gtk.sh"
+MPG123 = MIGRATIONS / "20261018-000000-remove-orphaned-lib32-mpg123.sh"
 CATCHUP = MIGRATIONS / "20260805-100300-force-catchup-update.sh"
 CHAIN = ["lib32-gst-plugins-good", "lib32-gst-plugins-base", "lib32-gst-plugins-base-libs",
          "lib32-gstreamer", "lib32-libcap", "lib32-pam", "lib32-audit", "lib32-libnsl",
@@ -135,6 +136,35 @@ class OrphanedWebkit2gtkTests(MigrationHarness):
             with self.subTest(**env):
                 result, calls = self.run_migration(WEBKIT, **env)
                 self.assertEqual(result.returncode, 0, result.stdout)
+                self.assertEqual(calls, [])
+
+class OrphanedLib32Mpg123Tests(MigrationHarness):
+    def test_cleanup_requires_completed_base_before_any_package_mutation(self):
+        result, calls = self.run_migration(
+            MPG123, INSTALLED="lib32-mpg123", ORPHANS="lib32-mpg123", SMPLOS_SYSTEM_UPGRADED="0",
+        )
+        self.assertEqual(result.returncode, 75)
+        self.assertEqual(calls, [])
+
+    def test_removes_only_the_confirmed_retired_orphan_not_pipewire_or_other_orphans(self):
+        result, calls = self.run_migration(
+            MPG123, INSTALLED="lib32-mpg123 lib32-pipewire-jack other-orphan",
+            ORPHANS="lib32-mpg123 other-orphan", SMPLOS_SYSTEM_UPGRADED="1",
+        )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(calls, ["-R --noconfirm lib32-mpg123"])
+
+    def test_keeps_explicit_required_or_repository_packages(self):
+        for installed, orphans, repository in (
+            ("", "", ""), ("lib32-mpg123", "", ""),
+            ("lib32-mpg123", "lib32-mpg123", "lib32-mpg123"),
+        ):
+            with self.subTest(installed=installed, orphans=orphans, repository=repository):
+                result, calls = self.run_migration(
+                    MPG123, INSTALLED=installed, ORPHANS=orphans, IN_REPO=repository,
+                    SMPLOS_SYSTEM_UPGRADED="1",
+                )
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
                 self.assertEqual(calls, [])
 
 

@@ -56,6 +56,66 @@ automatic rollback or boot recovery are provided by this flow.
 OS-owned changes reach users after merging to `main` and running the updater.
 Changes to independently built apps also require a release in their own repo.
 
+### Completion receipts and App Center
+
+The coordinator explicitly unlocks the stable `update.lock` file before its
+final terminal acknowledgement and reboot notification. Detached notifications
+never inherit descriptor 9. A terminal waiting for Enter is not an active
+package transaction and must not prevent a retry. Do not delete/recreate the
+lock or infer lock ownership from a stale PID file.
+
+A client may choose a fresh, unique absolute `SMPLOS_UPDATE_LOG_FILE` path in
+the desktop user's private update-state directory. The environment value
+survives terminal launch and updater refresh. After final verification,
+version finalization and lock release, the coordinator atomically publishes
+`<log-path>.result` using this key/value protocol:
+
+```text
+protocol=1
+status=complete
+stage=finished
+log=<exact requested absolute log path>
+mode=full
+core_verified=1
+optional_phase_warnings=0
+lock_released=1
+```
+
+Other statuses are `complete-with-warnings`, `failed` and `interrupted`.
+Interruption retains its last stage; a historical core checkpoint is not
+success. Bootstrap failures, old updaters and abrupt power loss may leave no
+receipt. Absence is unverified completion, never success. The shared `status`
+journal is written while still holding the lock and is not a client completion
+receipt: a new update can replace it independently.
+
+Terminal-server launchers can return before their window exits. Clients should
+reap their own launcher without interpreting exit zero as OS completion and
+watch their unique receipt independently of launcher/terminal lifetime. Only
+a correlated, successful full-update receipt and an actually changed installed
+App Center executable justify offering restart. Restart must wait for an idle
+App Center, close inherited lock descriptors, and remove updater authentication,
+handoff and coordinator environment flags. Closing/reopening after successful
+installation also adopts the new binary; replacing a file does not change the
+already-running executable.
+
+### Flatpak remote failures
+
+User and system installations update separately after the required core.
+Flatpak can exit zero while keeping installed refs whose remote fetch failed.
+The coordinator retains each attempt's complete output in
+`<log-path>.flatpak-<scope>-<attempt>.log`, refreshes remote metadata with
+`remote-ls`, and retries once. Continued unresolved refs or metadata failures
+become retryable optional warnings, not an unqualified app-update success and
+not a failed core update. Remote URLs, enabled/filter settings, signature
+verification, installed app data and runtime ownership are not rewritten.
+
+After a successful full base upgrade, cleanup retires `lib32-mpg123` only if
+Pacman confirms it is still an unneeded dependency and no configured repository
+ships it. Explicitly installed, required or repository-provided copies stay
+installed. This avoids rebuilding the retired orphan with an AUR recipe that
+requires JACK2 in conflict with PipeWire's JACK provider; it never replaces
+PipeWire, removes other orphans, or recursively removes dependencies.
+
 ---
 
 ## Quick Reference: What Goes Where
@@ -72,6 +132,23 @@ Changes to independently built apps also require a release in their own repo.
 | nemo-smpl | `smpl-os/nemo-smpl` repo | `smplos-update-apps` downloads from GitHub releases |
 | Breaking change | `migrations/` | `smplos-migrate` runs it exactly once per user |
 | OS version | `src/VERSION` | `sync_version()` updates `/etc/os-release` |
+
+The EWW package remains pinned to `smpl-os/eww` commit `0eb4604`. As checked on
+2026-10-18, upstream lacks both button-grab fixes and the fork's cross-backend
+`:passthrough`. [elkowar/eww#1428](https://github.com/elkowar/eww/pull/1428)
+contains only the first click fix, not the second, and remains open.
+[elkowar/eww#1437](https://github.com/elkowar/eww/pull/1437) is open and
+Wayland-only, not a substitute for verified X11 keypad click-through.
+Do not switch to unpatched upstream until all required behavior is present.
+The OTA local-package helper does not bypass source PGP verification; EWW release builds
+disable the inapplicable debug subpackage instead of running debug indexing on
+a binary without debug symbols. Compiler diagnostics remain visible.
+
+Required smpl-apps executables remain ELF-only. The optional XR module may also
+contain the separately released `xr-workspace` Bash control client, `xrctl`.
+Only that filename accepts the supported Bash shebangs; syntax is checked
+without execution, and installed/retained checksum receipts still apply.
+Missing XR peers retain the whole validated old module, not a mixture of releases.
 
 ---
 

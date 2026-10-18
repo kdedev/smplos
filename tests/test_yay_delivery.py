@@ -186,6 +186,14 @@ esac
         self.assertNotIn("build()", RECIPE.read_text())
         self.assertNotIn("makedepends=", RECIPE.read_text())
 
+    def test_os_owned_update_builds_do_not_bypass_pgp_source_verification(self):
+        sources = [*BIN.iterdir(), *(ROOT / "src/shared/lib").glob("*.sh"),
+                   *(ROOT / "migrations").glob("*.sh")]
+        for path in sources:
+            if path.is_file():
+                with self.subTest(path=path.relative_to(ROOT)):
+                    self.assertNotIn("--skippgpcheck", path.read_text())
+
 
 if __name__ == "__main__":
     unittest.main()
