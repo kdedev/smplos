@@ -538,7 +538,8 @@ class InstalledStateTests(unittest.TestCase):
         self.assertEqual(policy["required"],
                          ["support-runtime", "unusual-library", "vendor-render", "wifi-dkms"])
         self.assertEqual(policy["optional"], ["ordinary-notes"])
-        self.assertEqual(policy["managed_releases"], ["grafium-bin", "nemo-smpl"])
+        self.assertEqual(policy["managed_releases"], ["nemo-smpl"])
+        self.assertEqual(policy["app_updates_only"], ["grafium-bin"])
 
     def test_incomplete_or_unresolved_dependency_inventory_never_defaults_to_optional(self):
         for invalid_metadata in (False, True):
@@ -596,15 +597,16 @@ class InstalledStateTests(unittest.TestCase):
         (self.home / ".config/smplos/current/theme.name").unlink()
         self.assertIn("Missing active theme name", "\n".join(self.audit()["errors"]))
 
-    def test_optional_runtime_failure_is_a_warning_but_missing_core_app_is_an_error(self):
+    def test_absent_grafium_is_not_a_failure_but_missing_core_app_is_an_error(self):
         (self.root / "usr/bin/grafium").unlink()
         report = self.audit()
         self.assertEqual(report["errors"], [])
-        self.assertIn("Grafium runtime", "\n".join(report["optional_failures"]))
+        self.assertEqual(report["optional_failures"], [])
+        self.assertNotIn("Grafium", "\n".join(report["warnings"]))
         (self.root / "usr/local/bin/settings").unlink()
         self.assertIn("Missing application", "\n".join(self.audit()["errors"]))
 
-    def test_unreadable_optional_version_cache_does_not_block_preupdate_inventory(self):
+    def test_unmanaged_grafium_version_cache_is_not_read_or_changed(self):
         marker = self.home / ".local/state/smplos/app-versions/grafium"
         self.write(marker, "v1.0\n")
         read_text = Path.read_text
@@ -619,10 +621,12 @@ class InstalledStateTests(unittest.TestCase):
             report = audit.snapshot()
         self.assertEqual(report["errors"], [])
         self.assertEqual(report["optional_failures"], [])
-        self.assertIn("private old app cache", "\n".join(report["warnings"]))
+        self.assertNotIn("private old app cache", "\n".join(report["warnings"]))
+        self.assertNotIn("grafium", report["app_versions"])
+        self.assertEqual(marker.read_text(), "v1.0\n")
         self.assertEqual(report["app_versions"]["smpl-apps"], "v0.8.28")
 
-    def test_optional_private_library_owners_never_become_required_package_checks(self):
+    def test_unmanaged_grafium_binary_and_private_libraries_are_not_audited(self):
         self.packages["grafium-bin"] = "1.0-1"
 
         def runner(*args):
@@ -644,7 +648,8 @@ class InstalledStateTests(unittest.TestCase):
             report = audit.verify("full")
         self.assertEqual(report["errors"], [])
         self.assertNotIn("grafium-bin", report["critical_packages"])
-        self.assertIn("/opt/grafium/libapp.so.1", report["linkage"][str(self.root / "usr/bin/grafium")])
+        self.assertNotIn(str(self.root / "usr/bin/grafium"), report["linkage"])
+        self.assertFalse(any("grafium" in str(call) for call in self.calls))
 
     def test_cli_persists_optional_failure_and_uses_a_distinct_nonfatal_status(self):
         (self.root / "usr/bin/grafium").unlink()
@@ -660,8 +665,7 @@ class InstalledStateTests(unittest.TestCase):
         report = json.loads(output.read_text())
         self.assertEqual(status, 2)
         self.assertEqual(report["errors"], [])
-        self.assertTrue(any("Grafium" in message for message in report["optional_failures"]))
-        self.assertIn("Flatpak application update failed", report["optional_failures"])
+        self.assertEqual(report["optional_failures"], ["Flatpak application update failed"])
 
     def test_core_checkpoint_does_not_check_optional_apps(self):
         (self.root / "usr/bin/grafium").unlink()
@@ -772,28 +776,58 @@ class InstalledStateTests(unittest.TestCase):
         audit.release_results(path)
         self.assertIn("native release update was not completed", "\n".join(audit.report["errors"]))
 
-    def test_optional_native_report_cannot_overwrite_or_weaken_core_outcomes(self):
+    def test_legacy_optional_reports_are_ignored_without_weakening_core_verification(self):
         self.packages.update({"nemo-smpl": "1.0-1", "grafium-bin": "1.0-1"})
         components = {name: {"status": "current", "target": "v1.0"}
-                      for name in CHECK.RELEASE_COMPONENTS - {"grafium"}}
+                      for name in CHECK.RELEASE_COMPONENTS}
         components["smpl-apps"]["target"] = "v0.8.28"
         core = self.base / "core-apps.json"
         core.write_text(json.dumps({"components": components}))
-        audit = CHECK.Audit(self.home, self.repo, self.root, self.runner)
-        audit.snapshot()
-        audit.release_results(core)
-        self.assertEqual(audit.report["errors"], [])
         optional = self.base / "optional-apps.json"
         for result in (
             {"grafium": {"status": "failed", "target": None}},
             {"grafium": {"status": "updated", "target": "v2.0"}},
             {"smpl-apps": {"status": "failed", "target": None}},
+            None,
         ):
-            optional.write_text(json.dumps({"components": result}))
-            audit.optional_check("Optional native apps", audit.optional_release_results, optional)
-            self.assertEqual(audit.report["errors"], [])
-            self.assertEqual({name: audit.report["native_updates"][name] for name in components}, components)
-        self.assertEqual(len(audit.report["optional_failures"]), 3)
+            if result is None:
+                optional.unlink()
+            else:
+                optional.write_text(json.dumps({"components": result}))
+            audit = CHECK.Audit(self.home, self.repo, self.root, self.runner)
+            stdout = io.StringIO()
+            with mock.patch.object(CHECK, "Audit", return_value=audit), mock.patch.object(
+                CHECK.sys, "argv", ["smplos-update-check", "--mode", "apps",
+                                   "--apps-report", str(core), "--optional-apps-report", str(optional),
+                                   "--output", str(self.base / "legacy-report.json")]
+            ), redirect_stdout(stdout), redirect_stderr(io.StringIO()):
+                status = CHECK.main()
+            self.assertEqual(status, 0, audit.report["errors"])
+            self.assertIn("Legacy optional native report ignored", stdout.getvalue())
+            self.assertEqual(audit.report["native_updates"], components)
+            self.assertEqual(audit.report["optional_failures"], [])
+        components["smpl-apps"]["status"] = "failed"
+        core.write_text(json.dumps({"components": components}))
+        audit.release_results(core)
+        self.assertIn("native release update was not completed", "\n".join(audit.report["errors"]))
+
+    def test_legacy_grafium_native_result_is_not_a_current_managed_component(self):
+        self.packages["nemo-smpl"] = "1.0-1"
+        components = {name: {"status": "current", "target": "v1.0"}
+                      for name in CHECK.RELEASE_COMPONENTS}
+        components["smpl-apps"]["target"] = "v0.8.28"
+        components["grafium"] = {"status": "failed", "target": None}
+        path = self.base / "legacy-native.json"
+        path.write_text(json.dumps({"components": components}))
+        audit = CHECK.Audit(self.home, self.repo, self.root, self.runner)
+        audit.snapshot()
+        audit.release_results(path)
+        self.assertEqual(audit.report["errors"], [])
+        self.assertEqual(audit.report["optional_failures"], [])
+        self.assertNotIn("grafium", audit.report["native_updates"])
+        audit.changes({"packages": self.packages,
+                       "app_versions": {"grafium": "v1.0", "smpl-apps": "v0.8.28"}})
+        self.assertNotIn("grafium", audit.report["app_version_changes"])
 
     def test_command_persists_full_failed_comparison_and_prints_end_summary(self):
         self.available["glibc"] = "2.43-1"
@@ -1010,7 +1044,6 @@ case "$1" in
 esac
 """)
         self.mock("smplos-update-apps", """echo "native-apps $*" >> "$CALLS"
-[[ "$*" != *"--group optional"* ]] || exit "${OPTIONAL_APPS_FAIL:-0}"
 exit "${APPS_FAIL:-0}"
 """)
         self.mock("smplos-update-check", """echo "check $*" >> "$CALLS"
@@ -1244,8 +1277,9 @@ PY
         self.assertLess(calls.index("native-apps --group core"), calls.index("os-update --deploy --core"))
         self.assertLess(calls.index("os-update --deploy --core"), calls.index("check --core-only"))
         self.assertLess(calls.index("check --core-only"), calls.index("os-update --optional"))
-        self.assertLess(calls.index("check --core-only"), calls.index("native-apps --group optional"))
-        self.assertLess(calls.index("native-apps --group optional"), calls.index("yay -Sua"))
+        self.assertLess(calls.index("os-update --optional"), calls.index("yay -Sua"))
+        self.assertNotIn("--group optional", calls)
+        self.assertNotIn("--optional-apps-report", calls)
         self.assertLess(calls.index("check --before"), calls.index("os-update --finalize"))
         state = (self.home / ".local/state/smplos/update/status").read_text()
         self.assertIn("status=complete", state)
@@ -1377,17 +1411,33 @@ PY
         self.assertIn("status=complete-with-warnings", (self.home / ".local/state/smplos/update/status").read_text())
 
     def test_optional_failures_continue_other_apps_and_preserve_core_completion(self):
-        for failure in ("OPTIONAL_CONFIG_FAIL", "OPTIONAL_APPS_FAIL", "AUR_FAIL", "OPTIONAL_AUDIT_FAIL"):
+        for failure in ("OPTIONAL_CONFIG_FAIL", "AUR_FAIL", "OPTIONAL_AUDIT_FAIL"):
             with self.subTest(failure=failure):
                 self.calls.write_text("")
                 result = self.run_body(FLATPAK_INSTALLED="1", **{failure: "1"})
                 self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
                 calls = self.calls.read_text()
-                for expected in ("--group core", "--deploy --core", "--optional", "--group optional",
+                for expected in ("--group core", "--deploy --core", "--optional",
                                  "yay -Sua", "flatpak --user update", "--finalize"):
                     self.assertIn(expected, calls)
                 self.assertIn("Update complete with warnings", result.stdout)
                 self.assertIn("core_verified=1", (self.home / ".local/state/smplos/update/status").read_text())
+
+    def test_full_and_apps_modes_never_request_grafium_delivery_or_verification(self):
+        for mode in ("full", "apps"):
+            with self.subTest(mode=mode):
+                self.calls.write_text("")
+                result = self.run_body(mode=mode, CORE_AUR="1")
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                calls = self.calls.read_text()
+                native = [line for line in calls.splitlines() if line.startswith("native-apps ")]
+                self.assertEqual(len(native), 1)
+                self.assertIn("--group core", native[0])
+                self.assertNotIn("--optional-apps-report", calls)
+                aur = [line for line in calls.splitlines() if line.startswith("yay -Sua")]
+                self.assertEqual(len(aur), 2 if mode == "full" else 0)
+                for line in aur:
+                    self.assertIn("nemo-smpl,grafium-bin,eww-smplos", line)
 
     def test_required_foreign_driver_updates_before_native_and_failure_remains_blocking(self):
         result = self.run_body(CORE_AUR="1")

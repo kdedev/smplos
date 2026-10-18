@@ -29,13 +29,13 @@ STACK = re.compile(
     r".*ucode|hypr.*|aquamarine|xdg-desktop-portal.*|eww.*|glibc|gcc-libs|"
     r"openssl|systemd.*|pacman|libalpm|grub|mkinitcpio.*|kernel-modules-hook|dkms|"
     r"libdrm|wayland|libxkbcommon.*|qt6-.*|gtk[34]|glib2|webkit2gtk.*|"
-    r"nemo-smpl|grafium-bin|control-surface|bash|coreutils|sudo|polkit.*|pam|"
+    r"nemo-smpl|control-surface|bash|coreutils|sudo|polkit.*|pam|"
     r"python|curl|git|gnupg|ca-certificates.*|yay(?:-bin|-git)?|flatpak|"
     r"greetd.*|plymouth|dbus.*|networkmanager|pipewire.*|wireplumber|brave-bin)$"
 )
 KERNELS = {"linux", "linux-lts", "linux-zen", "linux-hardened", "linux-surface"}
-RELEASE_COMPONENTS = {"smpl-apps", "st-smpl", "nemo-smpl", "micro-smpl", "grafium"}
-OPTIONAL_PACKAGES = {"brave-bin", "grafium-bin", "flatpak", "nvidia-container-toolkit"}
+RELEASE_COMPONENTS = {"smpl-apps", "st-smpl", "nemo-smpl", "micro-smpl"}
+OPTIONAL_PACKAGES = {"brave-bin", "flatpak", "nvidia-container-toolkit"}
 CORE_BINARIES = {
     "bash": ("usr/bin/bash",),
     "sudo": ("usr/bin/sudo",),
@@ -147,16 +147,12 @@ class Audit:
         versions = self.home / ".local/state/smplos/app-versions"
         self.report["app_versions"] = {}
         for path in versions.glob("*"):
-            if not path.is_file() or path.name.endswith(".sha256"):
+            if path.name not in RELEASE_COMPONENTS or not path.is_file():
                 continue
             try:
                 self.report["app_versions"][path.name] = path.read_text().strip()
             except OSError as error:
-                message = f"Cannot read installed app version marker {path}: {error}"
-                if path.name in RELEASE_COMPONENTS - {"grafium"}:
-                    self.error(message)
-                else:
-                    self.report["warnings"].append(message)
+                self.error(f"Cannot read installed app version marker {path}: {error}")
         return self.report
 
     def compare(self, source, destination, executable=False):
@@ -298,8 +294,6 @@ class Audit:
             self.linkage(self.root / "usr/local/bin" / name)
         for name in ("nemo", "eww"):
             self.linkage(self.root / "usr/bin" / name)
-        if not self.core_only:
-            self.optional_check("Grafium runtime", self.linkage, self.root / "usr/bin/grafium")
         if self.hyprland_installed():
             self.linkage(self.root / "usr/bin/Hyprland")
         for name in ("nemo-document-renderer", "nemo-archive-create-worker"):
@@ -429,16 +423,12 @@ class Audit:
         results = json.loads(path.read_text())["components"]
         if not isinstance(results, dict):
             raise ValueError("components must be an object")
-        self.report.setdefault("native_updates", {}).update(results)
-        components = RELEASE_COMPONENTS - {"grafium"}
-        if "grafium" in results and not self.core_only:
-            components = RELEASE_COMPONENTS
-        for component in sorted(components):
+        self.report.setdefault("native_updates", {}).update(
+            {name: result for name, result in results.items() if name in RELEASE_COMPONENTS}
+        )
+        for component in sorted(RELEASE_COMPONENTS):
             result = results.get(component)
-            if component == "grafium":
-                self.optional_check("Grafium release", self.release_component_result, component, result)
-            else:
-                self.release_component_result(component, result)
+            self.release_component_result(component, result)
 
     def release_component_result(self, component, result):
         if not isinstance(result, dict) or result.get("status") not in ("current", "updated"):
@@ -447,7 +437,7 @@ class Audit:
         if not isinstance(result.get("target"), str) or not result["target"]:
             self.error(f"{component}: published release target could not be verified")
             return
-        package = {"nemo-smpl": "nemo-smpl", "grafium": "grafium-bin"}.get(component)
+        package = "nemo-smpl" if component == "nemo-smpl" else None
         installed = (self.report["packages"].get(package) if package
                      else self.report["app_versions"].get(component))
         target = result["target"].removeprefix("v") + ("-1" if package else "")
@@ -457,13 +447,6 @@ class Audit:
         comparison = self.command("vercmp", installed.removeprefix("v"), target)
         if comparison is None or comparison.returncode or comparison.stdout.strip() not in ("0", "1"):
             self.error(f"{component}: installed {installed} did not reach release target {result['target']}")
-
-    def optional_release_results(self, path):
-        results = json.loads(path.read_text())["components"]
-        if not isinstance(results, dict) or set(results) != {"grafium"}:
-            raise ValueError("optional release report must contain Grafium only")
-        self.report.setdefault("native_updates", {}).update(results)
-        self.release_component_result("grafium", results["grafium"])
 
     def aur_policy(self):
         foreign_result = self.command("pacman", "-Qmq")
@@ -561,11 +544,14 @@ class Audit:
                     self.error(f"No system provider for core dependency {dependency} required by {name}")
                     return
                 pending.extend(candidates - closure)
-        managed = {"nemo-smpl", "grafium-bin", "eww-smplos"}
+        managed = {"nemo-smpl", "eww-smplos"}
+        app_only = {"grafium-bin"}
+        excluded = managed | app_only
         self.report["aur_policy"] = {
-            "required": sorted((foreign & closure) - managed),
-            "optional": sorted(foreign - closure - managed),
+            "required": sorted((foreign & closure) - excluded),
+            "optional": sorted(foreign - closure - excluded),
             "managed_releases": sorted(foreign & managed),
+            "app_updates_only": sorted(foreign & app_only),
             "required_closure": sorted(closure),
         }
 
@@ -806,7 +792,7 @@ class Audit:
         versions = previous.get("app_versions", {})
         self.report["app_version_changes"] = {
             name: {"before": versions.get(name), "after": self.report["app_versions"].get(name)}
-            for name in sorted(versions.keys() | self.report["app_versions"].keys())
+            for name in sorted((versions.keys() | self.report["app_versions"].keys()) & RELEASE_COMPONENTS)
             if versions.get(name) != self.report["app_versions"].get(name)
         }
         for name, item in self.report.get("package_status", {}).items():
@@ -890,7 +876,8 @@ def main():
     parser.add_argument("--snapshot", action="store_true", help="Inventory only, before update")
     parser.add_argument("--core-only", action="store_true", help="Verify core before optional app work")
     parser.add_argument("--classify-aur", action="store_true", help="Classify local foreign-package dependency closure")
-    parser.add_argument("--optional-apps-report", type=Path)
+    parser.add_argument("--optional-apps-report", type=Path,
+                        help="Legacy option; no optional native apps are OS-managed")
     parser.add_argument("--optional-warning", action="append", default=[])
     parser.add_argument("--required-error", action="append", default=[])
     parser.add_argument("--mode", choices=("full", "apps", "bootstrap"), default="full")
@@ -944,7 +931,7 @@ def main():
                 except (OSError, ValueError, KeyError, TypeError) as error:
                     audit.error(f"Native release results unavailable; delivery was skipped or interrupted: {error}")
             if args.optional_apps_report:
-                audit.optional_check("Optional native apps", audit.optional_release_results, args.optional_apps_report)
+                print("Legacy optional native report ignored: no optional native apps are OS-managed.")
         for warning in args.optional_warning:
             audit.optional_error(warning)
         for error in args.required_error:

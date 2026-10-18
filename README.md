@@ -139,9 +139,8 @@ See the [theme alpha ownership guide](CREATING_MODIFYING_A_THEME.md#opacity-keys
 and [release sequence](UPDATING.md#background-only-transparency-delivery).
 Normal **Update OS** must install the published native releases as well as
 theme/config changes; source pushes and cached tags alone are insufficient.
-Reopen apps when ready after updating. Local Grafium launchers can intentionally
-override the packaged binary; the updater preserves and reports those overrides
-rather than silently replacing custom launch choices.
+Reopen apps when ready after updating. Grafium is independently installed and
+updated; Update OS does not deliver its binary or inspect custom Grafium launchers.
 
 <a href="images/5-themes.png"><img src="images/5-themes.png" width="720" /></a>
 
@@ -203,7 +202,7 @@ smplOS ships in focused editions that **stack on top of each other**. Pick the o
 
 | Flag | Edition | Focus | Example apps |
 |------|---------|-------|-------------|
-| `-p` | **Productivity** | Office & workflow | Grafium, LibreOffice, KeePassXC |
+| `-p` | **Productivity** | Office & workflow | LibreOffice, KeePassXC |
 | `-c` | **Creators** | Design & media | OBS, Kdenlive, GIMP |
 | `-m` | **Communication** | Chat & calls | Discord, Signal, Slack |
 | `-d` | **Development** | Developer tools | VSCode, LazyVim (neovim), lazygit |
@@ -218,6 +217,11 @@ Build with any combination:
 ```
 
 Every edition installs offline, in under 2 minutes, from the same ISO.
+
+Grafium is temporarily excluded from **all ISO editions**, including Base and
+All, until its AUR package is published. Its future package updates belong in
+App Center's application updates, not **Update OS**. Existing installations,
+notes, settings and custom launchers are preserved.
 
 ---
 
@@ -464,7 +468,7 @@ src/
 
   editions/                 Optional edition overlays (stack on top of base)
     lite/                   Lite edition — reduced package set
-    productivity/           Productivity — Grafium, LibreOffice, KeePassXC
+    productivity/           Productivity — LibreOffice, KeePassXC
     creators/               Creators — OBS, Kdenlive, GIMP
     communication/          Communication — Discord, Signal, Slack
     development/            Development — VSCode, LazyVim, lazygit
@@ -658,7 +662,7 @@ A full update runs through these stages:
 2. **Pacman** — complete the official base upgrade, including compositor, libraries and drivers; unsupported stack versions stop the transaction.
 3. **Required AUR** — enroll prebuilt Yay, then update foreign drivers, public shared libraries and dependencies of the core stack.
 4. **Core desktop** — deliver smpl-apps, st, Nemo and micro; deploy essential configs/themes and core migrations, then verify the core before ordinary apps run.
-5. **Optional apps** — attempt application configs/integrations, optional migrations, Grafium, ordinary AUR apps and user/system Flatpaks.
+5. **Optional apps** — attempt application configs/integrations, optional migrations, ordinary AUR apps and user/system Flatpaks.
 6. **Final verification** — check core integrity again, save local reports, and publish the OS version when required work succeeds.
 
 Ordinary app failures do not prevent core delivery or OS version completion.
@@ -795,7 +799,7 @@ You also need **~10 GB of free disk space**. The script checks this and warns yo
 Usage: build-iso.sh [EDITIONS...] [OPTIONS]
 
 Editions (stackable):
-    -p, --productivity      Office & workflow (Grafium, LibreOffice, KeePassXC)
+    -p, --productivity      Office & workflow (LibreOffice, KeePassXC)
     -c, --creators          Design & media (OBS, Kdenlive, GIMP)
     -m, --communication     Chat & calls (Discord, Signal, Slack)
     -d, --development       Developer tools (VSCode, LazyVim, lazygit)
@@ -881,8 +885,9 @@ Amber, Catppuccin Mocha, Catppuccin Latte, Ethereal, Everforest, Flexoki Light, 
 
 One command - `theme-set <name>` - applies colors across the entire system: terminal, bar, notifications, compositor borders, lock screen, launcher, system monitor, editor, fish shell, Grafium, and browser chrome.
 
-Grafium is the bundled knowledge-management app. Logseq is no longer selected
-for AUR, Flatpak or AppImage builds. Updates remove its installed packages and
+Grafium theme compatibility remains available for independently installed copies;
+the app itself is not bundled or updated by the OS. Logseq is no longer selected
+for AUR, Flatpak or AppImage builds. Updates remove Logseq's installed packages and
 the OS-bundled AppImage without deleting existing graphs, preferences, plugins
 or Flatpak application data. Theme switching no longer reads or changes Logseq.
 

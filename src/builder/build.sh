@@ -692,7 +692,8 @@ prune_retired_note_packages() {
     if [[ -f "$database" ]]; then
         entries=$(bsdtar -tf "$database") || return 1
     fi
-    for package in logseq logseq-bin logseq-git logseq-desktop logseq-desktop-bin logseq-desktop-git; do
+    # Grafium is temporarily unbundled pending its AUR package.
+    for package in grafium-bin logseq logseq-bin logseq-git logseq-desktop logseq-desktop-bin logseq-desktop-git; do
         for archive in "$OFFLINE_MIRROR_DIR/$package"-[0-9]*.pkg.tar.{zst,xz} \
                        "$OFFLINE_MIRROR_DIR/$package-debug"-[0-9]*.pkg.tar.{zst,xz}; do
             [[ -f "$archive" ]] || continue
@@ -710,7 +711,7 @@ prune_retired_note_packages() {
 create_repo_database() {
     log_step "Creating offline repository database"
     prune_retired_note_packages || {
-        log_error "Cannot retire Logseq from the offline build cache"
+        log_error "Cannot exclude unbundled notes packages from the offline build cache"
         return 1
     }
     

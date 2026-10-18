@@ -145,7 +145,7 @@ def restore_state_ownership(home, uid):
                 (".local/state/smplos/update",
                  ("update.lock", "critical-bundle-applied", "critical-bundle-versions")),
                 (".local/state/smplos/app-versions",
-                 ("smpl-apps", "st-smpl", "nemo-smpl", "micro-smpl", "grafium")),
+                 ("smpl-apps", "st-smpl", "nemo-smpl", "micro-smpl")),
                 (".local/state/smplos/migrations/skipped", ())):
             current = os.dup(home_fd)
             visited = Path(home)

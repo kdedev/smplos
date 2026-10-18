@@ -43,7 +43,7 @@ while IFS= read -r package; do
     esac
 done <<< "$installed"
 if (( ${#remove[@]} )); then
-    echo "  Replacing Logseq with Grafium; personal graphs and settings are untouched"
+    echo "  Retiring Logseq; personal graphs and settings are untouched"
     sudo pacman -R --noconfirm -- "${remove[@]}" || die "Logseq package removal failed"
 fi
 
@@ -87,4 +87,4 @@ retire_launcher "$HOME/.local/share/applications/com.logseq.Logseq.desktop" \
 if [[ -f /opt/appimages/Logseq.AppImage ]]; then
     sudo rm -- /opt/appimages/Logseq.AppImage
 fi
-echo "  Logseq retired; Grafium is the bundled notes app. Existing Logseq data is preserved."
+echo "  Logseq retired; existing graphs and settings are preserved. No replacement app was installed."

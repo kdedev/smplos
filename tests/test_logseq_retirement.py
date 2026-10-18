@@ -71,12 +71,14 @@ fi
                   .replace("/opt/flatpaks", str(self.base / "flatpaks")))
         return self.run_shell(source, **env)
 
-    def test_build_manifests_remove_every_logseq_format_and_keep_grafium(self):
+    def test_build_manifests_exclude_logseq_and_grafium_from_every_edition(self):
         for path in (ROOT / "src").rglob("packages*.txt"):
             selected = [line for line in path.read_text().splitlines()
                         if line.strip() and not line.lstrip().startswith("#")]
             self.assertNotIn("logseq", "\n".join(selected).lower(), str(path))
-        self.assertIn("\ngrafium-bin\n", (ROOT / "src/shared/packages-aur.txt").read_text())
+            self.assertNotIn("grafium", "\n".join(selected).lower(), str(path))
+        self.assertFalse((ROOT / "src/shared/pkgbuilds/grafium-bin/PKGBUILD").exists())
+        self.assertTrue((ROOT / "src/shared/themes/grafium/colors.toml").is_file())
         self.assertIn("prune_retired_note_packages", function(BUILDER, "create_repo_database"))
         self.assertIn('stage_selected_app_formats "$airootfs"', BUILDER.read_text())
 
@@ -203,20 +205,32 @@ stage_selected_app_formats "$FIXTURE/empty"
         retired = mirror / "logseq-desktop-bin-0.10.15-1-x86_64.pkg.tar.zst"
         retired.write_text("retired program")
         Path(f"{retired}.sig").write_text("signature")
-        keep = mirror / "grafium-bin-0.0.188-1-x86_64.pkg.tar.zst"
-        keep.write_text("replacement program")
+        grafium = mirror / "grafium-bin-0.0.188-1-x86_64.pkg.tar.zst"
+        grafium.write_text("unbundled program")
+        grafium_debug = mirror / "grafium-bin-debug-0.0.188-1-x86_64.pkg.tar.xz"
+        grafium_debug.write_text("unbundled debug program")
+        Path(f"{grafium}.sig").write_text("signature")
+        keep = mirror / "satty-bin-0.20.0-1-x86_64.pkg.tar.zst"
+        keep.write_text("selected program")
         (mirror / "offline.db.tar.gz").touch()
         source = function(BUILDER, "prune_retired_note_packages") + """
 log_info() { :; }
 OFFLINE_MIRROR_DIR="$FIXTURE/mirror"
 prune_retired_note_packages
 """
-        result = self.run_shell(source, REPO_ENTRIES="logseq-desktop-bin-0.10.15-1/desc")
+        entries = ("logseq-desktop-bin-0.10.15-1/desc\n"
+                   "grafium-bin-0.0.188-1/desc\ngrafium-bin-debug-0.0.188-1/desc")
+        result = self.run_shell(source, REPO_ENTRIES=entries)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertFalse(retired.exists())
         self.assertFalse(Path(f"{retired}.sig").exists())
-        self.assertEqual(keep.read_text(), "replacement program")
+        self.assertFalse(grafium.exists())
+        self.assertFalse(grafium_debug.exists())
+        self.assertFalse(Path(f"{grafium}.sig").exists())
+        self.assertEqual(keep.read_text(), "selected program")
         self.assertIn("logseq-desktop-bin", self.calls.read_text())
+        self.assertIn("grafium-bin\n", self.calls.read_text())
+        self.assertIn("grafium-bin-debug\n", self.calls.read_text())
         result = self.run_shell(source, REPO_ENTRIES="logseq-desktop-bin-0.10.15-1/desc", FAIL_REPO="1")
         self.assertNotEqual(result.returncode, 0)
 

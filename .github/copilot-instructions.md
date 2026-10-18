@@ -277,11 +277,15 @@ good provider on errors and restore stock GTK only when both files are absent.
 - NEVER use a wildcard descendant (`menuitem:hover *`) — it paints everything
   including submenus, separators, and accelerator labels with sel_fg.
 
-### Grafium Replaces Logseq
+### Notes Apps and Grafium Packaging
 
-Grafium (`grafium-bin`) is the bundled knowledge-management app and follows the
-active OS palette. Logseq was explicitly retired from AUR, Flatpak and AppImage
-build inputs. Do not reintroduce the removed Logseq theme/configuration hooks.
+Grafium is temporarily excluded from every ISO, including Base and All, until
+its AUR package is published. Do not restore the OS-local repackaging recipe or
+GitHub-release updater. Future Grafium updates belong to App Center application
+updates, not Update OS. Preserve existing installations, notes, settings and
+custom launchers; keep palette/compositor compatibility for installed copies.
+Logseq was explicitly retired from AUR, Flatpak and AppImage build inputs.
+Do not reintroduce the removed Logseq theme/configuration hooks.
 The removal migration uninstalls application code only: never delete or rewrite
 graphs, `~/.logseq`, graph-local files or Flatpak application data. Legacy theme
 CSS/selector assets are inert and do not justify creating Logseq configuration.

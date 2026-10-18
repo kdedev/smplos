@@ -22,15 +22,16 @@ smplOS uses a **git-based update system**. The repo is cloned to
    desktop configs/themes and core migrations, reconciles services and checks
    that the EWW bar is open. Persists a verified core checkpoint.
 7. Attempts ordinary application configs/integrations and optional migrations,
-   Grafium, ordinary AUR apps, and user/system Flatpak apps/runtimes.
+   ordinary AUR apps, and user/system Flatpak apps/runtimes.
 8. Verifies the core again and writes a local installed-state report. Required
    success records the OS version; optional failures produce **Update complete
    with warnings**, not **Update incomplete**.
 
 The priority split applies to foreign/native apps and config migrations, not
 individual official packages: all official packages still upgrade together in
-one complete Arch transaction. `--mode apps` uses the same native core/optional
-boundary, without claiming a base-system or desktop-config upgrade.
+one complete Arch transaction. `--mode apps` delivers the same core native
+releases and scoped Flatpak updates, without claiming a base-system or
+desktop-config upgrade.
 
 Run as the desktop user, **not** through sudo/pkexec. Root orchestration and
 later `runuser` contexts were responsible for repeated password prompts and lost
@@ -420,7 +421,19 @@ Custom-only theme names are preserved. Publication shares the theme-switch
 lock and restores the old tree if the final rename fails. Protected old files
 that cannot be cleaned are retained with an explicit warning, not discarded.
 
-Grafium is the bundled notes app. Migration
+Grafium is temporarily excluded from **every ISO edition**, including Base,
+Productivity and All, until its AUR package is published. The OS-local
+`grafium-bin` recipe and GitHub-release delivery have been removed. Update OS
+does not install, upgrade or audit Grafium's binary, launchers or old release
+markers; installed `grafium-bin` remains explicitly excluded from both OS AUR
+transactions. Existing installations, notes, settings and custom launchers stay
+untouched. Future delivery will use the published AUR package, prebuilt into
+the appropriate ISO edition for offline installation, with application updates
+owned by App Center rather than a separate OS-native updater. Do not claim AUR
+availability before that package is published. Theme and compositor support
+remain for independently installed copies.
+
+Migration
 `20261017-180000-replace-logseq-with-grafium.sh` retires installed Logseq package
 variants, user/system Flatpaks and the OS-bundled AppImage. It never uses
 recursive dependency removal, Flatpak `--delete-data` or `--unused`, and never
@@ -430,8 +443,10 @@ retirement; custom launchers remain untouched. The old first-boot Flatpak list
 is backed up and atomically filtered so another login cannot reinstall Logseq.
 `theme-set` no longer configures Logseq,
 so preserved old preferences/EDN cannot fail an otherwise successful update.
-New builds remove all three Logseq formats, prune their cached package/repo
-records, and stage only selected AppImages/Flatpaks rather than stale cache lists.
+New builds remove all three Logseq formats, prune cached Logseq and unbundled
+Grafium package/repo records, and stage only selected AppImages/Flatpaks rather
+than stale cache lists. This only prunes disposable build artifacts, not any
+installed application or personal files.
 
 ### Background-only transparency delivery
 
@@ -463,9 +478,9 @@ alpha, which fades text and images too; stock active/inactive values are equal.
    Old smpl-apps keeps
    its legacy popup behavior; a new regular-role reader falls back to explicit
    popup alpha for old generated custom palettes, then safe opaque 1.0.
-3. Release/package the compatible **Grafium** Linux build separately.
-   `grafium-bin` extracts the upstream `.deb`; updating OS theme files or a
-   source checkout cannot update its native Tauri/WebKit window.
+3. Release/package the compatible **Grafium** Linux build separately, outside
+   the OS update. Updating OS theme files or a source checkout cannot update
+   its native Tauri/WebKit window. ISO inclusion is deferred until AUR publication.
    Grafium consumes active `colors.toml` only in Auto mode; explicit built-in
    palettes remain opaque.
 4. After installing the new binaries, reopen the affected apps once so their
@@ -499,7 +514,7 @@ consume published binary bundles. There is no tracked smpl-apps submodule in
 this repository: `--build-apps` calls `build-apps.sh`, which also fetches the
 smpl-apps release via `fetch-apps.sh`; it does not compile unpublished Rust
 changes. Build and publish those in the independent smpl-apps repository.
-Confirm cached/prebuilt Nemo, smpl-apps and Grafium packages
+Confirm cached/prebuilt Nemo and smpl-apps packages
 actually contain the compatible binaries before advertising native alpha on an
 ISO. Installation itself remains offline. Do not point at an unpublished local
 commit or claim a release version that has not been published.
@@ -516,7 +531,6 @@ draft, prerelease or source-only tag:
 | smpl-apps OTA and ISO | `smpl-apps-<version>-x86_64.tar.gz`, flat ELF entries | `/usr/local/bin/` (also installer payload on ISO) |
 | Nemo OTA | `nemo-smpl-<version>-1-x86_64.pkg.tar.zst` | Pacman-managed `/usr/bin/nemo` and `/usr/libexec/` helpers |
 | Nemo ISO fallback | `nemo-smpl-<version>-arch-x86_64-rootfs.tar.zst` | Repackaged with current runtime dependencies |
-| Grafium OTA and ISO | `Grafium_<version>_amd64.deb` from `KonTy/grafium` | `grafium-bin` pacman package, `/usr/bin/grafium` |
 
 The smpl-apps bundle contract requires all **11** binaries, including
 `smpl-hints` and `smpl-hintsd`. Sync Center's executable is `sync-center-gui`
@@ -547,35 +561,20 @@ The rootfs PKGBUILD includes md4c, poppler-glib, mupdf-tools, bubblewrap,
 libarchive, sqlite and libisofs, in addition to GTK/GStreamer dependencies;
 pacman and the offline ISO dependency resolver deliver them with the app.
 
-Nemo and Grafium compare the actual installed pacman version and file presence,
+Nemo compares the actual installed pacman version and file presence,
 not only the updater's cached tag. Missing same-version packages/files retry;
 newer installed packages are never silently downgraded. A newer broken install
-reports that its own version needs repair. Grafium builds run as the resolved
-desktop invoker with an explicit HOME and XDG config/cache paths; root handles
-dependency installation and the final `pacman -U`, never `makepkg`.
-
-Local Grafium wrappers, desktop entries and pins can deliberately select an
-independent build instead of `/usr/bin/grafium`. They are preserved and reported
-as incomplete launcher delivery, including when the package is already current.
-Choose either to retain/update that local build separately, or explicitly back
-up and repoint the wrappers, desktop entries and pins to the package executable.
-No note data or custom Grafium launchers are deleted automatically.
-After an explicitly approved migration, `~/.local/bin/grafium` and
-`~/.local/bin/grafium-bin` may be symlinks resolving to `/usr/bin/grafium`.
-Direct desktop `Exec`/`TryExec` references and complete quoted pins to these
-verified aliases are accepted without rewriting the user's files. Ordinary
-wrapper scripts, shell fragments, wrong/broken targets and old immutable-build
-paths still report incomplete delivery.
+reports that its own version needs repair.
 
 Native GUI replacement is atomic for the smpl-apps suite. Neither OS app sync
-nor the native Nemo/Grafium update closes user windows to force adoption.
+nor the native Nemo update closes user windows to force adoption.
 Reopen affected apps once when ready, and log out/in for resident background
 daemons. Independent app components continue after a failure, with no
 version stamp for a failed install. Standalone `smplos-update-apps` returns
-nonzero for any component failure. The normal OS coordinator first calls
-`--group core`, then calls `--group optional` only after core verification.
-Grafium failures produce warning-only completion; smpl-apps/st/Nemo/micro
-failures remain blocking. An already-running *old* outer update
+nonzero for any component failure. The normal OS coordinator calls
+`--group core`; all four native components are required. The legacy
+`--group optional` selector remains a no-op that writes an empty report,
+without authentication, downloads or cache refresh. An already-running *old* outer update
 wrapper may still print its old final banner; use its component errors and
 retry with the refreshed wrapper rather than treating that banner as proof.
 
@@ -806,14 +805,13 @@ baseline inspected for this fix is v0.8.22; a release from that baseline
 would become v0.8.23, but consumers follow the actual published latest tag.
 No unreleased version is pinned or claimed as shipped here.
 
-**Grafium packaging is a separate boundary.** `grafium-bin` is bundled through
-`src/shared/packages-aur.txt` and `src/shared/pkgbuilds/grafium-bin/PKGBUILD`.
-The PKGBUILD extracts the upstream `Grafium_<VERSION>_amd64.deb` unchanged;
-smplOS does not synthesize its application icon. Correct user icon precedence
+**Grafium packaging is a separate boundary.** Grafium is no longer bundled
+or repackaged by smplOS while AUR publication is pending. Independently
+installed releases own their application icon; smplOS does not synthesize it.
+Correct user icon precedence
 does not fix a blue image already contained in that package on a machine with
-no good override. A corrected, accessible stable Grafium `.deb` release is
-still required. The release API returned no Grafium releases when this fix was
-prepared; do not package a developer's personal icon as a substitute.
+no good override. Use a corrected, accessible Grafium release; do not package a
+developer's personal icon as a substitute.
 
 Focused, offline regression coverage (temporary homes and mocked downloads;
 no real updates, installs, or ISO builds):
@@ -972,7 +970,7 @@ remain blocking; an optional operation never silently reauthenticates.
 `~/.local/state/smplos/update/` contains each update's transcript,
 `*.before.json`, `*.aur.json` (foreign-package priority inventory),
 `*.apps.json` (core native outcomes), `*.core.json` (core checkpoint),
-`*.optional-apps.json` (Grafium outcomes), `*.brave.json`, `*.after.json`, and an
+`*.brave.json`, `*.after.json`, and an
 atomically published `status` file.
 The status records the stage and complete/complete-with-warnings/failed/interrupted
 state, `core_verified`, and the count of coordinator `optional_phase_warnings`.
@@ -995,7 +993,7 @@ The final report covers the whole upgrade, not just the bar:
   of the actual shared libraries resolved by the core apps/update tools,
   checks those packages' file presence and records their installed versions.
 - **Native releases:** smpl-apps (all 11 required binaries and delivered XR
-  binaries), st, micro, Nemo and Grafium get per-component before/after/target
+  binaries), st, micro and Nemo get per-component before/after/target
   results. Failed API checks or downloads cannot masquerade as current just
   because an old marker still exists. Same-version repairs are `updated`.
   Native checksums, executability and runtime library resolution are verified;
@@ -1019,8 +1017,8 @@ The final report covers the whole upgrade, not just the bar:
   Package database/dependency consistency and remaining repo upgrades are
   checked separately.
 
-Native group reports are written after each component, including failures, so
-optional Grafium delivery cannot overwrite core outcomes. The final JSON includes
+Native reports are written after each required component, including failures.
+Old optional native reports cannot overwrite core outcomes. The final JSON includes
 `package_status`, `package_changes`, `app_version_changes`,
 `runtime_library_packages`, `native_updates`, `native_files`, `linkage`,
 `errors`, `warnings` and actionable `optional_failures` (schema 3).
@@ -1069,8 +1067,8 @@ smplos-update-check --mode full \
 To include the release targets/outcomes of a particular update, add
 `--apps-report /path/to/that-update.log.apps.json`. A standalone check without
 that argument verifies installed native files/receipts, not today's online
-release versions. Also add
-`--optional-apps-report /path/to/that-update.log.optional-apps.json` for Grafium.
+release versions. The legacy `--optional-apps-report` option is accepted but
+explicitly ignored; it cannot reintroduce Grafium checks or overwrite core results.
 The standalone verifier returns `1` for required errors, `2` for optional-only
 failures, and `0` otherwise. The coordinator recognizes `2` as warning-only;
 do not treat it as a successful all-apps audit. `--core-only` skips optional apps
@@ -1102,7 +1100,9 @@ inventory without network access. Core stack roots, public shared libraries,
 kernel modules/DKMS sources and their transitive package/provider dependencies
 are required; ordinary foreign apps are optional. Private browser/editor
 libraries and debug source trees do not make those apps core. Independently
-managed Nemo/Grafium/EWW releases are excluded from Yay transactions. Incomplete
+managed Nemo/EWW releases are excluded from Yay transactions. Grafium is
+separately recorded under `app_updates_only` and excluded from both OS AUR groups.
+Incomplete
 or unresolved dependency metadata fails classification explicitly, never
 silently treating unknown packages as optional. Core and optional Yay invocations
 exclude the opposite group; `critical-packages.txt` remains the existing

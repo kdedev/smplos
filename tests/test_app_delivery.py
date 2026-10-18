@@ -689,7 +689,7 @@ sync_keypad_support() { :; }
 sync_hypridle_config() { :; }
 cleanup_shadow_bins() { :; }; post_deploy() { :; }
 update_smpl_apps() { :; }; update_st_smpl() { :; }; update_nemo_smpl() { :; }
-update_micro_smpl() { :; }; update_grafium() { :; }
+update_micro_smpl() { :; }
 rebuild-app-cache() { echo refreshed; return "$CACHE_STATUS"; }
 """
             for status in ("0", "1"):
@@ -866,178 +866,18 @@ update_nemo_smpl
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("no package or rootfs asset", result.stderr)
 
-    def test_grafium_build_drops_root_to_exact_invoker_home_without_sudo_makepkg(self):
-        path = ROOT / "src/shared/bin/smplos-update-apps"
-        build = self.home / "build"
-        build.mkdir()
-        self.mock("getent", '#!/bin/bash\nprintf "desktop:x:1001:1001::%s:/bin/bash\\n" "$HOME"\n')
-        self.mock("chown", '#!/bin/bash\n[[ "$*" == "-R 1001 $HOME/build" ]]\n')
-        self.mock("runuser", '''#!/bin/bash
-printf '%s\\n' "$@" > "$HOME/runuser.log"
-[[ "$1 $2 $3" == "-u desktop --" ]] || exit 99
-shift 3
-exec "$@"
-''')
-        self.mock("makepkg", '''#!/bin/bash
-[[ "$USER" == desktop && "$XDG_CONFIG_HOME" == "$HOME/.config" && "$PKGVER_OVERRIDE" == 0.0.148 ]] || exit 99
-echo "$*" > "$HOME/makepkg.log"
-''')
-        source = function(path, "build_grafium_package").replace('[[ $EUID -eq 0 ]]', '[[ 1 -eq 1 ]]')
-        result = self.shell(source + '\nwarn() { echo "$*" >&2; }\nSMPLOS_INVOKER_UID=1001\n'
-                            'build_grafium_package "$HOME/build" 0.0.148')
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual((self.home / "makepkg.log").read_text(), "-c --noconfirm\n")
-        self.assertIn(f"HOME={self.home}", (self.home / "runuser.log").read_text())
-        result = self.shell(source + '\nwarn() { echo "$*" >&2; }\nSMPLOS_INVOKER_UID=0\n'
-                            'build_grafium_package "$HOME/build" 0.0.148')
-        self.assertNotEqual(result.returncode, 0)
-
-    def test_grafium_custom_launchers_and_pins_preserved_report_incomplete(self):
-        wrapper = self.home / ".local/bin/grafium"
-        pins = self.home / ".config/smplos/pinned-apps.txt"
-        desktop = self.home / ".local/share/applications/grafium.desktop"
-        for target, text in ((wrapper, "#!/bin/sh\nexec ~/.local/lib/grafium/test/grafium-bin\n"),
-                             (pins, f'"{wrapper}"\n'), (desktop, f"Exec={wrapper}\n")):
-            target.parent.mkdir(parents=True, exist_ok=True)
-            target.write_text(text)
-        before = [path.read_bytes() for path in (wrapper, pins, desktop)]
-        source = function(ROOT / "src/shared/bin/smplos-update-apps", "grafium_launchers_current")
-        result = self.shell(source + '\nwarn() { echo "$*" >&2; }\ngrafium_launchers_current')
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn("delivery incomplete", result.stderr)
-        self.assertEqual(before, [path.read_bytes() for path in (wrapper, pins, desktop)])
-
-    def test_grafium_update_accepts_canonical_migration_without_modifying_launchers(self):
-        self.package_mocks()
-        links = [self.home / suffix for suffix in (
-            ".local/bin/grafium", ".local/bin/grafium-bin",
-            ".local/share/smplos/bin/grafium", "bin/grafium",
-        )]
-        for link in links:
-            link.parent.mkdir(parents=True, exist_ok=True)
-            link.symlink_to("/usr/bin/grafium")
-        targets = [self.home / ".local/share/applications" / (name + ".desktop")
-                   for name in ("grafium", "grafium-bin", "Grafium")]
-        for target, command in zip(targets, (f'"{links[0]}" %U', f'"{links[1]}"', str(links[0]))):
-            target.parent.mkdir(parents=True, exist_ok=True)
-            target.write_text(f'[Desktop Entry]\nExec={command}\n')
-        pins = self.home / ".config/smplos/pinned-apps.txt"
-        pins.parent.mkdir(parents=True, exist_ok=True)
-        pins.write_text(f'"/usr/bin/grafium"\n"{links[0]}"\n"{links[1]}"\ncustom --command\n')
-        targets.append(pins)
-        before = {path: path.read_bytes() for path in targets}
-        self.mock("curl", """#!/bin/bash
-[[ "$*" == *https://api.github.com/repos/KonTy/grafium/releases/latest* ]] || exit 99
-printf '{"tag_name":"v0.0.149","assets":[]}\\n'
-""")
-        updater = ROOT / "src/shared/bin/smplos-update-apps"
-        source = f'source "{ROOT}/src/shared/lib/smplos-release-package.sh"\n'
-        source += "\n".join(function(updater, name) for name in (
-            "_gh_api", "_cached_ver", "grafium_launchers_current", "update_grafium",
-        ))
-        source += """
-STATE_DIR="$HOME/state"; mkdir -p "$STATE_DIR"
-warn() { echo "$*" >&2; }; ok() { echo "$*"; }
-update_grafium
-"""
-        result = self.shell(source, INSTALLED_VERSION="0.0.149-1")
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn("installed package is current", result.stdout)
-        self.assertNotIn("delivery incomplete", result.stderr)
-        self.assertFalse((self.home / "pacman.log").exists())
-        self.assertEqual(before, {path: path.read_bytes() for path in targets})
-        self.assertTrue(all(link.is_symlink() and os.readlink(link) == "/usr/bin/grafium"
-                            for link in links))
-
-    def test_grafium_alias_reference_allowance_does_not_accept_custom_paths_or_proxies(self):
-        alias = self.home / ".local/bin/grafium"
-        alias.parent.mkdir(parents=True)
-        alias.symlink_to("/usr/bin/grafium")
-        pins = self.home / ".config/smplos/pinned-apps.txt"
-        pins.parent.mkdir(parents=True)
-        source = function(ROOT / "src/shared/bin/smplos-update-apps", "grafium_launchers_current")
-        script = source + '\nwarn() { echo "$*" >&2; }\ngrafium_launchers_current'
-        for target in (str(alias) + "-custom", str(alias) + "/child",
-                       str(alias) + ".backup", str(alias) + "%U",
-                       "sh -c " + str(alias),
-                       str(self.home / ".local/lib/grafium/build/grafium-bin")):
-            with self.subTest(target=target):
-                pins.write_text(f'"{target}"\n')
-                result = self.shell(script)
-                self.assertNotEqual(result.returncode, 0)
-                self.assertIn("delivery incomplete", result.stderr)
-                self.assertEqual(pins.read_text(), f'"{target}"\n')
-        desktop = self.home / ".local/share/applications/grafium.desktop"
-        desktop.parent.mkdir(parents=True)
-        pins.write_text(f'"{alias}"\n')
-        desktop.write_text(f'[Desktop Entry]\nExec=sh -c "{alias}"\n')
-        result = self.shell(script)
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn("preserved custom launch target", result.stderr)
-        desktop.write_text(f"[Desktop Entry]\nExec={alias}\n")
-        for destination in ("/usr/bin/false", str(self.home / "missing-grafium")):
-            with self.subTest(destination=destination):
-                alias.unlink()
-                alias.symlink_to(destination)
-                result = self.shell(script)
-                self.assertNotEqual(result.returncode, 0)
-                self.assertIn("preserved local launcher", result.stderr)
-                self.assertIn("preserved custom launch target", result.stderr)
-        alias.unlink()
-        alias.write_text('#!/bin/sh\nexec /usr/bin/grafium "$@"\n')
-        pins.write_text(f'"{alias}"\n')
-        result = self.shell(script)
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn("preserved local launcher", result.stderr)
-        self.assertIn("preserved custom launch target", result.stderr)
-        self.assertEqual(alias.read_text(), '#!/bin/sh\nexec /usr/bin/grafium "$@"\n')
-
-    @unittest.skipUnless(shutil.which("bsdtar") and shutil.which("ar"), "Debian archive tools unavailable")
-    def test_grafium_pkgbuild_downloads_versioned_deb_and_installs_expected_paths(self):
-        rootfs = self.base / "deb-root"
-        binary = rootfs / "usr/bin/grafium"
-        desktop = rootfs / "usr/share/applications/Grafium.desktop"
-        library = rootfs / "usr/lib/Grafium/libllama.so.0"
-        for path, data in ((binary, b"\x7fELFgrafium"),
-                           (desktop, b"[Desktop Entry]\nExec=grafium\n"),
-                           (library, b"\x7fELFbundled-ai")):
-            path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_bytes(data)
-        bundled_sonames = ("libllama-common.so.0", "libggml.so.0", "libggml-cpu.so.0",
-                           "libggml-vulkan.so.0", "libggml-base.so.0")
-        for name in bundled_sonames:
-            versioned = library.parent / (name + ".1")
-            versioned.write_bytes(b"\x7fELF" + name.encode())
-            (library.parent / name).symlink_to(versioned.name)
-        data_archive = self.base / "data.tar.gz"
-        with tarfile.open(data_archive, "w:gz") as archive:
-            archive.add(rootfs / "usr", arcname="usr")
-        (self.base / "debian-binary").write_text("2.0\n")
-        deb = self.base / "Grafium_0.0.148_amd64.deb"
-        subprocess.run(["ar", "rc", str(deb), "debian-binary", "data.tar.gz"],
-                       cwd=self.base, check=True, capture_output=True)
-        srcdir = self.base / "source"
-        pkgdir = self.base / "package"
-        srcdir.mkdir()
-        pkgdir.mkdir()
-        result = self.shell(f"""
-source "{ROOT}/src/shared/pkgbuilds/grafium-bin/PKGBUILD"
-srcdir="{srcdir}"; pkgdir="{pkgdir}"; PKGVER_OVERRIDE=0.0.148
-prepare
-[[ "$(pkgver)" == 0.0.148 ]]
-package
-""", ARCHIVE=str(deb))
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn("/releases/download/v0.0.148/Grafium_0.0.148_amd64.deb", self.requests.read_text())
-        self.assertEqual((pkgdir / "usr/bin/grafium").read_bytes(), b"\x7fELFgrafium")
-        self.assertEqual((pkgdir / "usr/lib/Grafium/libllama.so.0").read_bytes(), library.read_bytes())
-        for name in bundled_sonames:
-            installed = pkgdir / "usr/lib/Grafium" / name
-            self.assertTrue(installed.is_symlink())
-            self.assertEqual(os.readlink(installed), name + ".1")
-            self.assertEqual(installed.read_bytes(), b"\x7fELF" + name.encode())
-        self.assertFalse((pkgdir / "usr/lib/grafium").exists())
-        self.assertEqual((pkgdir / "usr/share/applications/Grafium.desktop").read_bytes(), desktop.read_bytes())
+    def test_legacy_optional_group_is_empty_without_authentication_or_downloads(self):
+        report = self.home / "optional.json"
+        result = subprocess.run(
+            ["bash", str(ROOT / "src/shared/bin/smplos-update-apps"),
+             "--group", "optional", "--report", str(report)],
+            env=self.env, text=True, capture_output=True, timeout=10,
+        )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("No OS-managed optional native apps", result.stdout)
+        self.assertEqual(json.loads(report.read_text())["components"], {})
+        self.assertFalse(self.requests.exists())
+        self.assertNotIn("FORBIDDEN", result.stdout + result.stderr)
 
     def test_nemo_rootfs_package_declares_new_worker_dependencies(self):
         source = ROOT / "src/shared/pkgbuilds/nemo-smpl/PKGBUILD"
@@ -1059,14 +899,15 @@ update_smpl_apps() { echo native-start; false; echo must-not-reach; }
 update_st_smpl() { echo terminal; }
 update_nemo_smpl() { echo nemo; }
 update_micro_smpl() { echo editor; }
-update_grafium() { echo grafium; }
+update_grafium() { echo forbidden-grafium; return 99; }
 rebuild-app-cache() { echo cache; }
 """
         result = self.shell(script + main)
         self.assertEqual(result.returncode, 1)
         self.assertNotIn("must-not-reach", result.stdout)
-        for name in ("terminal", "nemo", "editor", "grafium", "cache"):
+        for name in ("terminal", "nemo", "editor", "cache"):
             self.assertIn(name, result.stdout)
+        self.assertNotIn("forbidden-grafium", result.stdout)
         self.assertIn("incomplete", result.stderr)
 
     def test_native_results_persist_each_target_and_failure_instead_of_trusting_old_markers(self):
@@ -1083,14 +924,16 @@ update_smpl_apps() { release_target; echo attempted-new-suite; false; echo must-
 update_st_smpl() { release_target; n_updated=1; }
 update_nemo_smpl() { release_target; }
 update_micro_smpl() { release_target; }
-update_grafium() { release_target; }
+update_grafium() { echo forbidden-grafium; return 99; }
 rebuild-app-cache() { echo refreshed; }
 """ + main
         result = self.shell(script)
         self.assertNotEqual(result.returncode, 0)
         self.assertNotIn("must-not-reach", result.stdout)
         report = json.loads((self.home / "apps.json").read_text())
-        self.assertEqual(len(report["components"]), 5)
+        self.assertEqual(set(report["components"]),
+                         {"smpl-apps", "st-smpl", "nemo-smpl", "micro-smpl"})
+        self.assertNotIn("forbidden-grafium", result.stdout)
         self.assertEqual(report["components"]["smpl-apps"],
                          {"before": "v1.0", "after": "v1.0", "target": "v2.0", "status": "failed"})
         # Same-version repairs must be reported as updated, not already current.
@@ -1100,6 +943,19 @@ rebuild-app-cache() { echo refreshed; }
 
     def test_native_groups_do_not_run_unrelated_components_or_overwrite_their_reports(self):
         path = ROOT / "src/shared/bin/smplos-update-apps"
+        self.assertNotIn("grafium", path.read_text().lower())
+        personal = {
+            ".local/bin/grafium": b"#!/bin/sh\nexec custom-notes-build\n",
+            ".local/share/applications/Grafium.desktop": b"Exec=custom-notes-build\n",
+            ".config/smplos/pinned-apps.txt": b'"custom-notes-build"\n',
+            ".config/grafium/preferences.json": b'{"keep":"personal"}\n',
+            ".local/state/smplos/app-versions/grafium": b"old-os-marker\n",
+            "notes/graph.json": b'{"notes":"irreplaceable"}\n',
+        }
+        for relative, data in personal.items():
+            target = self.home / relative
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(data)
         main = path.read_text().split("# ── Main", 1)[1].split("\n", 1)[1]
         script = function(path, "record_app_result") + """
 STATE_DIR="$HOME/state"; SMPLOS_PATH="$HOME/data"; CHECK_ONLY=0; QUIET=1; SMPLOS_APP_BINS=()
@@ -1112,20 +968,24 @@ update_smpl_apps() { release_target; }
 update_st_smpl() { release_target; }
 update_nemo_smpl() { release_target; }
 update_micro_smpl() { release_target; }
-update_grafium() { release_target; false; }
+update_grafium() { echo forbidden-grafium; return 99; }
 rebuild-app-cache() { :; }
 """
-        core = self.shell(script + main, GROUP="core")
-        self.assertEqual(core.returncode, 0, core.stderr)
+        for group in ("all", "core"):
+            with self.subTest(group=group):
+                result = self.shell(script + main, GROUP=group)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertNotIn("forbidden-grafium", result.stdout)
+                self.assertEqual(set(json.loads((self.home / f"{group}.json").read_text())["components"]),
+                                 {"smpl-apps", "st-smpl", "nemo-smpl", "micro-smpl"})
         original = (self.home / "core.json").read_bytes()
-        self.assertEqual(set(json.loads(original)["components"]),
-                         {"smpl-apps", "st-smpl", "nemo-smpl", "micro-smpl"})
         optional = self.shell(script + main, GROUP="optional")
-        self.assertNotEqual(optional.returncode, 0)
+        self.assertEqual(optional.returncode, 0, optional.stderr)
         self.assertEqual((self.home / "core.json").read_bytes(), original)
         results = json.loads((self.home / "optional.json").read_text())["components"]
-        self.assertEqual(set(results), {"grafium"})
-        self.assertEqual(results["grafium"]["status"], "failed")
+        self.assertEqual(results, {})
+        for relative, data in personal.items():
+            self.assertEqual((self.home / relative).read_bytes(), data, relative)
 
     def test_full_wrapper_records_deployment_and_native_failures(self):
         source = (ROOT / "src/shared/bin/smplos-update").read_text()

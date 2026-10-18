@@ -8,8 +8,6 @@
 #   - st-smpl (st-wl terminal)
 #   - nemo-smpl (file manager)
 #   - micro-smpl (text editor with dynamic config reloading)
-#   - grafium (knowledge graph / notes GUI — repackaged from upstream .deb into
-#     a native pacman package via the OS PKGBUILD, since it's not in the AUR yet)
 #
 # Each app is only downloaded if a newer version exists on GitHub.
 # Version state is tracked in ~/.local/state/smplos/app-versions/
@@ -20,10 +18,6 @@ set -euo pipefail
 
 STATE_DIR="$HOME/.local/state/smplos/app-versions"
 SMPLOS_BIN="$HOME/.local/share/smplos/bin"
-# SMPLOS_PATH is where the smplos data root lives (contains repo/, configs/,
-# themes/, etc.). Every other smplOS script defaults to $HOME/.local/share/smplos.
-# Without a default here, `set -u` explodes on the one reference at the end of
-# the script (grafium PKGBUILD lookup) and the run aborts mid-flight.
 SMPLOS_PATH="${SMPLOS_PATH:-$HOME/.local/share/smplos}"
 for _lib in "$SMPLOS_PATH/repo/src/shared/lib/smplos-app-bundle.sh" \
             "$(dirname "${BASH_SOURCE[0]}")/../lib/smplos-app-bundle.sh" \
@@ -76,7 +70,7 @@ trap cleanup_app_update EXIT
 # ── Ensure sudo is ready ─────────────────────────────────────────────────────
 # When called from smplos-update, SMPLOS_SUDO_READY is set and credentials are
 # already cached. When run standalone, authenticate once and start a keepalive.
-if [[ "${SMPLOS_SUDO_READY:-0}" != "1" && $CHECK_ONLY -eq 0 ]]; then
+if [[ "$GROUP" != optional && "${SMPLOS_SUDO_READY:-0}" != "1" && $CHECK_ONLY -eq 0 ]]; then
     sudo -v || { echo "ERROR: sudo authentication failed" >&2; exit 1; }
     (
         trap - EXIT INT HUP
@@ -161,7 +155,7 @@ record_component_files() {
 
 installed_component_version() {
     local version package=""
-    case "$1" in nemo-smpl) package=nemo-smpl ;; grafium) package=grafium-bin ;; esac
+    case "$1" in nemo-smpl) package=nemo-smpl ;; esac
     if [[ -n "$package" ]]; then
         version=$(pacman -Q "$package" 2>/dev/null) || version=""
         printf '%s\n' "${version#* }"
@@ -614,141 +608,14 @@ update_micro_smpl() {
     fi
 }
 
-# ── grafium ─────────────────────────────────────────────────────────────────
-# Grafium (knowledge graph / note-taking GUI) is not in the AUR yet, so smplOS
-# repackages its upstream .deb release asset into a native pacman package
-# on-device via a PKGBUILD in the OS repo — pacman-tracked and upgradable, just
-# like an AUR "-bin" package. Provides the app-menu entry + icons natively.
-grafium_launchers_current() {
-    local path failed=0
-    for path in "$HOME/.local/bin/grafium" "$HOME/.local/bin/grafium-bin" \
-                "$HOME/.local/share/smplos/bin/grafium" "$HOME/bin/grafium"; do
-        [[ -e "$path" || -L "$path" ]] || continue
-        if [[ "$(readlink -f "$path")" != /usr/bin/grafium ]]; then
-            warn "grafium: preserved local launcher $path; package /usr/bin/grafium may not be launched"
-            failed=1
-        fi
-    done
-    for path in "$HOME/.local/share/applications/"{grafium,grafium-bin,Grafium}.desktop \
-                "$HOME/.config/smplos/pinned-apps.txt"; do
-        [[ -f "$path" ]] || continue
-        if ! python3 - "$path" "$HOME" <<'PY'
-from pathlib import Path
-import re
-import sys
-
-path, home = Path(sys.argv[1]), Path(sys.argv[2])
-text = path.read_text()
-for relative in (".local/bin/grafium", ".local/bin/grafium-bin"):
-    alias = home / relative
-    if alias.is_symlink() and alias.resolve() == Path("/usr/bin/grafium"):
-        # Only direct desktop executables or complete pins, never shell fragments.
-        escaped = re.escape(str(alias))
-        if path.suffix == ".desktop":
-            pattern = r'^(Exec|TryExec)=(?:"' + escaped + r'"|' + escaped + r')([ \t]+%[fFuU])?[ \t]*$'
-            text = re.sub(pattern, lambda match: match[1] + "=/usr/bin/grafium" + (match[2] or ""),
-                          text, flags=re.MULTILINE)
-        else:
-            text = re.sub(r'^"' + escaped + r'"[ \t]*$', '"/usr/bin/grafium"',
-                          text, flags=re.MULTILINE)
-sys.exit(bool(re.search(r"(\.local/(bin|lib)/grafium|/bin/grafium-bin)", text)))
-PY
-        then
-            warn "grafium: preserved custom launch target in $path"
-            failed=1
-        fi
-    done
-    if [[ $failed -eq 1 ]]; then
-        warn "grafium: delivery incomplete for custom launchers. Choose to keep the local build and update it separately, or back up/repoint wrappers, desktop entries and pins to /usr/bin/grafium. No notes or launchers were removed."
-        return 1
-    fi
-}
-
-build_grafium_package() {
-    local builddir="$1" version="$2" uid entry user home
-    if [[ $EUID -eq 0 ]]; then
-        uid="${SMPLOS_INVOKER_UID:-${PKEXEC_UID:-${SUDO_UID:-}}}"
-        [[ "$uid" =~ ^[0-9]+$ && "$uid" != 0 ]] || {
-            warn "grafium: run Update OS as a desktop user; makepkg cannot run as root"
-            return 1
-        }
-        entry=$(getent passwd "$uid") || return 1
-        IFS=: read -r user _ _ _ _ home _ <<< "$entry"
-        chown -R "$uid" "$builddir" || return 1
-        runuser -u "$user" -- env HOME="$home" USER="$user" LOGNAME="$user" \
-            XDG_CONFIG_HOME="$home/.config" XDG_CACHE_HOME="$home/.cache" \
-            PKGVER_OVERRIDE="$version" \
-            bash -c 'cd "$1" && makepkg -c --noconfirm' bash "$builddir"
-    else
-        (cd "$builddir" && PKGVER_OVERRIDE="$version" makepkg -c --noconfirm)
-    fi
-}
-
-update_grafium() {
-    local cached_ver remote_ver
-    cached_ver=$(_cached_ver grafium)
-
-    if ! _gh_api "https://api.github.com/repos/KonTy/grafium/releases/latest"; then
-        warn "grafium: no reachable public release; package update incomplete (retry after publication)"
-        return 1
-    fi
-
-    remote_ver=$(echo "$_gh_json" | grep -oP '"tag_name"\s*:\s*"\K[^"]+' || true)
-    [[ -z "$remote_ver" ]] && { warn "grafium: could not parse version"; return 1; }
-
-    if smplos_package_current grafium-bin "$remote_ver"; then
-        ok "grafium: installed package is current or newer than $remote_ver"
-        grafium_launchers_current
-        return $?
-    elif [[ $? -eq 2 ]]; then
-        return 1
-    fi
-
-    if [[ $CHECK_ONLY -eq 1 ]]; then
-        log "grafium: update available ${cached_ver:-none} -> $remote_ver"
-        return 0
-    fi
-
-    local pkgbuild_src="$SMPLOS_PATH/repo/src/shared/pkgbuilds/grafium-bin/PKGBUILD"
-    if [[ ! -f "$pkgbuild_src" ]]; then
-        warn "grafium: PKGBUILD not found ($pkgbuild_src)"
-        return 1
-    fi
-    log "grafium: updating ${cached_ver:-none} -> $remote_ver"
-
-    local builddir
-    builddir=$(mktemp -d /tmp/grafium-bin.XXXXXX)
-    trap "rm -rf '$builddir'" RETURN
-    cp "$pkgbuild_src" "$builddir/PKGBUILD"
-    # Lock the build to the release we just resolved (prepare() honours this,
-    # avoiding a race if a new release lands mid-build). Strip leading 'v'.
-    # Resolve dependencies as root; only the unprivileged build reads user config.
-    sudo pacman -S --needed --noconfirm base-devel curl libarchive webkit2gtk-4.1 gtk3 || return 1
-    command -v makepkg &>/dev/null || { warn "grafium: makepkg still unavailable after installing base-devel"; return 1; }
-    local package="$builddir/grafium-bin-${remote_ver#v}-1-x86_64.pkg.tar.zst"
-    if build_grafium_package "$builddir" "${remote_ver#v}" &&
-        [[ -f "$package" ]] && sudo pacman -U --noconfirm "$package"; then
-        log "Close and reopen Grafium when ready; the updater does not stop an open notes window."
-        grafium_launchers_current || return 1
-        echo "$remote_ver" > "$STATE_DIR/grafium"
-        ok "grafium: updated to $remote_ver"
-        ((n_updated++)) || true
-
-    else
-        warn "grafium: build/install failed"
-        return 1
-    fi
-}
-
 # ── Main ─────────────────────────────────────────────────────────────
 [[ $QUIET -eq 0 ]] && echo "── smplOS App Updates ──"
 
 failed=0
 record_app_result "" "" "" "" || { warn "Cannot initialize app update report"; exit 1; }
-for component in smpl-apps st-smpl nemo-smpl micro-smpl grafium; do
-    case "${GROUP:-all}:$component" in
-        core:grafium|optional:smpl-apps|optional:st-smpl|optional:nemo-smpl|optional:micro-smpl) continue ;;
-    esac
+# Retain the old optional selector as an empty report for installed callers.
+for component in smpl-apps st-smpl nemo-smpl micro-smpl; do
+    [[ "${GROUP:-all}" != optional ]] || continue
     before=$(installed_component_version "$component")
     status=current
     function_name="update_${component//-/_}"
@@ -770,9 +637,10 @@ for component in smpl-apps st-smpl nemo-smpl micro-smpl grafium; do
         failed=1
     }
 done
+[[ "${GROUP:-all}" != optional ]] || log "No OS-managed optional native apps."
 log "App release results: $REPORT_FILE"
 
-if [[ $CHECK_ONLY -eq 0 ]]; then
+if [[ $CHECK_ONLY -eq 0 && "${GROUP:-all}" != optional ]]; then
     rebuild-app-cache || { warn "App cache refresh failed"; exit 1; }
 fi
 
