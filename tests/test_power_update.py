@@ -529,6 +529,212 @@ sudo() {
         self.assertIn("cannot parse", result.stderr)
 
 
+class IdleSettingsContractTests(unittest.TestCase):
+    """The shipped hypridle.conf must stay editable by Settings -> Power.
+
+    The editor (smpl-os/smpl-apps, settings/src/power.rs) rewrites this file in
+    place and refuses anything it cannot reason about, reporting only a generic
+    save failure. A stock change outside its grammar therefore breaks the Power
+    page on every install while both repositories' own tests stay green. The
+    rules below mirror the editor's (wake_chain() and classify()); change both
+    sides together.
+    """
+
+    STOCK = ROOT / "src/compositors/hyprland/hypr/hypridle.conf"
+    LOCK_PREFIX = "loginctl lock-session; sleep 0.5; "
+    LUA_ON = "hyprctl dispatch \"hl.dsp.dpms({state='on'})\""
+    LUA_OFF = "hyprctl dispatch \"hl.dsp.dpms({state='off'})\""
+    DPMS_ON = ("smplos-hypr-dpms on", "hyprctl dispatch dpms on", LUA_ON)
+    DPMS_OFF = ("smplos-hypr-dpms off", "hyprctl dispatch dpms off", LUA_OFF)
+    ROWS = {
+        "loginctl lock-session": "lock",
+        "hyprlock": "lock",
+        "pidof hyprlock || hyprlock": "lock",
+        "lock-screen": "lock",
+        "pidof hyprlock || lock-screen": "lock",
+        "systemctl suspend": "suspend",
+        "systemctl poweroff": "shutdown",
+    }
+    FIX = "extend wake_chain()/classify() in smpl-apps settings/src/power.rs and release Settings first"
+
+    @staticmethod
+    def blocks(text):
+        blocks, current = [], None
+        for raw in text.splitlines():
+            line = raw.split("#", 1)[0].strip()
+            if line.endswith("{"):
+                current = (line[:-1].strip(), {})
+                blocks.append(current)
+            elif line == "}":
+                current = None
+            elif current and "=" in line:
+                key, value = line.split("=", 1)
+                current[1][key.strip()] = value.strip()
+        return blocks
+
+    @classmethod
+    def editable_wake(cls, command):
+        steps = [step.strip() for step in command.split(";")]
+        known = lambda s: s in cls.DPMS_ON or s == "hyprctl reload" or re.fullmatch(r"sleep (?:\d+\.?\d*|\.\d+)", s)
+        return any(s in cls.DPMS_ON for s in steps) and all(known(s) for s in steps)
+
+    @classmethod
+    def settings_row(cls, command):
+        command = command.removeprefix("systemd-detect-virt -q || ")
+        return "screen off" if command in cls.DPMS_OFF else cls.ROWS.get(command)
+
+    def test_stock_general_block_is_editable(self):
+        general = [fields for name, fields in self.blocks(self.STOCK.read_text()) if name == "general"]
+        self.assertEqual(len(general), 1)
+        fields = general[0]
+        self.assertIn("lock_cmd", fields)
+        self.assertIn(fields.get("before_sleep_cmd", ""), ("", "loginctl lock-session"), self.FIX)
+        after = fields.get("after_sleep_cmd", "")
+        wake = after.removeprefix(self.LOCK_PREFIX)
+        self.assertTrue(not wake or self.editable_wake(wake), f"{after!r}: {self.FIX}")
+
+    def test_stock_listeners_each_map_to_one_settings_row(self):
+        rows = []
+        for name, fields in self.blocks(self.STOCK.read_text()):
+            if name == "listener":
+                self.assertGreater(int(fields.get("timeout", "0")), 0)
+                command = fields.get("on-timeout", "")
+                row = self.settings_row(command)
+                self.assertIsNotNone(row, f"{command!r}: {self.FIX}")
+                rows.append(row)
+        self.assertEqual(len(rows), len(set(rows)), rows)
+
+    def test_stock_comments_never_state_a_timeout(self):
+        stated = [
+            line for line in self.STOCK.read_text().splitlines()
+            if re.search(r"\d\s*min", line.partition("#")[2])
+        ]
+        self.assertEqual(stated, [], "Settings changes the timeouts but never the comments, so they go stale")
+
+    def test_every_shape_ever_shipped_stays_editable_through_migration(self):
+        chain = lambda on: f"{on}; sleep 0.2; hyprctl reload; sleep 0.2; {on}"
+        wakes = ("hyprctl dispatch dpms on", self.LUA_ON, chain(self.LUA_ON), "smplos-hypr-dpms on", chain("smplos-hypr-dpms on"))
+        for wake in wakes:
+            for prefix in ("", self.LOCK_PREFIX):
+                with self.subTest(wake=wake, relock=bool(prefix)):
+                    self.assertTrue(self.editable_wake(wake))
+                    migrated = MIGRATE.migrate(f"    after_sleep_cmd = {prefix}{wake}\n")
+                    value = migrated.split("=", 1)[1].strip().removeprefix(self.LOCK_PREFIX)
+                    self.assertTrue(self.editable_wake(value), migrated)
+
+    def test_custom_wake_steps_are_outside_the_editor_grammar(self):
+        for wake in (
+            "notify-send hi; smplos-hypr-dpms on",
+            "hyprctl reload",
+            "smplos-hypr-dpms on;",
+            "smplos-hypr-dpms on; sleep abc",
+            "smplos-hypr-dpms on && reboot",
+            "smplos-hypr-dpms on; sleep $(reboot)",
+        ):
+            with self.subTest(wake=wake):
+                self.assertFalse(self.editable_wake(wake))
+
+
+class LockScreenTests(unittest.TestCase):
+    """Locking must never wake a display that is asleep.
+
+    "Turn monitor off" shorter than the lock timeout used to be undone by
+    lock-screen: its unconditional pre-lock `dpms on` lit the monitors with only
+    the lock clock on them, and nothing switched them off again until the next
+    input. Hyprland locks DPMS-off outputs as they are and wakes them on the
+    next key press or mouse move, so the wake was never needed.
+
+    hyprctl, hyprlock, pidof and sleep are stubs and the Hyprland variables are
+    dropped, so nothing here can reach the real session.
+    """
+
+    SCRIPT = BIN / "lock-screen"
+    ON = "hl.dsp.dpms({state='on'})"
+    OFF = "hl.dsp.dpms({state='off'})"
+    STUBS = {
+        "hyprctl": textwrap.dedent("""\
+            #!/bin/bash
+            echo "hyprctl $*" >> "$CALLS"
+            if [[ $1 == monitors ]]; then
+                [[ -n $HANG ]] && exec tail -f /dev/null
+                cat "$MONITORS"
+                exit "${MONITORS_RC:-0}"
+            fi
+            echo ok
+            """),
+        "hyprlock": '#!/bin/bash\necho hyprlock >> "$CALLS"\n',
+        "pidof": '#!/bin/bash\nexit "${PIDOF_RC:-1}"\n',
+        "sleep": "#!/bin/bash\n",
+    }
+
+    @staticmethod
+    def monitors(power):
+        return "".join(
+            f"Monitor {name} (ID {i}):\n\t1920x1080@60.00 at 0x0\n\tdpmsStatus: {int(on)}\n\n"
+            for i, (name, on) in enumerate(power.items()))
+
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        root = Path(self.temp.name)
+        stubs = root / "bin"
+        stubs.mkdir()
+        for name, body in self.STUBS.items():
+            (stubs / name).write_text(body)
+            (stubs / name).chmod(0o755)
+        self.calls = root / "calls"
+        self.listing = root / "monitors"
+        self.log = root / "cache/smplos/lock-screen.log"
+        inherited = {k: v for k, v in os.environ.items() if k not in ("HYPRLAND_INSTANCE_SIGNATURE", "DISPLAY")}
+        self.env = dict(inherited, PATH=f"{stubs}:{os.environ['PATH']}", HOME=str(root / "home"),
+                        XDG_CACHE_HOME=str(root / "cache"), WAYLAND_DISPLAY="wayland-test",
+                        CALLS=str(self.calls), MONITORS=str(self.listing))
+
+    def lock(self, power, **env):
+        self.calls.write_text("")
+        self.listing.write_text(self.monitors(power))
+        result = subprocess.run(["bash", str(self.SCRIPT)], env=dict(self.env, **env),
+                                capture_output=True, text=True, timeout=30)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        return self.calls.read_text().splitlines()
+
+    def test_sleeping_displays_are_not_woken_before_the_lock(self):
+        for label, power, env in (
+            ("all asleep", {"HDMI-A-1": False, "DP-3": False}, {}),
+            ("one asleep", {"HDMI-A-1": True, "DP-3": False}, {}),
+            ("all awake", {"HDMI-A-1": True, "DP-3": True}, {}),
+            ("state unreadable", {}, {"MONITORS_RC": "1"}),
+        ):
+            with self.subTest(label):
+                calls = self.lock(power, **env)
+                self.assertEqual(calls.count("hyprlock"), 1, calls)
+                woken = [c for c in calls[:calls.index("hyprlock")] if "dpms" in c]
+                self.assertEqual(woken, [])
+
+    def test_unlock_recovery_still_cycles_the_display(self):
+        calls = self.lock({"DP-3": False})
+        self.assertEqual(calls[calls.index("hyprlock") + 1:], [
+            f"hyprctl dispatch {self.OFF}", f"hyprctl dispatch {self.ON}",
+            "hyprctl reload", f"hyprctl dispatch {self.ON}"])
+
+    def test_a_running_lock_is_not_launched_again(self):
+        self.assertNotIn("hyprlock", self.lock({"DP-3": False}, PIDOF_RC="0"))
+
+    def test_log_records_which_outputs_were_asleep(self):
+        self.lock({"HDMI-A-1": False, "DP-3": True})
+        self.assertIn("outputs at lock: HDMI-A-1=off DP-3=on", self.log.read_text())
+
+    def test_unreadable_output_state_is_logged_and_never_blocks_the_lock(self):
+        calls = self.lock({}, MONITORS_RC="1")
+        self.assertIn("outputs at lock: unknown", self.log.read_text())
+        self.assertIn("hyprlock", calls)
+
+    def test_a_hung_compositor_query_only_delays_the_lock_briefly(self):
+        calls = self.lock({"DP-3": False}, HANG="1")
+        self.assertIn("outputs at lock: unknown", self.log.read_text())
+        self.assertIn("hyprlock", calls)
+
+
 if __name__ == "__main__":
     unittest.main()
 

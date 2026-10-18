@@ -316,6 +316,34 @@ from `hyprland.conf` or `hyprland.lua`. A Hyprland reload does not reload hyprid
 Previously overwritten choices cannot be recovered reliably; users must
 reselect those choices rather than have the updater guess them.
 
+Settings → Power edits the file in place and refuses what it cannot reason about.
+Each listener's `on-timeout` must be a lock, screen-off (`smplos-hypr-dpms off` or
+the legacy dispatcher form), `systemctl suspend` or `systemctl poweroff` command.
+Lock → Never (and back) also rewrites `before_sleep_cmd` and `after_sleep_cmd`:
+the first must be empty or `loginctl lock-session`; the second an optional
+`loginctl lock-session; sleep 0.5; ` prefix plus a wake chain of
+`smplos-hypr-dpms on`, `hyprctl reload` and `sleep N` steps. Anything else fails
+with a generic save error (the reason goes only to Settings' stderr). The stock
+file must therefore stay inside that grammar, and a Settings release that
+understands a new shape must ship **before** the stock file uses it. Settings
+releases that accepted a single wake command refuse the stock nvidia chain and
+cannot set Lock → Never. `IdleSettingsContractTests` in
+`tests/test_power_update.py` pins the stock file to this grammar; the editor's
+side is `settings/src/power.rs` in smpl-apps. Stock comments never state
+timeouts, because Settings changes the values but not the comments.
+
+Screen off always takes precedence over the lock screen. `lock-screen` (the
+`lock_cmd`, also behind Super+L and the power menu) never wakes the display:
+monitors that are asleep when the lock starts stay asleep, and Hyprland wakes
+them on the next key press or mouse move (`misc:key_press_enables_dpms`,
+`misc:mouse_move_enables_dpms`) with hyprlock already on screen. It used to run
+`dpms on` first, which lit the monitors with only the lock-screen clock and
+nothing turned them off again until the next input. Only the wake after suspend
+(`after_sleep_cmd`) turns the display on, after the re-lock. The log line
+`outputs at lock: HDMI-A-1=off DP-3=on` in `~/.cache/smplos/lock-screen.log`
+records which outputs were asleep. `LockScreenTests` in
+`tests/test_power_update.py` pins this.
+
 Saved timers only work while `hypridle.service` runs. It is
 `WantedBy=graphical-session.target`, which nothing activated before
 `smplos-session.target`: the daemon ran only after Settings or an update

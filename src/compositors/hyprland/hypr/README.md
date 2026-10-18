@@ -91,6 +91,11 @@ mv ~/.config/hypr/hyprland.conf.disabled ~/.config/hypr/hyprland.conf
   atomic replacement, and apply through `hypridle.service`; compositor reload
   alone does not apply idle rules. Stock DPMS commands use `smplos-hypr-dpms`,
   which selects syntax from the running provider rather than package version.
+  Settings -> Power edits the file in place and refuses commands outside its
+  grammar, so the stock file must stay inside it (`UPDATING.md`, "Power
+  preferences"; pinned by `IdleSettingsContractTests`). Screen off always wins
+  over the lock screen: `lock-screen` never wakes a sleeping display
+  (`LockScreenTests`).
 * **Session services**: hypridle, voxtype and the XR watcher are
   `WantedBy=graphical-session.target`. Hyprland starts without a session
   manager, so both autostart trees run `smplos-session-services`, which

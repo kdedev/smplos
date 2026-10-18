@@ -7,6 +7,7 @@ on:
       - "src/shared/bin/smplos-os-update"
       - "src/shared/bin/smplos-migrate"
       - "src/shared/bin/smplos-hypr-dpms"
+      - "src/shared/bin/lock-screen"
       - "src/shared/bin/smplos-session-services"
       - "src/shared/configs/systemd/**"
       - "src/shared/lib/smplos-hypridle*"
@@ -35,6 +36,7 @@ on:
       - "src/shared/bin/smplos-os-update"
       - "src/shared/bin/smplos-migrate"
       - "src/shared/bin/smplos-hypr-dpms"
+      - "src/shared/bin/lock-screen"
       - "src/shared/bin/smplos-session-services"
       - "src/shared/configs/systemd/**"
       - "src/shared/lib/smplos-hypridle*"
@@ -76,7 +78,8 @@ jobs:
           python3 -m unittest discover -s tests -p 'test_keypad.py' -v
           python3 -m unittest discover -s tests -p 'test_keypad_glass.py' -v
           for script in src/shared/bin/smplos-os-update src/shared/bin/smplos-migrate \
-            src/shared/bin/smplos-hypr-dpms src/shared/lib/smplos-hypridle.sh \
+            src/shared/bin/smplos-hypr-dpms src/shared/bin/lock-screen \
+            src/shared/lib/smplos-hypridle.sh \
             migrations/20260707-210000-hypridle-legacy-dpms-syntax.sh \
             migrations/20260720-120000-enable-hypridle-service.sh \
             migrations/20260930-120000-preserve-idle-preferences.sh \
