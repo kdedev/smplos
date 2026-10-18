@@ -35,6 +35,7 @@ on:
       - "src/shared/bin/theme-set-st"
       - "src/shared/installer/install.sh"
       - "src/shared/bin/bar-ctl"
+      - "tests/test_eww_delivery.py"
       - "src/shared/lib/smplos-app-bundle.sh"
       - "src/shared/installer/automated_script.sh"
       - "migrations/**"
@@ -83,6 +84,7 @@ on:
       - "src/shared/bin/theme-set-st"
       - "src/shared/installer/install.sh"
       - "src/shared/bin/bar-ctl"
+      - "tests/test_eww_delivery.py"
       - "src/shared/lib/smplos-app-bundle.sh"
       - "src/shared/installer/automated_script.sh"
       - "migrations/**"
@@ -138,6 +140,7 @@ jobs:
           python3 -m unittest discover -s tests -p 'test_yay_delivery.py' -v
           python3 -m unittest discover -s tests -p 'test_app_delivery.py' -v
           python3 -m unittest discover -s tests -p 'test_bar_ctl.py' -v
+          python3 -m unittest discover -s tests -p 'test_eww_delivery.py' -v
           python3 -m unittest discover -s tests -p 'test_dropped_packages.py' -v
           PYTHONPATH=tests python3 -m unittest test_logseq_retirement test_theme_switching -v
           PYTHONPATH=tests python3 -m unittest test_scrolling_bindings test_keybind_help -v

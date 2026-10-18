@@ -1918,11 +1918,11 @@ BAR_NAME=bar
 LOG=fixture.log
 visible="${VISIBLE:-0}"
 eww_cmd() { [[ "$visible" != 1 ]] || echo 'bar: bar'; }
-eww_reload() { echo reloaded; }
+eww_apply() { echo applied; }
 eww_start() { echo started; visible="${OPEN_EFFECTIVE:-1}"; }
 eww_ensure
 """
-        for visible, effective, status, action in (("1", "1", 0, "reloaded"),
+        for visible, effective, status, action in (("1", "1", 0, "applied"),
                                                   ("0", "1", 0, "started"),
                                                   ("0", "0", 1, "started")):
             result = subprocess.run(["bash", "-c", script], capture_output=True, text=True,

@@ -1,3 +1,4 @@
+import fcntl
 import json
 import os
 from pathlib import Path
@@ -366,9 +367,20 @@ class ThemeSwitchingTests(unittest.TestCase):
         eww.chmod(0o755)
         result = subprocess.run(
             ["bash", str(BIN / "bar-ctl"), "reload"],
-            env=self.env, capture_output=True, timeout=5,
+            env={**self.env, "HYPRLAND_INSTANCE_SIGNATURE": ""}, capture_output=True, timeout=5,
         )
         self.assertEqual(result.returncode, 42)
+
+    def test_same_palette_is_not_republished_and_failed_reload_releases_batch_lock(self):
+        self.assertEqual(self.switch("new").returncode, 0)
+        palette = self.home / ".config/eww/theme-colors.scss"
+        before = palette.stat()
+        self.assertEqual(self.switch("new").returncode, 0)
+        after = palette.stat()
+        self.assertEqual((before.st_ino, before.st_mtime_ns), (after.st_ino, after.st_mtime_ns))
+        self.assertNotEqual(self.switch("old", FAIL_RELOAD="1").returncode, 0)
+        with (self.home / ".config/eww/.smplos-reload.lock").open("r") as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
 
     def test_hyprland_environment_uses_running_lua_or_legacy_provider_not_setenv(self):
         for provider in ("lua", "legacy", "old"):

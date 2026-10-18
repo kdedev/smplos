@@ -1127,17 +1127,18 @@ smplos-update-apps() { return 1; }
 
     def test_resumed_theme_only_update_reapplies_and_invalid_resume_flags_fail(self):
         source = (ROOT / "src/shared/bin/smplos-os-update").read_text()
-        condition = re.search(r'    if \[\[ \$had_updates.*?\n    fi', source, re.S).group()
-        result = self.shell("""
-had_updates=0; SELF_UPDATED=1; THEMES_CHANGED=0; HYPR_CONFIGS_CHANGED=0; APPS_CHANGED=0
-header() { :; }; post_deploy() { echo reapplied; }
-""" + condition)
-        self.assertEqual(result.stdout, "reapplied\n")
-        result = self.shell("""
-had_updates=0; SELF_UPDATED=0; THEMES_CHANGED=1; HYPR_CONFIGS_CHANGED=0; APPS_CHANGED=0
-header() { :; }; post_deploy() { echo reapplied; }
-""" + condition)
-        self.assertEqual(result.stdout, "reapplied\n")
+        finalization = source.split("    # A failed finalization must retry", 1)[1]
+        finalization = finalization.split("\n", 1)[1].split('    [[ $migrations_failed -eq 0 ]]', 1)[0]
+        for self_updated, themes_changed in ((1, 0), (0, 1), (0, 0)):
+            result = self.shell(f"""
+had_updates=0; SELF_UPDATED={self_updated}; THEMES_CHANGED={themes_changed}
+HYPR_CONFIGS_CHANGED=0; APPS_CHANGED=0
+header() {{ :; }}; post_deploy() {{ echo reapplied; }}
+""" + finalization)
+            self.assertEqual(result.stdout, "reapplied\n", result.stderr)
+        result = self.shell("migrations_failed=0\nheader() { :; }; post_deploy() { return 1; }\n" +
+                            finalization + '\n[[ $migrations_failed -eq 0 ]]')
+        self.assertNotEqual(result.returncode, 0)
         validation = source.split('case "$SELF_UPDATED:', 1)[1].split("esac", 1)[0]
         validation = 'case "$SELF_UPDATED:' + validation + "esac"
         result = self.shell('SELF_UPDATED=1; SMPLOS_OS_HAD_UPDATES=not-a-boolean\n' + validation)

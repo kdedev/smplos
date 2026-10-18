@@ -282,9 +282,9 @@ class BarApplyTests(unittest.TestCase):
             ["begin reload", "begin update", "begin reload", "begin update", "begin close", "begin open", "begin update"],
         ])
         source = self.script.read_text()
-        self.assertIn('"$0" redraw "$BAR_NAME"', source)
-        self.assertIn('watch "$BAR_NAME" 9>&-', source)
-        self.assertIn(') 9>&- >/dev/null', source)
+        self.assertIn('"$0" refresh "$BAR_NAME"', source)
+        self.assertIn('watch "$BAR_NAME" 8>&- 9>&-', source)
+        self.assertIn(') 8>&- 9>&- >/dev/null', source)
 
     def test_open_failure_never_applies_preferences_or_reports_start_success(self):
         self.assertNotIn("pkill", self.script.read_text())
@@ -301,7 +301,7 @@ class BarApplyTests(unittest.TestCase):
 
     def test_concurrent_cold_starts_spawn_exactly_one_daemon(self):
         self.script.write_text(self.script.read_text().replace(
-            '( sleep 2; "$0" redraw "$BAR_NAME" ) 9>&- >/dev/null 2>&1 &',
+            '( sleep 2; "$0" refresh "$BAR_NAME" ) 8>&- 9>&- >/dev/null 2>&1 &',
             ': # Boot geometry timer is outside this cold-start fixture.'))
         pgrep = self.root / "bin/pgrep"
         pgrep.write_text("#!/bin/sh\nexit 0\n")
@@ -335,6 +335,63 @@ class BarApplyTests(unittest.TestCase):
                     process.terminate()
                     process.wait(timeout=5)
         self.assertEqual(self.calls.read_text(), "spawn\n")
+
+    def test_ensure_checks_visibility_without_reloading_a_present_bar(self):
+        eww = self.root / "bin/eww"
+        eww.write_text(
+            "#!/usr/bin/env python3\nimport json, os, sys\n"
+            "with open(os.environ['CALLS'], 'a') as out:\n"
+            "    out.write(json.dumps(sys.argv[1:]) + '\\n')\n"
+            "if sys.argv[3] == 'active-windows': print('bar: bar')\n")
+        result = subprocess.run(["bash", str(self.script), "ensure"], env=self.env,
+                                capture_output=True, text=True, timeout=5)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual([json.loads(line)[2] for line in self.calls.read_text().splitlines()],
+                         ["active-windows", "update", "active-windows"])
+
+    def test_geometry_refresh_skips_reloads_and_redraws_when_only_focus_changes(self):
+        monitors = self.root / "monitors"
+        monitor = dict(name="TEST-1", width=1920, height=1080, scale=1,
+                       transform=0, x=0, y=0, focused=True)
+        monitors.write_text(json.dumps([monitor]))
+        hyprctl = self.root / "bin/hyprctl"
+        hyprctl.write_text('#!/bin/sh\ncat "$MONITORS"\n')
+        hyprctl.chmod(0o755)
+        env = {**self.env, "HYPRLAND_INSTANCE_SIGNATURE": "fixture", "MONITORS": str(monitors)}
+
+        def invoke(action):
+            result = subprocess.run(["bash", str(self.script), action], env=env,
+                                    capture_output=True, text=True, timeout=5)
+            self.assertEqual(result.returncode, 0, result.stderr)
+
+        invoke("reload")
+        initial_calls = self.calls.read_bytes()
+        for focused in (False, True, False):
+            monitor.update(focused=focused, activeWorkspace={"id": 4})
+            monitors.write_text(json.dumps([monitor]))
+            invoke("refresh")
+            invoke("redraw")
+        self.assertEqual(self.calls.read_bytes(), initial_calls)
+        monitor["scale"] = 1.25
+        monitors.write_text(json.dumps([monitor]))
+        invoke("refresh")
+        after_resize = self.calls.read_bytes()
+        self.assertEqual([json.loads(line)[2] for line in after_resize.splitlines()],
+                         ["reload", "update", "close", "open", "update"])
+        invoke("refresh")
+        self.assertEqual(self.calls.read_bytes(), after_resize)
+
+    def test_failed_geometry_query_is_visible_and_never_closes_the_bar(self):
+        hyprctl = self.root / "bin/hyprctl"
+        hyprctl.write_text("#!/bin/sh\necho 'broken JSON'\n")
+        hyprctl.chmod(0o755)
+        result = subprocess.run(
+            ["bash", str(self.script), "refresh"],
+            env={**self.env, "HYPRLAND_INSTANCE_SIGNATURE": "fixture"},
+            capture_output=True, text=True, timeout=5)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("cannot read monitor geometry", result.stderr)
+        self.assertFalse(self.calls.exists())
 
 
 if __name__ == "__main__":

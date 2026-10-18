@@ -352,6 +352,9 @@ sync_configs() {
     local eww_dst="$HOME/.config/eww"
     if [[ -d "$eww_src" ]]; then
         as_invoker mkdir -p "$eww_dst"
+        as_invoker touch "$eww_dst/.smplos-reload.lock"
+        exec 8<"$eww_dst/.smplos-reload.lock" || die "Cannot open EWW publication lock"
+        flock 8 || die "Cannot lock EWW publication"
         # Publish included fragments before the entry point so live reloads
         # never see an include that has not reached disk yet.
         local source f
@@ -383,6 +386,8 @@ sync_configs() {
                 ((n_updated++)) || true
             fi
         done
+        flock -u 8 || die "Cannot unlock EWW publication"
+        exec 8<&-
     fi
 
     # smplOS fonts (keypad cheatsheet icons; EWW draws them by family name)
@@ -1062,19 +1067,10 @@ if [[ $SCRIPTS_ONLY -eq 0 ]]; then
     # broken update-apps runs all get healed on every OS update.
     cleanup_shadow_bins || migrations_failed=1
 
-    # Reload Hyprland whenever EITHER new commits were pulled OR the hypr
-    # config sync wrote anything. The latter catches the case where the git
-    # pull was a no-op but ~/.config/hypr had drifted from repo (e.g. a
-    # previous run interrupted before reload). Without this, users would need
-    # to manually `hyprctl reload` after certain updates — and we've promised
-    # them the process is self-contained.
-    # Also runs on APPS_CHANGED so the reopen notice appears even when only
-    # an org-repo binary changed (no smplos commits, no config diff).
-    if [[ $had_updates -eq 1 || $SELF_UPDATED -eq 1 || $THEMES_CHANGED -eq 1 || $HYPR_CONFIGS_CHANGED -eq 1 || $APPS_CHANGED -eq 1 ]]; then
-        header ""
-        header "── Post-deploy ──"
-        post_deploy || migrations_failed=1
-    fi
+    # A failed finalization must retry even if its files were already copied.
+    header ""
+    header "── Post-deploy ──"
+    post_deploy || migrations_failed=1
     [[ $migrations_failed -eq 0 ]] || die "Some deployment steps failed; desktop reconciliation was attempted. Resolve the reported errors and retry Update OS."
 fi
 

@@ -160,6 +160,27 @@ The OTA local-package helper does not bypass source PGP verification; EWW releas
 disable the inapplicable debug subpackage instead of running debug indexing on
 a binary without debug symbols. Compiler diagnostics remain visible.
 
+EWW package revision 4 adds the local `ipc-repair.patch`: its server waits up to
+10 seconds for an application acknowledgement and the client allows 15 seconds,
+instead of discarding both ends after 100 ms. Missing required replies and
+expired deadlines are explicit failures, including delayed stylesheet errors.
+The pinned `pkgver` matches the actual source version so makepkg does not reset
+the package revision to 1. A required, retryable core migration builds and
+installs the repair; a failed build leaves the old package installed.
+
+Config and palette publishers hold `.config/eww/.smplos-reload.lock`; the
+repaired file watcher defers their intermediate changes to one checked explicit
+reload. Direct edits outside a publication batch retain normal automatic reload.
+Unchanged palettes are not rewritten, `bar-ctl ensure` verifies an existing bar
+without reloading it, and geometry events redraw only when monitor geometry
+actually changes. A replaced running EWW executable is activated once during
+finalization, after validating the new configuration and GTK stylesheet without
+executing polling/listener commands or touching the working daemon. This restarts EWW,
+not the desktop or application windows; transient EWW popups close. The first
+delivery can still show automatic refreshes from the old, unpatched daemon.
+Finalization retries even if a previous attempt already copied every file, and
+an incomplete reload still prevents successful update completion.
+
 Required smpl-apps executables and `xr-workspace` remain ELF-only. The optional
 XR module also contains the Bash wrappers `xrctl`, `xr-game` and
 `xr-glasses-hotplugd`. Only those filenames accept `#!/usr/bin/env bash` or

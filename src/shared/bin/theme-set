@@ -86,7 +86,10 @@ fi
 mkdir -p "$CURRENT_PATH" || die "Cannot create $CURRENT_PATH"
 exec 9>"$CURRENT_PATH/.theme-set.lock" || die "Cannot open theme lock"
 flock 9 || die "Cannot lock theme state"
-trap 'flock -u 9' EXIT
+mkdir -p "$HOME/.config/eww" || die "Cannot create EWW config directory"
+exec 8>"$HOME/.config/eww/.smplos-reload.lock" || die "Cannot open EWW publication lock"
+flock 8 || die "Cannot lock EWW publication"
+trap 'flock -u 8; flock -u 9' EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
 
@@ -126,7 +129,8 @@ fi
 rm -rf -- "$NEXT_THEME_PATH" || die "Cannot clean theme staging directory"
 
 # Link EWW theme colors into EWW config dir
-if [[ -f "$CURRENT_THEME_PATH/eww-colors.scss" ]]; then
+if [[ -f "$CURRENT_THEME_PATH/eww-colors.scss" ]] &&
+    ! cmp -s "$CURRENT_THEME_PATH/eww-colors.scss" "$HOME/.config/eww/theme-colors.scss"; then
   mkdir -p "$HOME/.config/eww"
   cp "$CURRENT_THEME_PATH/eww-colors.scss" "$HOME/.config/eww/theme-colors.scss.tmp" \
     && mv -f "$HOME/.config/eww/theme-colors.scss.tmp" "$HOME/.config/eww/theme-colors.scss" \

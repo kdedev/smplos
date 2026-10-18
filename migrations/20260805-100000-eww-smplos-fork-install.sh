@@ -81,7 +81,7 @@ fi
 BUILD_DIR=$(mktemp -d /tmp/eww-smplos-build.XXXXXX)
 trap 'rm -rf "$BUILD_DIR"' EXIT
 
-cp "$PKGBUILD_DIR/PKGBUILD" "$BUILD_DIR/"
+cp -a "$PKGBUILD_DIR/." "$BUILD_DIR/" || exit 1
 cd "$BUILD_DIR"
 
 # makepkg refuses to run as root. Migrations normally run as the invoking

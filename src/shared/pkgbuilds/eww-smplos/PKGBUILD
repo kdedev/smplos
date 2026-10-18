@@ -37,8 +37,8 @@ _gh_repo=eww
 _commit=0eb460422278dfaec64e5a527c1fd35dd3b35a1b
 
 pkgname=eww-smplos
-pkgver=0.6.0.r0.g0d666f6
-pkgrel=3
+pkgver=0.6.0.r721.g0eb4604
+pkgrel=4
 pkgdesc='Standalone widget system made in Rust (smplOS fork with Wayland button-grab fixes)'
 arch=(x86_64)
 url="https://github.com/${_gh_owner}/${_gh_repo}"
@@ -50,8 +50,8 @@ conflicts=(eww)
 replaces=(eww)
 options=(!debug)
 
-source=("git+${url}.git#commit=${_commit}")
-sha256sums=('SKIP')
+source=("git+${url}.git#commit=${_commit}" 'ipc-repair.patch')
+sha256sums=('SKIP' '89ffc93b9735320229c958bcfda4fac691178f61d2778c1c8fe7ad11bf3399a8')
 
 pkgver() {
     cd "$srcdir/$_gh_repo"
@@ -64,6 +64,7 @@ pkgver() {
 
 prepare() {
     cd "$srcdir/$_gh_repo"
+    patch -Np1 -i "$srcdir/ipc-repair.patch" || return 1
     export RUSTUP_TOOLCHAIN=stable
     cargo fetch --locked --target "$CARCH-unknown-linux-gnu"
 }
@@ -73,6 +74,13 @@ build() {
     export RUSTUP_TOOLCHAIN=stable
     export CARGO_TARGET_DIR=target
     cargo build --frozen --release
+}
+
+check() {
+    cd "$srcdir/$_gh_repo"
+    export RUSTUP_TOOLCHAIN=stable
+    export CARGO_TARGET_DIR=target
+    cargo test --frozen --release -p eww ipc_repair -- --test-threads=1
 }
 
 package() {

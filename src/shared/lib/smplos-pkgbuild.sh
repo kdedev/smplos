@@ -46,7 +46,7 @@ smplos_pkgbuild_install() {
         sudo pacman -S --needed --noconfirm base-devel git || return 1
     fi
     build=$(mktemp -d "${TMPDIR:-/tmp}/smplos-pkgbuild.XXXXXX") || return 1
-    cp "$dir/PKGBUILD" "$build/"
+    cp -a "$dir/." "$build/" || { rm -rf "$build"; return 1; }
     if (cd "$build" && makepkg -s --noconfirm); then
         pkg=$(find "$build" -maxdepth 1 -name '*.pkg.tar.*' ! -name '*-debug-*' | head -1)
         [[ -n "$pkg" ]] && sudo pacman -U --noconfirm "$@" "$pkg" && rc=0
