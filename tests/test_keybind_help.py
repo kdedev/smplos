@@ -79,6 +79,24 @@ class KeybindHelpTests(unittest.TestCase):
         self.assertTrue((self.home / "custom-cache/smplos/keybinds.cache").is_file())
         self.assertFalse(self.cache.exists())
 
+    def test_stock_scrolling_shortcuts_have_one_help_row_per_action(self):
+        (self.home / ".config/smplos/bindings.conf").write_bytes(
+            (ROOT / "src/shared/configs/smplos/bindings.conf").read_bytes()
+        )
+        _, rows = self.launch()
+        for chord, description in (
+            ("Super+Shift+Left", "Swap window left"),
+            ("Super+Shift+Right", "Swap window right"),
+            ("Super+R", "Expand column to fill"),
+            ("Super+Ctrl+R", "Resize mode"),
+            ("Super+S", "Signal"),
+            ("Super+Ctrl+S", "Toggle scratchpad"),
+        ):
+            matches = [row for row in rows.splitlines() if row.split()[0] == chord]
+            self.assertEqual(len(matches), 1, matches)
+            self.assertIn(description, matches[0])
+        self.assertNotIn("orientation", rows)
+
     def test_script_update_rebuilds_existing_cache(self):
         self.cache.write_text("stale fuzzy-search listing\n")
         older = time.time() - 10

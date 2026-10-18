@@ -167,7 +167,7 @@ local function make_dispatcher(dispatcher, arg)
 
     elseif dispatcher == "layoutmsg" then
         -- Pass the whole message string to the active layout (e.g. the
-        -- scrolling layout: "move +col", "move -col", "center", "movewindow l",
+        -- scrolling layout: "move +col", "move -col", "center", "swapcol l",
         -- "fit expand", "focus l"). hyprlang's `layoutmsg <msg>` maps to the
         -- lua `hl.dsp.layout(<msg>)` API.
         return hl.dsp.layout(arg)

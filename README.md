@@ -148,6 +148,18 @@ updated; Update OS does not deliver its binary or inspect custom Grafium launche
 
 smplOS uses the same keybindings as [Omarchy](https://omakub.org/), so migrating from that project is seamless - your muscle memory carries over. Press <kbd>Super</kbd>+<kbd>K</kbd> to open the keybinding cheatsheet overlay at any time. The overlay is **dynamically generated** by parsing `bindings.conf` at runtime, so any keybinding you add or change shows up in the help automatically - no manual docs to maintain.
 
+Hyprland's scrolling layout keeps window and column operations separate:
+**Super+Shift+arrows** swaps the focused window; **Super+Ctrl+Shift+Left/Right**
+moves the entire column. **Super+R** expands the column into available space,
+while **Super+Ctrl+R** enters arrow-key resize mode (Escape/Enter exits).
+Scrolling does not support orientation rotation, so the old Super+J shortcut
+is no longer shipped. Update OS repairs only the known stock entries in
+existing binding files, saving a verified backup beside each changed file;
+custom actions and occupied destination shortcuts are preserved.
+**Super+S** toggles Signal; **Super+Ctrl+S** toggles the scratchpad.
+An explicit messenger shortcut in `bindings.conf` takes precedence over
+automatic messenger key assignment.
+
 <a href="images/6-keybindings.png"><img src="images/6-keybindings.png" width="720" /></a>
 
 ---
@@ -1140,7 +1152,7 @@ All messengers default to `messenger_opacity` from the active theme, but individ
 # windowrule = opacity 0.80 override 0.80 override, match:class ^(brave-teams\.microsoft\.com)(.*)$
 ```
 
-These lines come *after* the tag-level rule, so they win (Hyprland last-match-wins). No theme rebuild needed — reload Hyprland config with `Super+R`.
+These lines come *after* the tag-level rule, so they win (Hyprland last-match-wins). No theme rebuild needed — reload Hyprland config with `hyprctl reload`.
 
 #### Adding a new Slint app
 

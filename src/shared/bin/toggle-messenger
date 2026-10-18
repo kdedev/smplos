@@ -47,7 +47,7 @@ MARGIN_BOTTOM=34  # 30px bar + 2px offset + 2px gap (matches notif-center)
 #     workspace (focus-workspace-previous), then move the window there.
 #   - Otherwise just move the window to their focused workspace.
 #
-# Result: a single press of Super+Shift+S always puts Signal where you are,
+# Result: a single press of Signal's shortcut puts it where you are,
 # and a second press always tucks it away. You never get "stranded" on the
 # scratchpad.
 # ============================================================================
