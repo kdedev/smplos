@@ -18,7 +18,7 @@ import time
 import unittest
 from unittest import mock
 
-from test_app_delivery import function
+from test_app_delivery import XR_SCRIPTS, function, xr_module
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -317,21 +317,62 @@ class InstalledStateTests(unittest.TestCase):
         self.ldd_error = "Hyprland"
         self.assertIn("libhyprutils.so.99", "\n".join(self.audit()["errors"]))
 
-    def test_only_optional_xrctl_accepts_a_verified_bash_control_client(self):
+    def test_only_named_optional_xr_wrappers_accept_verified_bash_scripts(self):
         state = self.home / ".local/state/smplos/app-versions"
-        optional = self.root / "usr/local/bin/xrctl"
-        self.write(optional, "#!/usr/bin/env bash\nexit 97\n")
-        self.write(state / "smpl-apps-retained.sha256", f"{CHECK.digest(optional)}  {optional}\n")
-        report = self.audit()
-        self.assertEqual(report["errors"], [])
-        self.assertIn("syntax verified", report["linkage"][str(optional)])
-        self.assertFalse(any(args == ("ldd", str(optional)) for args in self.calls))
-        self.write(optional, "#!/usr/bin/env bash\nif then\n")
-        self.write(state / "smpl-apps-retained.sha256", f"{CHECK.digest(optional)}  {optional}\n")
-        self.assertIn("Invalid XR control script", "\n".join(self.audit()["errors"]))
-        self.write(optional, "#!/usr/bin/python3\npass\n")
-        self.assertIn("not an ELF binary", "\n".join(self.audit()["errors"]))
+        for name in XR_SCRIPTS:
+            with self.subTest(name=name):
+                optional = self.root / "usr/local/bin" / name
+                self.write(optional, '#!/usr/bin/env bash\nprintf bad > "$HOME/xr-was-executed"\nexit 97\n')
+                self.write(state / "smpl-apps-retained.sha256", f"{CHECK.digest(optional)}  {optional}\n")
+                report = self.audit()
+                self.assertEqual(report["errors"], [])
+                self.assertIn("syntax verified", report["linkage"][str(optional)])
+                self.assertFalse(any(args == ("ldd", str(optional)) for args in self.calls))
+                self.assertFalse((self.home / "xr-was-executed").exists())
+                self.write(optional, "#!/bin/bash\nexit 97\n")
+                self.write(state / "smpl-apps-retained.sha256", f"{CHECK.digest(optional)}  {optional}\n")
+                self.assertEqual(self.audit()["errors"], [])
+                self.write(optional, "#!/usr/bin/env bash\nif then\n")
+                self.write(state / "smpl-apps-retained.sha256", f"{CHECK.digest(optional)}  {optional}\n")
+                self.assertIn("Invalid XR", "\n".join(self.audit()["errors"]))
+                self.write(optional, "#!/usr/bin/python3\npass\n")
+                self.assertIn("not an ELF binary", "\n".join(self.audit()["errors"]))
+                optional.unlink()
+                target = self.base / f"{name}-target"
+                self.write(target, "#!/bin/bash\nexit 0\n")
+                optional.symlink_to(target)
+                self.assertIn("must not be a symlink", "\n".join(self.audit()["errors"]))
+                optional.unlink()
         self.write(self.root / "usr/local/bin/settings", "#!/usr/bin/env bash\nexit 0\n")
+        self.assertIn("not an ELF binary", "\n".join(self.audit()["errors"]))
+
+    def test_complete_delivered_or_retained_xr_module_passes_final_audit(self):
+        state = self.home / ".local/state/smplos/app-versions"
+        receipt = state / "smpl-apps.sha256"
+        core = receipt.read_text()
+        module = xr_module("released")
+        for name, data in module.items():
+            self.write(self.root / "usr/local/bin" / name, data)
+        xr_receipt = "".join(
+            f"{CHECK.digest(self.root / 'usr/local/bin' / name)}  {self.root / 'usr/local/bin' / name}\n"
+            for name in module
+        )
+        for retained in (False, True):
+            with self.subTest(retained=retained):
+                self.write(receipt, core if retained else core + xr_receipt)
+                if retained:
+                    self.write(state / "smpl-apps-retained.sha256", xr_receipt)
+                report = self.audit()
+                self.assertEqual(report["errors"], [])
+                for name in XR_SCRIPTS:
+                    path = self.root / "usr/local/bin" / name
+                    self.assertIn("syntax verified", report["linkage"][str(path)])
+                    self.assertFalse(any(args == ("ldd", str(path)) for args in self.calls))
+                    if retained:
+                        self.assertEqual(report["native_files"][str(path)]["delivery"], "retained-not-upgraded")
+                self.assertFalse((self.home / "xr-was-executed").exists())
+        workspace = self.root / "usr/local/bin/xr-workspace"
+        self.write(workspace, "#!/bin/bash\nexit 0\n")
         self.assertIn("not an ELF binary", "\n".join(self.audit()["errors"]))
 
     def test_ignored_or_remaining_repository_updates_cannot_report_success(self):

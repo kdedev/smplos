@@ -39,14 +39,21 @@ smplos_app_is_elf() {
         [[ "$(head -c 4 -- "$1")" == $'\x7fELF' ]]
 }
 
+smplos_xr_script_name() {
+    case "${1##*/}" in
+        xrctl|xr-game|xr-glasses-hotplugd) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
 smplos_xr_file_valid() {
     local file="$1" header
-    if [[ "${file##*/}" == xrctl && -f "$file" && ! -L "$file" ]] &&
+    if smplos_xr_script_name "$file" && [[ -f "$file" && ! -L "$file" ]] &&
         ! smplos_app_is_elf "$file"; then
         IFS= read -r header < "$file" || header=""
         if [[ "$header" == '#!/usr/bin/env bash' || "$header" == '#!/bin/bash' ]]; then
             bash -n "$file" || {
-                echo "smpl-apps: invalid XR control script: $file" >&2
+                echo "smpl-apps: invalid XR script: $file" >&2
                 return 1
             }
             return 0
@@ -155,7 +162,7 @@ smplos_stage_app_bundle() (
     mkdir -p "$destination" || return 1
     for file in "$unpacked"/*; do
         if ! smplos_app_is_elf "$file"; then
-            [[ "${file##*/}" == xrctl ]] && smplos_xr_file_valid "$file" || continue
+            smplos_xr_script_name "$file" && smplos_xr_file_valid "$file" || continue
         fi
         install -m755 "$file" "$destination/${file##*/}" || return 1
     done

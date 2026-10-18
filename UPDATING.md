@@ -160,10 +160,13 @@ The OTA local-package helper does not bypass source PGP verification; EWW releas
 disable the inapplicable debug subpackage instead of running debug indexing on
 a binary without debug symbols. Compiler diagnostics remain visible.
 
-Required smpl-apps executables remain ELF-only. The optional XR module may also
-contain the separately released `xr-workspace` Bash control client, `xrctl`.
-Only that filename accepts the supported Bash shebangs; syntax is checked
-without execution, and installed/retained checksum receipts still apply.
+Required smpl-apps executables and `xr-workspace` remain ELF-only. The optional
+XR module also contains the Bash wrappers `xrctl`, `xr-game` and
+`xr-glasses-hotplugd`. Only those filenames accept `#!/usr/bin/env bash` or
+`#!/bin/bash`; syntax is checked without execution. Bundle staging, installation
+and the final audit preserve and validate all three, with installed/retained
+checksum receipts still required. A complete release must not lose its wrappers
+during extraction or be misreported as omitting the XR module.
 Missing XR peers retain the whole validated old module, not a mixture of releases.
 
 ---
@@ -528,7 +531,7 @@ draft, prerelease or source-only tag:
 
 | Consumer | Published artifact | Installed destination |
 |----------|--------------------|-----------------------|
-| smpl-apps OTA and ISO | `smpl-apps-<version>-x86_64.tar.gz`, flat ELF entries | `/usr/local/bin/` (also installer payload on ISO) |
+| smpl-apps OTA and ISO | `smpl-apps-<version>-x86_64.tar.gz`, flat ELF apps, calendar unit and optional XR module | `/usr/local/bin/` (also installer payload on ISO) |
 | Nemo OTA | `nemo-smpl-<version>-1-x86_64.pkg.tar.zst` | Pacman-managed `/usr/bin/nemo` and `/usr/libexec/` helpers |
 | Nemo ISO fallback | `nemo-smpl-<version>-arch-x86_64-rootfs.tar.zst` | Repackaged with current runtime dependencies |
 
@@ -542,8 +545,9 @@ When included in the installed bundle, they receive the same linkage preflight
 and checksum receipt as the required apps. If a new release omits any installed
 optional XR binary, the installed XR module is retained together rather than
 mixing old/new peers or blocking the 11 required apps. Retained executables
-must be executable ELF files, pass runtime linkage and match prior checksums
-when recorded. Missing/broken/tampered retained files still fail explicitly.
+must be executable ELF files with valid runtime linkage, or one of the three
+syntax-verified Bash wrappers above, and match prior checksums when recorded.
+Missing/broken/tampered retained files still fail explicitly.
 Only delivered binaries enter `smpl-apps.sha256`; `smpl-apps-retained.sha256`
 separately covers bytes **not upgraded** by the new suite release. Both are
 required to cover every present/previously recorded optional executable. The

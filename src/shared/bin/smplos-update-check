@@ -19,6 +19,7 @@ APPS = (
     "sync-center-daemon", "sync-center-gui", "smpl-calendar", "smpl-calendar-alertd",
     "smpl-hints", "smpl-hintsd",
 )
+XR_SCRIPTS = {"xrctl", "xr-game", "xr-glasses-hotplugd"}
 USER_HYPR = {
     "monitors.conf", "hypridle.conf", "bindings.conf", "messenger-bindings.conf",
     "theme.conf", "hyprlock-theme.conf",
@@ -262,14 +263,14 @@ class Audit:
             with path.open("rb") as stream:
                 if stream.read(4) != b"\x7fELF":
                     stream.seek(0)
-                    if allow_xr_script and path.name == "xrctl" and stream.readline(64) in (
+                    if allow_xr_script and path.name in XR_SCRIPTS and stream.readline(64) in (
                             b"#!/usr/bin/env bash\n", b"#!/bin/bash\n"):
                         result = self.command("bash", "-n", path)
                         if result is not None:
                             if result.returncode:
-                                self.error(f"Invalid XR control script {path}: {result.stderr.strip()}")
+                                self.error(f"Invalid XR script {path}: {result.stderr.strip()}")
                             else:
-                                self.report["linkage"][str(path)] = "Bash XR control client; syntax verified"
+                                self.report["linkage"][str(path)] = "Bash XR script; syntax verified"
                         return
                     self.error(f"Application is not an ELF binary: {path}")
                     return

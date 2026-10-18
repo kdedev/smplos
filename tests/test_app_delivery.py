@@ -18,6 +18,7 @@ APPS = (
     "sync-center-daemon", "sync-center-gui", "smpl-calendar", "smpl-calendar-alertd",
     "smpl-hints", "smpl-hintsd",
 )
+XR_SCRIPTS = ("xrctl", "xr-game", "xr-glasses-hotplugd")
 CALENDAR_SERVICE = "smpl-calendar-alertd.service"
 SERVICE_CONTENT = """[Unit]
 Description=smplOS Calendar reminders
@@ -37,6 +38,14 @@ def function(path, name):
     if match is None:
         raise AssertionError(f"Function {name} not found in {path}")
     return match.group()
+
+
+def xr_module(version):
+    return {
+        "xr-workspace": b"\x7fELF" + version.encode(),
+        **{name: f'#!/usr/bin/env bash\nprintf "{version}-{name}" > "$HOME/xr-was-executed"\n'.encode()
+           for name in XR_SCRIPTS},
+    }
 
 
 MOCK_CURL = """#!/usr/bin/python3
@@ -126,17 +135,20 @@ class AppDeliveryTests(unittest.TestCase):
             source = source.replace(path, str(self.base / "system-units") + path)
         return source
 
-    def publish(self, missing=None, corrupt=None, asset=True, xr_script=None):
+    def publish(self, missing=None, corrupt=None, asset=True, xr_script=None, xr_files=None):
         url = "https://github.com/smpl-os/smpl-apps/releases/download/v0.8.23/smpl-apps-0.8.23-x86_64.tar.gz"
         self.release.write_text(json.dumps({
             "tag_name": "v0.8.23",
             "assets": [{"browser_download_url": url}] if asset else [],
         }, indent=2))
         with tarfile.open(self.archive, "w:gz") as archive:
-            for app in (*APPS, "xrctl"):
+            files = {app: b"\x7fELFnew-" + app.encode() for app in (*APPS, "xrctl")}
+            files.update(xr_files or {})
+            for app, data in files.items():
                 if app == missing:
                     continue
-                data = b"broken" if app == corrupt else b"\x7fELFnew-" + app.encode()
+                if app == corrupt:
+                    data = b"broken"
                 if app == "xrctl" and xr_script is not None:
                     data = xr_script
                 info = tarfile.TarInfo(app)
@@ -207,6 +219,26 @@ download_prebuilt_apps
         result = self.iso_download()
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(self.requests.read_text().count("/releases/download/"), 1)
+
+    def test_fetchers_preserve_all_published_xr_wrappers_without_executing_them(self):
+        module = xr_module("new")
+        self.publish(xr_files=module)
+        for fetcher, directory in (
+            ("fetch-apps.sh", self.cache),
+            ("fetch-org.sh", self.project / ".cache/org-binaries/bin"),
+        ):
+            with self.subTest(fetcher=fetcher):
+                result = self.run_fetcher(fetcher)
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assert_new_bundle(directory)
+                for name, data in module.items():
+                    self.assertEqual((directory / name).read_bytes(), data)
+                    self.assertTrue(os.access(directory / name, os.X_OK))
+                self.assertFalse((self.home / "xr-was-executed").exists())
+        result = self.iso_download()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        for name, data in module.items():
+            self.assertEqual((self.cache / name).read_bytes(), data)
 
     def test_fetch_apps_rejects_missing_or_corrupt_binary_without_blessing_old_file(self):
         marker = self.cache / ".smpl-apps-version"
@@ -530,6 +562,92 @@ echo 'libc.so.6 => /usr/lib/libc.so.6'
         self.assertIn(str(optional), (state / "smpl-apps.sha256").read_text())
         self.assertEqual((state / "smpl-apps-retained.sha256").read_text(), "")
         self.assertFalse((self.home / "xr-was-executed").exists())
+
+    def test_app_updater_repairs_legacy_install_with_complete_mixed_xr_module(self):
+        state, installed, pins, script = self.app_updater_fixture()
+        for name, data in xr_module("old").items():
+            (installed / name).write_bytes(data)
+            (installed / name).chmod(0o755)
+        module = xr_module("new")
+        self.publish(xr_files=module)
+        result = self.shell(script)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assert_new_bundle(installed)
+        self.assertEqual((state / "smpl-apps").read_text(), "v0.8.23\n")
+        self.assertEqual((state / "smpl-apps-retained.sha256").read_text(), "")
+        receipt = (state / "smpl-apps.sha256").read_text()
+        self.assertEqual(len(receipt.splitlines()), len(APPS) + len(module))
+        for name, data in module.items():
+            binary = installed / name
+            self.assertEqual(binary.read_bytes(), data)
+            self.assertTrue(os.access(binary, os.X_OK))
+            self.assertIn(f"{hashlib.sha256(data).hexdigest()}  {binary}\n", receipt)
+        downloads = self.requests.read_text().count("/releases/download/")
+        result = self.shell(script)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(self.requests.read_text().count("/releases/download/"), downloads)
+        (installed / "xr-game").unlink()
+        result = self.shell(script)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual((installed / "xr-game").read_bytes(), module["xr-game"])
+        self.assertEqual(pins.read_text(), '"grafium"\ncustom --command\n')
+        self.assertFalse((self.home / "xr-was-executed").exists())
+
+    def test_app_updater_retains_whole_script_module_and_rejects_tampering(self):
+        state, installed, _, script = self.app_updater_fixture()
+        module = xr_module("old")
+        for name, data in module.items():
+            (installed / name).write_bytes(data)
+            (installed / name).chmod(0o755)
+        self.publish(missing="xrctl")
+        result = self.shell(script)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        retained = state / "smpl-apps-retained.sha256"
+        self.assertEqual(len(retained.read_text().splitlines()), len(module))
+        for name, data in module.items():
+            binary = installed / name
+            self.assertEqual(binary.read_bytes(), data)
+            self.assertIn(str(binary), retained.read_text())
+            self.assertNotIn(str(binary), (state / "smpl-apps.sha256").read_text())
+        for name in XR_SCRIPTS:
+            with self.subTest(tampered=name):
+                (installed / name).write_bytes(module[name] + b"# changed\n")
+                result = self.shell(script)
+                self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertIn("differs from its checksum receipt", result.stderr)
+                (installed / name).write_bytes(module[name])
+        self.publish(xr_files=xr_module("new"))
+        (state / "smpl-apps").write_text("v0.8.22\n")
+        result = self.shell(script)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(retained.read_text(), "")
+        for name, data in xr_module("new").items():
+            self.assertEqual((installed / name).read_bytes(), data)
+        self.assertFalse((self.home / "xr-was-executed").exists())
+
+    def test_xr_script_validation_is_narrow_and_never_executes_input(self):
+        directory = self.base / "validation"
+        directory.mkdir()
+        for name in (*XR_SCRIPTS, "xr-workspace", "settings", "unknown"):
+            path = directory / name
+            for data, valid in (
+                (b'#!/bin/bash\nprintf bad > "$HOME/xr-was-executed"\n', name in XR_SCRIPTS),
+                (b"#!/usr/bin/env bash\nif then\n", False),
+                (b"#!/usr/bin/python3\npass\n", False),
+            ):
+                with self.subTest(name=name, data=data):
+                    path.write_bytes(data)
+                    result = self.shell(f'source "{LIB}"\nsmplos_xr_file_valid "{path}"')
+                    self.assertEqual(result.returncode == 0, valid, result.stdout + result.stderr)
+                    self.assertFalse((self.home / "xr-was-executed").exists())
+        target = directory / "target"
+        target.write_text("#!/bin/bash\nexit 0\n")
+        for name in XR_SCRIPTS:
+            path = directory / name
+            path.unlink()
+            path.symlink_to(target)
+            result = self.shell(f'source "{LIB}"\nsmplos_xr_file_valid "{path}"')
+            self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
 
     def test_iso_assembly_installs_same_bundle_for_live_and_installed_system(self):
         binaries = self.base / "app-binaries"
