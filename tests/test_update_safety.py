@@ -1414,6 +1414,54 @@ PY
                 self.assertNotIn("--finalize", self.calls.read_text())
                 self.assertIn("Update incomplete", result.stdout)
 
+    def test_completed_update_reboot_gate_blocks_before_auth_but_allows_repairs(self):
+        state = self.home / ".local/state/smplos/update"
+        state.mkdir(parents=True)
+        helper = self.repo / "src/shared/lib/smplos-reboot.sh"
+        helper.parent.mkdir(parents=True)
+        shutil.copyfile(ROOT / "src/shared/lib/smplos-reboot.sh", helper)
+        boot_id = Path("/proc/sys/kernel/random/boot_id").read_text().replace("-", "").strip()
+        marker = state.parent / "reboot-pending"
+        source = self.source.split("UPDATE_SCRIPT=$(mktemp", 1)[0]
+        source = source.replace("if [[ ! -t 1 && $EUID -ne 0 ]]; then", "if false; then")
+        source = source.replace("if [[ $EUID -eq 0 ]]; then", "if false; then", 1)
+        source = source.replace(function(BIN / "smplos-update", "check_update_power"),
+                                'check_update_power() {\n return 0\n}')
+        script = self.base / "reboot-gate"
+        script.write_text(source + "\necho READY-FOR-UPDATE\n")
+        (self.bin / "sleep").unlink()
+        completed = "stage=finished\ncore_verified=1\nmode=full\n"
+        for status, current_boot, args, blocked in (
+            ("complete", True, [], True),
+            ("complete-with-warnings", True, [], True),
+            ("complete", False, [], False),
+            ("failed", True, [], False),
+            ("interrupted", True, [], False),
+            ("running", True, [], False),
+            ("complete", True, ["--mode", "apps"], False),
+            ("complete", True, ["--bootstrap-only"], False),
+        ):
+            with self.subTest(status=status, current_boot=current_boot, args=args):
+                marker.write_text(boot_id if current_boot else "0" * 32)
+                (state / "status").write_text(f"status={status}\n" + completed)
+                self.calls.write_text("")
+                result = subprocess.run(
+                    ["bash", str(script), *args], capture_output=True, text=True, timeout=10,
+                    env={**self.env, "SMPLOS_UPDATER_REFRESHED": "1"},
+                )
+                if blocked:
+                    self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+                    self.assertIn("Reboot required", result.stderr)
+                    self.assertIn("reboot before running Update OS again", result.stderr)
+                    self.assertNotIn("already running", result.stderr)
+                    self.assertEqual(self.calls.read_text(), "")
+                    self.assertFalse(Path(str(self.log) + ".result").exists())
+                else:
+                    self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertEqual(subprocess.run(
+                    ["flock", "-n", str(state / "update.lock"), "true"]).returncode, 0)
+                self.assertEqual((state / "status").read_text(), f"status={status}\n" + completed)
+
     def test_refresh_reexecutes_new_wrapper_keeps_lock_and_authenticates_once(self):
         # Exercise the real front-end/bootstrap, replacing only terminal/root
         # presentation guards and the separately tested hardware power reader.

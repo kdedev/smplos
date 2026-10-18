@@ -45,7 +45,7 @@ notify() {
 }
 
 startup_fail() {
-    notify "Update OS could not start" "$1${STARTUP_LOG:+ Startup log: $STARTUP_LOG}"
+    notify "${2:-Update OS could not start}" "$1${STARTUP_LOG:+ Startup log: $STARTUP_LOG}"
     stop_sudo_keepalive
     release_update_lock || exit 1
     [[ ! -t 0 || "${SMPLOS_UPDATE_NO_HOLD:-0}" == 1 ]] ||
@@ -156,6 +156,38 @@ release_update_lock() {
     fi
     UPDATE_LOCK_RELEASED=1
 }
+check_reboot_before_update() {
+    [[ "$UPDATE_MODE" == full && $BOOTSTRAP_ONLY -eq 0 ]] || return 0
+    local state="$LOG_DIR/status" helper="" candidate status=0
+    [[ -f "$state" ]] || return 0
+    awk -F= '
+        $1 == "status" { status=$2; statuses++ }
+        $1 == "stage" { stage=$2; stages++ }
+        $1 == "core_verified" { core=$2; cores++ }
+        END { exit !(statuses == 1 && stages == 1 && cores == 1 &&
+            (status == "complete" || status == "complete-with-warnings") &&
+            stage == "finished" && core == "1") }
+    ' "$state" || return 0
+    for candidate in "${SELF%/*}/../lib/smplos/smplos-reboot.sh" \
+        "${SELF%/*}/../lib/smplos-reboot.sh" \
+        "$SMPLOS_PATH/repo/src/shared/lib/smplos-reboot.sh"; do
+        [[ -r "$candidate" ]] || continue
+        helper="$candidate"
+        break
+    done
+    if [[ -z "$helper" ]]; then
+        # Older installations acquire the helper during the verified bootstrap.
+        [[ "${1:-}" != allow-bootstrap ]] || return 0
+        startup_fail "Cannot check whether a reboot is required: updater helper is missing."
+    fi
+    source "$helper" || startup_fail "Cannot load the pending-reboot check."
+    smplos_reboot_pending || status=$?
+    case "$status" in
+        0) startup_fail "The previous update is complete. Save your work and reboot before running Update OS again." "Reboot required" ;;
+        1) return 0 ;;
+        *) startup_fail "Cannot verify whether a reboot is required; inspect the reboot marker before retrying." ;;
+    esac
+}
 authenticate_update() {
     [[ "${SMPLOS_SUDO_READY:-0}" != 1 ]] || return 0
     command sudo -v || startup_fail "Authentication failed; update not started."
@@ -205,6 +237,7 @@ if [[ "${SMPLOS_UPDATE_LOCKED:-0}" != 1 ]]; then
 fi
 flock -n 9 || startup_fail "Another smplOS update is already running."
 export SMPLOS_UPDATE_LOCKED=1
+check_reboot_before_update allow-bootstrap
 export SMPLOS_UPDATE_LOG_FILE="${SMPLOS_UPDATE_LOG_FILE:-$LOG_DIR/update-$(date +%Y%m%d-%H%M%S)-$$.log}"
 if [[ -n "$STARTUP_LOG" ]]; then
     cat -- "$STARTUP_LOG" >> "$SMPLOS_UPDATE_LOG_FILE" ||
@@ -284,6 +317,7 @@ if [[ $BOOTSTRAP_ONLY -eq 1 ]]; then
     echo "When ready, run smplos-update --mode full as this desktop user."
     exit 0
 fi
+check_reboot_before_update
 
 UPDATE_SCRIPT=$(mktemp /tmp/smplos-update.XXXXXX.sh) || bootstrap_fail "Cannot prepare updater."
 

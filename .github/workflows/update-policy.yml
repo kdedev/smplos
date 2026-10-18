@@ -7,6 +7,8 @@ on:
       - "src/shared/update-policy/**"
       - "src/shared/bin/smplos-update"
       - "src/shared/bin/smplos-update-*"
+      - "src/shared/bin/smplos-reboot-notify"
+      - "src/shared/lib/smplos-reboot.sh"
       - "src/shared/bin/smplos-os-update"
       - "src/shared/bin/smplos-migrate"
       - "src/shared/lib/smplos-update-entry.sh"
@@ -32,6 +34,7 @@ on:
       - "src/shared/installer/automated_script.sh"
       - "migrations/**"
       - "tests/test_update_safety.py"
+      - "tests/test_reboot_update.py"
       - "tests/test_update_handoff.py"
       - "tests/test_yay_delivery.py"
       - "tests/test_app_delivery.py"
@@ -47,6 +50,8 @@ on:
       - "src/shared/update-policy/**"
       - "src/shared/bin/smplos-update"
       - "src/shared/bin/smplos-update-*"
+      - "src/shared/bin/smplos-reboot-notify"
+      - "src/shared/lib/smplos-reboot.sh"
       - "src/shared/bin/smplos-os-update"
       - "src/shared/bin/smplos-migrate"
       - "src/shared/lib/smplos-update-entry.sh"
@@ -72,6 +77,7 @@ on:
       - "src/shared/installer/automated_script.sh"
       - "migrations/**"
       - "tests/test_update_safety.py"
+      - "tests/test_reboot_update.py"
       - "tests/test_update_handoff.py"
       - "tests/test_yay_delivery.py"
       - "tests/test_app_delivery.py"
@@ -101,6 +107,7 @@ jobs:
             src/shared/bin/smplos-migrate src/shared/bin/theme-set src/shared/bin/theme-set-st src/builder/build.sh \
             src/shared/lib/smplos-update-entry.sh \
             src/shared/lib/smplos-session-env.sh src/fetch-apps.sh src/fetch-org.sh \
+            src/shared/lib/smplos-reboot.sh src/shared/bin/smplos-reboot-notify \
             src/shared/bin/smplos-update-apps src/shared/bin/smplos-update-bootstrap src/shared/bin/bar-ctl \
             src/shared/bin/smplos-ensure-yay src/shared/bin/heal-paru src/shared/bin/rebuild-paru \
             src/shared/pkgbuilds/yay-bin/PKGBUILD src/shared/pkgbuilds/eww-smplos/PKGBUILD src/shared/lib/smplos-pkgbuild.sh \
@@ -110,9 +117,12 @@ jobs:
           done
       - name: Check one-transaction upgrades and the Hyprland series rule
         run: python3 -m unittest discover -s tests -p 'test_critical_bundle.py' -v
+      - name: Install isolated notification test dependencies
+        run: sudo apt-get update -qq && sudo apt-get install -y dunst xvfb xauth
       - name: Check update safeguards, diagnostics and delivery
         run: |
           python3 -m unittest discover -s tests -p 'test_update_safety.py' -v
+          python3 -m unittest discover -s tests -p 'test_reboot_update.py' -v
           python3 -m unittest discover -s tests -p 'test_update_handoff.py' -v
           python3 -m unittest discover -s tests -p 'test_yay_delivery.py' -v
           python3 -m unittest discover -s tests -p 'test_app_delivery.py' -v

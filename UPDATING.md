@@ -64,6 +64,20 @@ never inherit descriptor 9. A terminal waiting for Enter is not an active
 package transaction and must not prevent a retry. Do not delete/recreate the
 lock or infer lock ownership from a stale PID file.
 
+After a successfully verified update, a reboot marker matching the current
+kernel boot ID deliberately blocks another full **Update OS** with **Reboot
+required**. This is separate from the running-update lock. Failed/interrupted
+updates remain retryable, scripts-only enrollment and apps mode are not blocked,
+and a marker from a previous boot does not prevent updating. The refusal releases
+the lock before its final prompt and does not publish a success receipt.
+
+The red reboot notification has a default click action. Clicking it opens a
+second **Restart smplOS now?** confirmation notification: save your work, then
+click that confirmation to restart. Dismissing either step cancels; there is no
+automatic reboot timer. A refused restart is reported, and the marker remains.
+Confirmed restarts also refuse while the updater holds its lock, rather than
+interrupting an active transaction.
+
 A client may choose a fresh, unique absolute `SMPLOS_UPDATE_LOG_FILE` path in
 the desktop user's private update-state directory. The environment value
 survives terminal launch and updater refresh. After final verification,

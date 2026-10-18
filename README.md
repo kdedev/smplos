@@ -669,7 +669,12 @@ one complete Arch transaction; the priority split never creates partial library
 upgrades.
 
 The update lock is released before the terminal's final Enter-to-close prompt
-and reboot notification, so a completed window cannot block the next update.
+and reboot notification, so a completed window cannot masquerade as an active
+update. If a verified update needs a reboot, **Update OS** instead explains
+**Reboot required** and refuses another full update until restarting. Incomplete
+update repairs and scripts-only enrollment remain available. Click the red
+reboot notification to review restarting, then click the separate confirmation
+to restart; dismissing either notification never reboots.
 App Center releases supporting [per-update completion receipts](UPDATING.md#completion-receipts-and-app-center)
 can offer **Restart App Center** after verifying completion and that their
 installed executable actually changed. An already-running older App Center
