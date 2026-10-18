@@ -1,4 +1,5 @@
 #!/bin/bash
+# SMPLOS_UPDATE_PRIORITY=optional
 # Migration: Force Mullvad VPN GUI through XWayland.
 #
 # Context: smplOS globally prefers native Wayland for Electron/Chromium apps.
@@ -33,22 +34,22 @@ fi
 backup="${DESKTOP_FILE}.pre-xwayland-fix.$(date +%s)"
 
 if [[ $EUID -eq 0 ]]; then
-    cp -f "$DESKTOP_FILE" "$backup" 2>/dev/null || {
+    cp -f "$DESKTOP_FILE" "$backup" || {
         echo "  WARNING: could not back up Mullvad desktop entry - skipping"
-        exit 0
+        exit 1
     }
-    sed -i "s|^Exec=.*|$EXPECTED_EXEC|" "$DESKTOP_FILE" 2>/dev/null || {
+    sed -i "s|^Exec=.*|$EXPECTED_EXEC|" "$DESKTOP_FILE" || {
         echo "  WARNING: could not patch Mullvad desktop entry"
-        exit 0
+        exit 1
     }
 else
-    sudo cp -f "$DESKTOP_FILE" "$backup" 2>/dev/null || {
+    sudo cp -f "$DESKTOP_FILE" "$backup" || {
         echo "  WARNING: could not back up Mullvad desktop entry - skipping"
-        exit 0
+        exit 1
     }
-    sudo sed -i "s|^Exec=.*|$EXPECTED_EXEC|" "$DESKTOP_FILE" 2>/dev/null || {
+    sudo sed -i "s|^Exec=.*|$EXPECTED_EXEC|" "$DESKTOP_FILE" || {
         echo "  WARNING: could not patch Mullvad desktop entry"
-        exit 0
+        exit 1
     }
 fi
 

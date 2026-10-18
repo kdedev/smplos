@@ -1,4 +1,5 @@
 #!/bin/bash
+# SMPLOS_UPDATE_PRIORITY=optional
 # Migration: install nvidia-container-toolkit on existing NVIDIA installs.
 #
 # Context: smplOS now ships nvidia-container-toolkit on all NVIDIA machines so
@@ -13,10 +14,10 @@
 #          just works.
 #
 # Safe to re-run: --needed makes install a no-op if already present; CDI spec
-# regeneration is idempotent. Skips non-NVIDIA hosts entirely. Best-effort:
-# never fails the update chain.
+# regeneration is idempotent. Skips non-NVIDIA hosts entirely. Optional-phase
+# failures remain unmarked for retry without blocking core OS completion.
 
-set -uo pipefail   # deliberately no -e — pacman/nvidia-ctk failures must not abort updates
+set -euo pipefail
 
 # ── 1. Only run on NVIDIA hosts ──────────────────────────────────────────────
 if ! lspci 2>/dev/null | grep -qi 'nvidia'; then
@@ -45,27 +46,32 @@ else
         echo "  ✓ nvidia-container-toolkit installed"
     else
         echo "  WARNING: could not install nvidia-container-toolkit; will retry on next update"
-        exit 0
+        exit 1
     fi
 fi
 
 # ── 4. Generate / refresh CDI spec so podman auto-discovers the GPU ──────────
 if command -v nvidia-ctk &>/dev/null; then
-    sudo mkdir -p /etc/cdi 2>/dev/null || true
+    sudo mkdir -p /etc/cdi
     # Only regenerate if the GPU is actually enumerable right now. If nvidia
     # module isn't loaded (e.g. host booted with `nomodeset` or driver
     # upgrade pending reboot), skip — the toolkit's own ALPM hook will
     # retry on next kernel boot.
     if [[ -e /dev/nvidia0 ]] || nvidia-smi &>/dev/null; then
-        if sudo nvidia-ctk cdi generate --output=/etc/cdi/nvidia.yaml 2>/dev/null; then
+        if sudo nvidia-ctk cdi generate --output=/etc/cdi/nvidia.yaml; then
             echo "  ✓ CDI spec generated at /etc/cdi/nvidia.yaml"
             echo "    Test with: podman run --rm --device nvidia.com/gpu=all docker.io/nvidia/cuda:12.9.0-base-ubuntu22.04 nvidia-smi"
         else
             echo "  WARNING: nvidia-ctk cdi generate failed — retry manually after reboot"
+            exit 1
         fi
     else
         echo "  GPU not enumerable right now (module not loaded / reboot pending) — CDI spec deferred"
+        exit 75
     fi
+else
+    echo "  ERROR: nvidia-container-toolkit is installed but nvidia-ctk is missing"
+    exit 1
 fi
 
 exit 0

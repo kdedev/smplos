@@ -3,8 +3,13 @@
 # Sets the active theme and regenerates all configs
 # Usage: theme-set <theme-name>
 
-if [[ -z ${1:-} ]]; then
-  echo "Usage: theme-set <theme-name>"
+THEME_SCOPE=all
+case "${1:-}" in
+  --core) THEME_SCOPE=core; shift ;;
+  --apps) THEME_SCOPE=apps; shift ;;
+esac
+if [[ -z ${1:-} && "$THEME_SCOPE" != apps ]]; then
+  echo "Usage: theme-set [--core] <theme-name> | theme-set --apps"
   exit 1
 fi
 
@@ -37,14 +42,16 @@ resolve_theme_path() {
 
 toml_get() {
   local file="$1" key="$2"
-  grep -E "^${key}[[:space:]]*=" "$file" 2>/dev/null | head -1 | sed 's/.*"\([^"]*\)".*/\1/'
+  awk -v key="$key" '$0 ~ ("^" key "[[:space:]]*=") {
+    n = split($0, parts, "\""); print n >= 3 ? parts[2] : $0; exit
+  }' "$file"
 }
 
 # Normalize theme name: strip markup, lowercase, spaces to hyphens
-THEME_NAME=$(echo "$1" | sed -E 's/<[^>]+>//g' | tr '[:upper:]' '[:lower:]' | tr ' ' '-')
+THEME_NAME=$(echo "${1:-}" | sed -E 's/<[^>]+>//g' | tr '[:upper:]' '[:lower:]' | tr ' ' '-')
 
 # Resolve theme path (user themes take precedence)
-if ! THEME_PATH="$(resolve_theme_path "$THEME_NAME")"; then
+if [[ "$THEME_SCOPE" != apps ]] && ! THEME_PATH="$(resolve_theme_path "$THEME_NAME")"; then
   echo "Theme '$THEME_NAME' does not exist"
   exit 1
 fi
@@ -58,6 +65,7 @@ trap 'flock -u 9' EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
 
+if [[ "$THEME_SCOPE" != apps ]]; then
 [[ -s "$THEME_PATH/colors.toml" ]] || die "Theme '$THEME_NAME' has no colors.toml"
 NEXT_THEME_PATH=$(mktemp -d "$CURRENT_PATH/.theme-set.XXXXXX") || die "Cannot stage theme"
 PREVIOUS_THEME_PATH="${NEXT_THEME_PATH}.previous"
@@ -173,12 +181,6 @@ if [[ -f "$CURRENT_THEME_PATH/dunstrc.theme" ]]; then
   rm -f "$HOME/.config/dunst/dunstrc.active"
 fi
 
-# Link foot theme
-if [[ -f "$CURRENT_THEME_PATH/foot.ini" ]]; then
-  mkdir -p "$HOME/.config/foot"
-  cp "$CURRENT_THEME_PATH/foot.ini" "$HOME/.config/foot/theme.ini"
-fi
-
 # Link rofi theme (single file used by launcher + all dialogs)
 mkdir -p "$HOME/.config/rofi"
 if [[ -f "$CURRENT_THEME_PATH/smplos-launcher.rasi" ]]; then
@@ -187,12 +189,6 @@ fi
 
 # st (suckless terminal) -- colors applied at runtime via OSC escape sequences
 # No config file copy needed; theme-set-st reads colors.toml directly
-
-# Link btop theme
-if [[ -f "$CURRENT_THEME_PATH/btop.theme" ]]; then
-  mkdir -p "$HOME/.config/btop/themes"
-  cp "$CURRENT_THEME_PATH/btop.theme" "$HOME/.config/btop/themes/current.theme"
-fi
 
 # micro text editor — deploy colorscheme (reloads on next file open)
 if [[ -f "$CURRENT_THEME_PATH/micro.theme" ]]; then
@@ -254,20 +250,10 @@ theme-set-st || terminal_status=$?
 # Double Commander — regenerate colors.json from theme palette
 # theme-set-dc removed — DC replaced by Nemo (GTK3, live-reloads via gtk.css)
 
-# Foot terminal — reload via SIGUSR1 (if running)
-while read -r pid; do
-  kill -SIGUSR1 "$pid"
-done < <(pgrep -u "$UID" -x foot)
-
 # Dunst notification daemon
 if pgrep -x dunst >/dev/null; then
   dunstctl reload 2>/dev/null
 fi
-
-# btop — SIGUSR2 triggers config reload
-while read -r pid; do
-  kill -USR2 "$pid"
-done < <(pgrep -u "$UID" -x btop)
 
 # =========================================================================
 # APP-SPECIFIC THEMES — optional integrations
@@ -336,6 +322,34 @@ command -v hyprctl &>/dev/null && hyprctl setenv XCURSOR_THEME "$_cursor_theme" 
 systemctl --user import-environment GTK_THEME XCURSOR_THEME 2>/dev/null || true
 # Restart portal-gtk so it picks up the new GTK_THEME
 systemctl --user restart xdg-desktop-portal-gtk 2>/dev/null || true
+fi
+
+if [[ "$THEME_SCOPE" == core ]]; then
+  if (( terminal_status != 0 )); then
+    die "Theme '$THEME_NAME' applied, but terminal refresh failed; see errors above"
+  fi
+  echo "Core theme set to: $THEME_NAME"
+  exit 0
+elif [[ "$THEME_SCOPE" == apps ]]; then
+  THEME_NAME=$(cat "$CURRENT_PATH/theme.name") || die "Cannot read the active theme name"
+  [[ -s "$CURRENT_THEME_PATH/colors.toml" ]] || die "No active theme for app integration"
+  set -eo pipefail
+fi
+
+if [[ -f "$CURRENT_THEME_PATH/foot.ini" ]]; then
+  mkdir -p "$HOME/.config/foot"
+  cp "$CURRENT_THEME_PATH/foot.ini" "$HOME/.config/foot/theme.ini"
+fi
+if [[ -f "$CURRENT_THEME_PATH/btop.theme" ]]; then
+  mkdir -p "$HOME/.config/btop/themes"
+  cp "$CURRENT_THEME_PATH/btop.theme" "$HOME/.config/btop/themes/current.theme"
+fi
+while read -r pid; do
+  kill -SIGUSR1 "$pid"
+done < <(pgrep -u "$UID" -x foot)
+while read -r pid; do
+  kill -USR2 "$pid"
+done < <(pgrep -u "$UID" -x btop)
 
 # App-theme selectors live in colors.toml so each theme can point to any preset.
 # Defaults keep legacy behavior: use this theme's own app presets.
@@ -402,11 +416,11 @@ if [[ -n "${VSCODE_THEME_PATH:-}" && -f "$VSCODE_THEME_PATH/vscode.json" ]]; the
     if [[ -n "$vsix" && -f "$VSCODE_THEME_PATH/$vsix" ]]; then
       local _before _after
       _before=$("$cmd" --list-extensions 2>/dev/null | sort)
-      "$cmd" --install-extension "$VSCODE_THEME_PATH/$vsix" --force >/dev/null 2>&1 || true
+      "$cmd" --install-extension "$VSCODE_THEME_PATH/$vsix" --force || return 1
       _after=$("$cmd" --list-extensions 2>/dev/null | sort)
       [[ -n "$(comm -13 <(printf '%s' "$_before") <(printf '%s' "$_after"))" ]] && newly_installed=1
     elif [[ -n "$extension" ]] && ! "$cmd" --list-extensions 2>/dev/null | grep -Fxq "$extension"; then
-      "$cmd" --install-extension "$extension" >/dev/null 2>&1 || true
+      "$cmd" --install-extension "$extension" || return 1
       newly_installed=1
     fi
 
@@ -422,6 +436,7 @@ if [[ -n "${VSCODE_THEME_PATH:-}" && -f "$VSCODE_THEME_PATH/vscode.json" ]]; the
     # A freshly installed extension isn't loaded in the running window until it
     # reloads; do it automatically so the new theme actually renders.
     [[ "$newly_installed" -eq 1 ]] && _reload_editor_window "$wclass"
+    return 0
   }
 
   _set_vscode_theme "code"   "$HOME/.config/Code/User/settings.json"     "^code$"
@@ -450,8 +465,7 @@ _hex_to_rgb_array() {
 }
 
 _toml_color() {
-  grep "^${1}[[:space:]]*=" "$CURRENT_THEME_PATH/colors.toml" 2>/dev/null \
-    | head -1 | sed 's/.*"\(#[^"]*\)".*/\1/'
+  toml_get "$CURRENT_THEME_PATH/colors.toml" "$1"
 }
 
 _bg=$(      _toml_color background)
@@ -528,7 +542,7 @@ EOJSON
       -e '/^--force-dark-mode$/d' \
       -e '/^--enable-features=.*WebUIDarkMode/d' \
       -e '/^--load-extension=.*smplos\/brave-theme/d' \
-      "$flags_file" 2>/dev/null || true
+      "$flags_file"
 
     # Dark mode flags (controls browser chrome + forces sites dark)
     if $DARK_MODE; then
@@ -561,7 +575,7 @@ EOJSON
   fi
 fi
 
-if (( terminal_status != 0 )); then
+if (( ${terminal_status:-0} != 0 )); then
   die "Theme '$THEME_NAME' applied, but terminal refresh failed; see errors above"
 fi
 echo "Theme set to: $THEME_NAME"

@@ -16,11 +16,21 @@ smplOS uses a **git-based update system**. The repo is cloned to
    and re-executes the refreshed wrapper before package/config deployment.
 4. Inventories installed versions and performs the complete official package
    upgrade, including the supported Hyprland series, libraries and drivers.
-5. Deploys desktop files, runs pending migrations, reconciles services, reapplies
-   the theme and ensures the EWW bar is actually open.
-6. Updates native apps from published releases, then AUR and Flatpak apps.
-7. Writes a local installed-state report. Only a successful full update records
-   the new OS version and prints **Update complete**.
+5. Enrolls compatible Yay and updates required foreign drivers, public shared
+   libraries and transitive dependencies of the core stack.
+6. Delivers core native releases (smpl-apps, st, Nemo and micro), deploys essential
+   desktop configs/themes and core migrations, reconciles services and checks
+   that the EWW bar is open. Persists a verified core checkpoint.
+7. Attempts ordinary application configs/integrations and optional migrations,
+   Grafium, ordinary AUR apps, and user/system Flatpak apps/runtimes.
+8. Verifies the core again and writes a local installed-state report. Required
+   success records the OS version; optional failures produce **Update complete
+   with warnings**, not **Update incomplete**.
+
+The priority split applies to foreign/native apps and config migrations, not
+individual official packages: all official packages still upgrade together in
+one complete Arch transaction. `--mode apps` uses the same native core/optional
+boundary, without claiming a base-system or desktop-config upgrade.
 
 Run as the desktop user, **not** through sudo/pkexec. Root orchestration and
 later `runuser` contexts were responsible for repeated password prompts and lost
@@ -468,9 +478,12 @@ paths still report incomplete delivery.
 Native GUI replacement is atomic for the smpl-apps suite. Neither OS app sync
 nor the native Nemo/Grafium update closes user windows to force adoption.
 Reopen affected apps once when ready, and log out/in for resident background
-daemons. Independent app components continue after a failure, but the updated
-app updater and full-update wrapper return an incomplete status, with no
-version stamp for a failed install. An already-running *old* outer update
+daemons. Independent app components continue after a failure, with no
+version stamp for a failed install. Standalone `smplos-update-apps` returns
+nonzero for any component failure. The normal OS coordinator first calls
+`--group core`, then calls `--group optional` only after core verification.
+Grafium failures produce warning-only completion; smpl-apps/st/Nemo/micro
+failures remain blocking. An already-running *old* outer update
 wrapper may still print its old final banner; use its component errors and
 retry with the refreshed wrapper rather than treating that banner as proof.
 
@@ -584,6 +597,10 @@ user doesn't update their local config. Examples:
 - **Print what you did** — output is visible in the update log
 - **One migration per breaking change** — keep them focused
 - **Guard with file existence checks** — not every user has every config
+- **Core by default** — unannotated/new migrations remain required. Only ordinary
+  app work may declare `# SMPLOS_UPDATE_PRIORITY=optional` in its first 12 lines;
+  kernel/driver/runtime/desktop compatibility work must not be demoted. Invalid
+  or duplicate priority declarations are errors.
 
 ### Checking migration status
 
@@ -591,6 +608,8 @@ user doesn't update their local config. Examples:
 smplos-migrate --list       # show all migrations and their status
 smplos-migrate --pending    # show only pending migrations
 smplos-migrate --dry-run    # show what would run without executing
+smplos-migrate --pending --phase core
+smplos-migrate --pending --phase optional
 ```
 
 State is in `~/.local/state/smplos/migrations/` (one empty file per
@@ -603,6 +622,13 @@ count as failures. The runner attempts remaining migrations and returns
 nonzero if any failed; `SMPLOS_MIGRATE_STRICT=1` aborts on the first failure.
 The OS updater still attempts pending idle reconciliation before reporting
 aggregate migration failure.
+
+`--phase all|core|optional` filters listing and execution; standalone default
+`all` preserves chronological behavior. Normal Update OS uses core first and
+optional after its checkpoint. Optional failure still returns nonzero from the
+runner and leaves the migration unmarked; only the coordinator converts that
+failure into a visible warning. Never return success on an app failure merely
+to keep the OS update running.
 
 ---
 
@@ -747,8 +773,9 @@ upgrade succeeded.
    (`tests/test_critical_bundle.py` covers the update rules)
 5. Push to `main`
 
-Users get: refreshed updater → complete base upgrade → config/migration
-delivery → native apps → installed-state verification → reboot reminder.
+Users get: refreshed updater → complete base upgrade → required AUR dependencies
+→ core native/config/migration delivery → core verification → optional apps
+→ final verification → reboot reminder.
 
 ### Important: manual `pacman -Syu`
 
@@ -818,12 +845,19 @@ When a user clicks "Update OS" in app-center or runs `smplos-update --mode full`
 ══════════════════════════════════════
 ```
 
-Failures produce **Update incomplete**, a nonzero exit status, and a terminal
+Required failures produce **Update incomplete**, a nonzero exit status, and a terminal
 that waits for Enter rather than closing over the error. A failed base upgrade
 skips desktop/native/AUR deployment; independent deployment failures still
 attempt desktop reconciliation and final verification. Updated native windows
 are not killed: reopen them when work is saved, and log out/in for changed
 background daemons.
+
+Optional failures produce **Update complete with warnings** and overall exit
+status `0`, after both core checks succeed. The OS version is finalized while
+failed ordinary app work remains pending for retry. Optional work cannot start
+when required delivery or its checkpoint failed. The final check still catches
+core damage caused by an optional package operation; a historical checkpoint
+alone never certifies the final state.
 
 ### One administrator authentication
 
@@ -837,14 +871,20 @@ Subsequent elevation uses `sudo -n`; Yay also receives explicit noninteractive
 sudo flags instead of starting its own credential loop. User Flatpak apps and
 runtimes update as the user; system Flatpaks update through the same cached sudo
 authorization, not a separate Polkit password dialog. If authorization expires
-or is revoked, the affected operation fails visibly and the update is incomplete,
-rather than asking for the password again mid-update.
+or is revoked, the affected operation fails visibly rather than asking for the
+password again mid-update. Required work and final privileged verification
+remain blocking; an optional operation never silently reauthenticates.
 
 ### Local diagnostics and retry
 
 `~/.local/state/smplos/update/` contains each update's transcript,
-`*.before.json`, `*.apps.json`, `*.after.json`, and an atomically published `status` file.
-The status records the last stage and complete/failed/interrupted state. A
+`*.before.json`, `*.aur.json` (foreign-package priority inventory),
+`*.apps.json` (core native outcomes), `*.core.json` (core checkpoint),
+`*.optional-apps.json` (Grafium outcomes), `*.brave.json`, `*.after.json`, and an
+atomically published `status` file.
+The status records the stage and complete/complete-with-warnings/failed/interrupted
+state, `core_verified`, and the count of coordinator `optional_phase_warnings`.
+That count is not the final audit's `optional_failures` array. A
 power cut cannot execute a trap: a leftover `running` stage is also reported
 as a previous interrupted update on the next run. Bootstrap failures remain
 in the transcript; the stage journal begins after bootstrap.
@@ -869,24 +909,31 @@ The final report covers the whole upgrade, not just the bar:
   Native checksums, executability and runtime library resolution are verified;
   the installed version must independently satisfy this run's release target.
 - **Brave:** Update OS captures the stable `brave-bin` AUR target before the
-  AUR transaction in `*.brave.json`. The final check requires the installed
+  optional AUR transaction in `*.brave.json`. The final check requires the installed
   package to be **equal to or newer than that recorded target**, using Arch's
   version comparison including package release numbers. An older/missing
-  package, failed target lookup or unreadable record makes the update
-  incomplete. Its package-owned browser ELF, shared libraries and actual
+  package, failed target lookup or unreadable record produces an optional
+  failure, not a core update failure. Its package-owned browser ELF, shared libraries and actual
   `--version` output are also checked against the installed package version,
   so a new package record with an old browser binary does not pass.
 - **Managed files:** scripts, shared helpers, desktop fragments, stock themes
   and matching personal theme overrides, and installed-compositor configuration
   are compared with fetched source. Obsolete managed theme entries fail verification.
+  Active theme identity/cache and generated EWW palette, Nemo CSS, Hyprland
+  theme/lock colors, micro colors and the managed session target are also
+  compared with their deployed targets. Core theming runs with `theme-set --core`;
+  `theme-set --apps` applies editor/browser integrations later, under the same
+  theme lock, without replacing the active theme or core outputs.
   Package database/dependency consistency and remaining repo upgrades are
   checked separately.
 
-`*.apps.json` is written after each native component, including failures, so a
-later failure does not discard the earlier results. The final JSON includes
+Native group reports are written after each component, including failures, so
+optional Grafium delivery cannot overwrite core outcomes. The final JSON includes
 `package_status`, `package_changes`, `app_version_changes`,
 `runtime_library_packages`, `native_updates`, `native_files`, `linkage`,
-`errors` and `warnings`. The terminal/transcript ends with the critical-package
+`errors`, `warnings` and actionable `optional_failures` (schema 3).
+Required phase errors are forwarded into the final report too.
+The terminal/transcript ends with the critical-package
 and native-component comparison. The `status` file is the overall orchestrator
 result; the final JSON describes installed-state verification, not proof that
 every preceding phase succeeded.
@@ -909,14 +956,15 @@ smplOS's stock `/boot/vmlinuz-*` / `initramfs-*.img` layout, not arbitrary UKIs
 or custom boot layouts. Missing images/modules are an incomplete update:
 repair the reported problem **before rebooting**. No graphical session means
 live bar/Hyprland checks are explicitly deferred. User-owned monitor, idle,
-binding and generated theme files are not compared to stock defaults.
+and binding preferences are not compared to stock defaults; generated theme
+outputs are checked against the selected active theme, not a stock selection.
 
 Repository comparisons use local Pacman databases refreshed by the upgrade;
 the verifier itself makes no network calls. Packages outside those databases
 are explicitly identified as AUR/local, not certified as latest by that
 comparison. The managed native releases have their separate captured targets;
-other AUR and Flatpak failures remain visible in the transcript and overall
-update status. No diagnostic data is uploaded.
+other AUR and Flatpak failures remain visible in the transcript, final optional
+failures and overall warning status. No diagnostic data is uploaded.
 
 To rerun diagnostics after repairing a full update (no network/package changes):
 
@@ -929,7 +977,12 @@ smplos-update-check --mode full \
 To include the release targets/outcomes of a particular update, add
 `--apps-report /path/to/that-update.log.apps.json`. A standalone check without
 that argument verifies installed native files/receipts, not today's online
-release versions.
+release versions. Also add
+`--optional-apps-report /path/to/that-update.log.optional-apps.json` for Grafium.
+The standalone verifier returns `1` for required errors, `2` for optional-only
+failures, and `0` otherwise. The coordinator recognizes `2` as warning-only;
+do not treat it as a successful all-apps audit. `--core-only` skips optional apps
+for the intermediate checkpoint.
 
 For Brave, also add `--brave-report /path/to/that-update.log.brave.json`.
 `brave` and `brave_runtime` in the final JSON record the target comparison and
@@ -949,8 +1002,19 @@ caches are preserved. A removal failure stops the base upgrade.
 
 After the base upgrade, `smplos-ensure-yay` installs/repairs the helper and
 verifies both `--version` and a real `-Q pacman` database query. If a later
-step fails, the update is incomplete and must be retried; Paru is not restored
-or rebuilt as a fallback.
+required step fails, the update is incomplete and must be retried; Paru is not
+restored or rebuilt as a fallback. Ordinary AUR app failures are optional.
+
+`smplos-update-check --classify-aur --output PATH` classifies the local installed
+inventory without network access. Core stack roots, public shared libraries,
+kernel modules/DKMS sources and their transitive package/provider dependencies
+are required; ordinary foreign apps are optional. Private browser/editor
+libraries and debug source trees do not make those apps core. Independently
+managed Nemo/Grafium/EWW releases are excluded from Yay transactions. Incomplete
+or unresolved dependency metadata fails classification explicitly, never
+silently treating unknown packages as optional. Core and optional Yay invocations
+exclude the opposite group; `critical-packages.txt` remains the existing
+compositor hold policy, not a severity manifest.
 
 If a configured package repository supplies `yay`, enrollment uses pacman to
 install it. Stock Arch's official repositories do not supply Yay, so smplOS

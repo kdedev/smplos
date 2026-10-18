@@ -1,4 +1,5 @@
 #!/bin/bash
+# SMPLOS_UPDATE_PRIORITY=optional
 # Migration: Install Mullvad VPN on existing customer machines
 #
 # Context: mullvad-vpn-bin is registered as a default AUR-style package in
@@ -14,8 +15,8 @@
 #          so the trust chain matches the ISO build.
 #
 # Safety:  Idempotent — exits 0 if mullvad-vpn-bin is already installed.
-#          Exits 0 on any prerequisite failure (offline, no makepkg, no
-#          PKGBUILD synced yet) so it never blocks other migrations. The
+#          Prerequisite failures remain unmarked for the optional phase to
+#          retry; they do not block core OS completion. The
 #          bundled .install hook enables mullvad-daemon.service on first
 #          install; no separate systemctl call needed here.
 
@@ -34,7 +35,7 @@ PKGBUILD_DIR="$SMPLOS_PATH/repo/src/shared/pkgbuilds/mullvad-vpn-bin"
 if [[ ! -f "$PKGBUILD_DIR/PKGBUILD" ]]; then
     echo "  WARNING: $PKGBUILD_DIR/PKGBUILD not found — skipping"
     echo "  Re-run smplos-migrate after the next 'Update OS'."
-    exit 0
+    exit 1
 fi
 
 # Bootstrap build tools if missing (customer machines may not have base-devel).

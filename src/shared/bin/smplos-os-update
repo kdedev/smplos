@@ -93,6 +93,7 @@ SELF_CANONICAL="/usr/local/bin/smplos-os-update"
 
 # ── Argument parsing ──────────────────────────────────────────────────────────
 CHECK_ONLY=0; QUIET=0; SCRIPTS_ONLY=0; MIGRATE_ONLY=0; DEPLOY_ONLY=0; FINALIZE_ONLY=0
+CORE_ONLY=0; OPTIONAL_ONLY=0
 # Internal flag: set by self-reexec to prevent infinite loops if the newly
 # installed script somehow still detects itself as outdated.
 SELF_UPDATED="${SMPLOS_OS_UPDATE_RESUMED:-0}"
@@ -107,9 +108,11 @@ while [[ $# -gt 0 ]]; do
         --scripts)   SCRIPTS_ONLY=1 ;;
         --migrate)   MIGRATE_ONLY=1 ;;
         --deploy)    DEPLOY_ONLY=1 ;;
+        --core)      CORE_ONLY=1 ;;
+        --optional)  OPTIONAL_ONLY=1 ;;
         --finalize)  FINALIZE_ONLY=1 ;;
         -h|--help)
-            echo "Usage: smplos-os-update [--check | --quiet | --scripts | --migrate | --deploy]"
+            echo "Usage: smplos-os-update [--check | --quiet | --scripts | --migrate | --deploy [--core] | --optional]"
             exit 0 ;;
         *) echo "Unknown option: $1" >&2; exit 1 ;;
     esac
@@ -398,28 +401,36 @@ sync_configs() {
         as_invoker fc-cache -f "$fonts_dst" >/dev/null 2>&1 || true
     fi
 
-    # Shared configs (hyprshell, smplos, etc.) — only add new files, don't overwrite user edits
-    local configs_src="$SMPLOS_REPO/src/shared/configs"
-    if [[ -d "$configs_src" ]]; then
-        # Walk each config directory
-        while IFS= read -r -d '' src_file; do
-            local rel_path="${src_file#$configs_src/}"
-            # Skip smplos/ subdir — those are Hyprland-specific configs managed separately
-            [[ "$rel_path" == smplos/* ]] && continue
-            local dst_file="$HOME/.config/$rel_path"
-            if [[ ! -f "$dst_file" ]]; then
-                mkdir -p "$(dirname "$dst_file")"
-                cp "$src_file" "$dst_file"
-                ((n_updated++)) || true
-            fi
-        done < <(find "$configs_src" -type f -print0)
-    fi
+    sync_config_defaults core
+    [[ ${CORE_ONLY:-0} -eq 1 ]] || sync_config_defaults optional
 
     if [[ $n_updated -gt 0 ]]; then
         ok "$n_updated config file(s) updated"
     else
         ok "All configs are current"
     fi
+}
+
+sync_config_defaults() {
+    local phase="$1" configs_src="$SMPLOS_REPO/src/shared/configs"
+    local src_file rel_path priority destination
+    [[ -d "$configs_src" ]] || return 0
+    while IFS= read -r -d '' src_file; do
+        rel_path="${src_file#$configs_src/}"
+        [[ "$rel_path" != smplos/* ]] || continue
+        priority=core
+        case "$rel_path" in
+            Code/*|Code-OSS/*|VSCodium/*|Cursor/*|nvim/*|btop/*|foot/*|brave*|chromium*) priority=optional ;;
+        esac
+        [[ "$priority" == "$phase" ]] || continue
+        destination="$HOME/.config/$rel_path"
+        [[ ! -e "$destination" && ! -L "$destination" ]] || continue
+        as_invoker mkdir -p "$(dirname "$destination")" &&
+            as_invoker install -m644 "$src_file" "$destination" || {
+                warn "Could not install $phase config default: $destination"
+                return 1
+            }
+    done < <(find "$configs_src" -type f -print0)
 }
 
 # ── Sync themes to ~/.local/share/smplos/themes/ ─────────────────────────────
@@ -625,9 +636,9 @@ run_migrations() {
         #      in the right context.
         # Migrations that legitimately need root should `sudo` internally.
         if [[ $EUID -eq 0 && -n "${SMPLOS_INVOKER_USER:-}" ]]; then
-            runuser -u "$SMPLOS_INVOKER_USER" -- env SMPLOS_PATH="$SMPLOS_PATH" smplos-migrate
+            runuser -u "$SMPLOS_INVOKER_USER" -- env SMPLOS_PATH="$SMPLOS_PATH" smplos-migrate --phase "${1:-all}"
         else
-            SMPLOS_PATH="$SMPLOS_PATH" smplos-migrate
+            SMPLOS_PATH="$SMPLOS_PATH" smplos-migrate --phase "${1:-all}"
         fi
     fi
 }
@@ -908,14 +919,16 @@ post_deploy() {
 
     local current_theme
     current_theme=$(theme-current 2>/dev/null || echo "catppuccin")
+    local theme_args=()
+    [[ ${CORE_ONLY:-0} -ne 1 ]] || theme_args+=(--core)
     log "Reapplying theme ($current_theme)..."
     # Running theme-set as root leaves current/theme undeletable by the user,
     # so later switches update only theme.name and keep deploying the old colors.
     if smplos_have_session; then
-        smplos_run_as_user theme-set "$current_theme" || failed=1
+        smplos_run_as_user theme-set "${theme_args[@]}" "$current_theme" || failed=1
         smplos_run_as_user bar-ctl ensure || failed=1
     else
-        as_invoker theme-set "$current_theme" || failed=1
+        as_invoker theme-set "${theme_args[@]}" "$current_theme" || failed=1
         log "No graphical session; bar verification deferred until login."
     fi
 
@@ -955,6 +968,16 @@ fi
 if [[ $FINALIZE_ONLY -eq 1 ]]; then
     sync_version
     exit $?
+fi
+if [[ ${OPTIONAL_ONLY:-0} -eq 1 ]]; then
+    [[ -d "$SMPLOS_REPO/.git" ]] || die "No bootstrapped checkout at $SMPLOS_REPO"
+    optional_failed=0
+    sync_config_defaults optional || optional_failed=1
+    run_migrations optional || optional_failed=1
+    as_invoker theme-set --apps || optional_failed=1
+    as_invoker rebuild-app-cache || optional_failed=1
+    [[ $optional_failed -eq 0 ]] || die "Optional app configuration/migrations remain pending; see errors above."
+    exit 0
 fi
 
 had_updates="${SMPLOS_OS_HAD_UPDATES:-0}"
@@ -1023,7 +1046,9 @@ if [[ $SCRIPTS_ONLY -eq 0 ]]; then
     fi
     sync_hypr_configs
     migrations_failed=0
-    run_migrations || migrations_failed=1
+    migration_phase=all
+    [[ ${CORE_ONLY:-0} -ne 1 ]] || migration_phase=core
+    run_migrations "$migration_phase" || migrations_failed=1
     # Reconcile even when migrations were already marked done. Verify only
     # after units and the published keypad package have been delivered.
     sync_keypad_support || migrations_failed=1

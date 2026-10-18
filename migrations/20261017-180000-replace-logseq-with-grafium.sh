@@ -1,4 +1,5 @@
 #!/bin/bash
+# SMPLOS_UPDATE_PRIORITY=optional
 # Retire Logseq installations, never their graphs, preferences or Flatpak data.
 set -euo pipefail
 

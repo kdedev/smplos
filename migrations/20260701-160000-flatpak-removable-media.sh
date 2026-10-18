@@ -1,4 +1,5 @@
 #!/bin/bash
+# SMPLOS_UPDATE_PRIORITY=optional
 # Migration: Grant Flatpak apps access to removable media (/run/media, /media).
 # Context: Flatpak runs each app in a sandbox with its own mount namespace and a
 #          private /run. USB sticks that udisks mounts under /run/media are

@@ -25,7 +25,7 @@ USER_HYPR = {
 }
 STACK = re.compile(
     r"^(linux(?:-lts|-zen|-hardened|-surface)?(?:-headers)?|linux-firmware.*|"
-    r".*nvidia.*|.*mesa.*|.*vulkan.*|"
+    r".*nvidia.*|.*mesa.*|.*vulkan.*|.*-dkms(?:-git)?|xf86-(?:input|video)-.*|"
     r".*ucode|hypr.*|aquamarine|xdg-desktop-portal.*|eww.*|glibc|gcc-libs|"
     r"openssl|systemd.*|pacman|libalpm|grub|mkinitcpio.*|kernel-modules-hook|dkms|"
     r"libdrm|wayland|libxkbcommon.*|qt6-.*|gtk[34]|glib2|webkit2gtk.*|"
@@ -35,6 +35,7 @@ STACK = re.compile(
 )
 KERNELS = {"linux", "linux-lts", "linux-zen", "linux-hardened", "linux-surface"}
 RELEASE_COMPONENTS = {"smpl-apps", "st-smpl", "nemo-smpl", "micro-smpl", "grafium"}
+OPTIONAL_PACKAGES = {"brave-bin", "grafium-bin", "flatpak", "nvidia-container-toolkit"}
 CORE_BINARIES = {
     "bash": ("usr/bin/bash",),
     "sudo": ("usr/bin/sudo",),
@@ -90,17 +91,36 @@ def save_report(path, report):
 
 
 class Audit:
-    def __init__(self, home, repo, root=Path("/"), runner=run):
+    def __init__(self, home, repo, root=Path("/"), runner=run, core_only=False):
         self.home, self.repo, self.root, self.run = home, repo, root, runner
+        self.core_only = core_only
         self.library_paths = set()
         self.library_packages = set()
         self.report = {
-            "schema": 2, "time": datetime.now(timezone.utc).isoformat(),
-            "errors": [], "warnings": [], "files": {}, "linkage": {},
+            "schema": 3, "time": datetime.now(timezone.utc).isoformat(),
+            "errors": [], "warnings": [], "optional_failures": [], "files": {}, "linkage": {},
         }
 
     def error(self, text):
         self.report["errors"].append(text)
+
+    def optional_error(self, text):
+        self.report["optional_failures"].append(text)
+        self.report["warnings"].append(f"Optional: {text}")
+
+    def optional_check(self, label, check, *args):
+        start = len(self.report["errors"])
+        core_libraries = self.library_paths.copy()
+        try:
+            check(*args)
+        except (OSError, ValueError, KeyError, TypeError) as error:
+            self.error(str(error))
+        finally:
+            self.library_paths = core_libraries
+        failures = self.report["errors"][start:]
+        del self.report["errors"][start:]
+        for failure in failures:
+            self.optional_error(f"{label}: {failure}")
 
     def command(self, *args):
         try:
@@ -195,6 +215,35 @@ class Audit:
                 installed = {path.relative_to(destination) for path in destination.rglob("*")}
                 for extra in sorted(installed - sources.keys()):
                     self.error(f"Obsolete managed theme entry: {destination / extra}")
+        current = self.home / ".config/smplos/current"
+        name_file = current / "theme.name"
+        if name_file.is_file():
+            name = name_file.read_text().strip()
+            if not name or Path(name).name != name:
+                self.error("Invalid active theme name")
+            else:
+                selected = self.home / ".config/smplos/themes" / name
+                if not selected.is_dir():
+                    selected = self.home / ".local/share/smplos/themes" / name
+                for filename in ("colors.toml", "eww-colors.scss", "nemo.css", "hyprland.conf", "hyprlock.conf"):
+                    source = selected / filename
+                    if source.is_file():
+                        self.compare(source, current / "theme" / filename)
+                for filename, target in (
+                    ("eww-colors.scss", ".config/eww/theme-colors.scss"),
+                    ("nemo.css", ".config/smplos/nemo-theme.css"),
+                    ("hyprland.conf", ".config/hypr/theme.conf"),
+                    ("hyprlock.conf", ".config/hypr/hyprlock-theme.conf"),
+                    ("micro.theme", ".config/micro/colorschemes/smplos.micro"),
+                ):
+                    source = current / "theme" / filename
+                    if source.is_file():
+                        self.compare(source, self.home / target)
+        else:
+            self.error("Missing active theme name; core theme deployment was not completed")
+        unit = self.repo / "src/shared/configs/systemd/user/smplos-session.target"
+        if unit.is_file():
+            self.compare(unit, self.home / ".config/systemd/user/smplos-session.target")
 
     def linkage(self, path):
         try:
@@ -226,8 +275,10 @@ class Audit:
     def apps(self):
         for name in (*APPS, "st-wl", "micro"):
             self.linkage(self.root / "usr/local/bin" / name)
-        for name in ("nemo", "eww", "grafium"):
+        for name in ("nemo", "eww"):
             self.linkage(self.root / "usr/bin" / name)
+        if not self.core_only:
+            self.optional_check("Grafium runtime", self.linkage, self.root / "usr/bin/grafium")
         if self.hyprland_installed():
             self.linkage(self.root / "usr/bin/Hyprland")
         for name in ("nemo-document-renderer", "nemo-archive-create-worker"):
@@ -249,6 +300,7 @@ class Audit:
             result = self.command(self.root / "usr/bin/yay", "-Q", "pacman")
             if result is None or result.returncode or not result.stdout.startswith("pacman "):
                 self.error("Yay cannot read the installed pacman/libalpm database")
+    def brave_runtime(self):
         if "brave-bin" in self.report["packages"]:
             listing = self.command("pacman", "-Qql", "brave-bin")
             if listing is None or listing.returncode:
@@ -356,24 +408,145 @@ class Audit:
         results = json.loads(path.read_text())["components"]
         if not isinstance(results, dict):
             raise ValueError("components must be an object")
-        self.report["native_updates"] = results
-        for component in sorted(RELEASE_COMPONENTS):
+        self.report.setdefault("native_updates", {}).update(results)
+        components = RELEASE_COMPONENTS - {"grafium"}
+        if "grafium" in results and not self.core_only:
+            components = RELEASE_COMPONENTS
+        for component in sorted(components):
             result = results.get(component)
-            if not isinstance(result, dict) or result.get("status") not in ("current", "updated"):
-                self.error(f"{component}: native release update was not completed; see native_updates/transcript")
-            elif not result.get("target"):
-                self.error(f"{component}: published release target could not be verified")
+            if component == "grafium":
+                self.optional_check("Grafium release", self.release_component_result, component, result)
             else:
-                package = {"nemo-smpl": "nemo-smpl", "grafium": "grafium-bin"}.get(component)
-                installed = (self.report["packages"].get(package) if package
-                             else self.report["app_versions"].get(component))
-                target = result["target"].removeprefix("v") + ("-1" if package else "")
-                if not installed:
-                    self.error(f"{component}: no installed version matches the release result")
+                self.release_component_result(component, result)
+
+    def release_component_result(self, component, result):
+        if not isinstance(result, dict) or result.get("status") not in ("current", "updated"):
+            self.error(f"{component}: native release update was not completed; see native_updates/transcript")
+            return
+        if not isinstance(result.get("target"), str) or not result["target"]:
+            self.error(f"{component}: published release target could not be verified")
+            return
+        package = {"nemo-smpl": "nemo-smpl", "grafium": "grafium-bin"}.get(component)
+        installed = (self.report["packages"].get(package) if package
+                     else self.report["app_versions"].get(component))
+        target = result["target"].removeprefix("v") + ("-1" if package else "")
+        if not installed:
+            self.error(f"{component}: no installed version matches the release result")
+            return
+        comparison = self.command("vercmp", installed.removeprefix("v"), target)
+        if comparison is None or comparison.returncode or comparison.stdout.strip() not in ("0", "1"):
+            self.error(f"{component}: installed {installed} did not reach release target {result['target']}")
+
+    def optional_release_results(self, path):
+        results = json.loads(path.read_text())["components"]
+        if not isinstance(results, dict) or set(results) != {"grafium"}:
+            raise ValueError("optional release report must contain Grafium only")
+        self.report.setdefault("native_updates", {}).update(results)
+        self.release_component_result("grafium", results["grafium"])
+
+    def aur_policy(self):
+        foreign_result = self.command("pacman", "-Qmq")
+        if foreign_result is None:
+            return
+        if foreign_result.returncode and (foreign_result.returncode != 1 or
+                                         foreign_result.stdout.strip() or foreign_result.stderr.strip()):
+            self.error("Cannot inventory foreign packages for core/optional AUR ordering")
+            return
+        foreign = set(foreign_result.stdout.split())
+        packages = self.report["packages"]
+        if not foreign <= packages.keys():
+            self.error("Foreign package inventory differs from the installed package inventory")
+            return
+        roots = {name for name in packages if STACK.fullmatch(name) and name not in OPTIONAL_PACKAGES}
+        public_libraries = {}
+
+        def inventory_files(names):
+            if not names:
+                return True
+            listing = self.command("pacman", "-Ql", *sorted(names))
+            if listing is None or listing.returncode:
+                self.error("Cannot identify foreign shared libraries and kernel drivers")
+                return False
+            for line in listing.stdout.splitlines():
+                name, separator, filename = line.partition(" ")
+                if not separator or name not in names:
+                    self.error(f"Invalid foreign package file inventory: {line}")
+                    return False
+                library = re.fullmatch(r"/usr/lib(?:32|64)?/([^/]+\.so)(?:\.[^/]*)?", filename)
+                if library:
+                    public_libraries.setdefault(library[1], set()).add(name)
+                if name in foreign and (library or re.match(
+                        r"/usr/(?:lib/modules/|src/[^/]+/dkms\.conf$)", filename)):
+                    roots.add(name)
+            return True
+
+        if not inventory_files(foreign):
+            return
+        metadata = self.command("pacman", "-Qi")
+        if metadata is None or metadata.returncode:
+            self.error("Cannot read package dependency metadata for AUR ordering")
+            return
+        records, record, field = {}, None, None
+        for line in metadata.stdout.splitlines():
+            match = re.match(r"^([A-Za-z][A-Za-z ]*?)\s*:\s*(.*)$", line)
+            if match:
+                key, value = match.groups()
+                key = key.strip()
+                if key == "Name":
+                    if value in records:
+                        self.error(f"Duplicate installed package metadata: {value}")
+                        return
+                    record = records[value] = {}
+                field = key if key in ("Provides", "Depends On") else None
+                if record is not None and field:
+                    record.setdefault(field, []).extend(value.split())
+            elif line[:1].isspace() and record is not None and field:
+                record[field].extend(line.split())
+        if records.keys() != packages.keys() or any(
+                not {"Provides", "Depends On"} <= record.keys() for record in records.values()):
+            self.error("Incomplete installed dependency metadata; AUR priority cannot be certified")
+            return
+        providers = {}
+        for name, record in records.items():
+            for value in (name, *record["Provides"]):
+                if value != "None":
+                    providers.setdefault(re.split(r"[<>=]", value, maxsplit=1)[0], set()).add(name)
+        library_providers = set().union(*(
+            names for provided, names in providers.items() if ".so" in provided
+        ))
+        if not inventory_files(library_providers - foreign):
+            return
+        closure, pending = set(), list(roots)
+        while pending:
+            name = pending.pop()
+            if name in closure:
+                continue
+            closure.add(name)
+            for dependency in records[name]["Depends On"]:
+                if dependency == "None":
                     continue
-                comparison = self.command("vercmp", installed.removeprefix("v"), target)
-                if comparison is None or comparison.returncode or comparison.stdout.strip() not in ("0", "1"):
-                    self.error(f"{component}: installed {installed} did not reach release target {result['target']}")
+                dependency = re.split(r"[<>=]", dependency, maxsplit=1)[0]
+                if dependency not in providers:
+                    self.error(f"Cannot resolve core dependency {dependency} required by {name}")
+                    return
+                candidates = providers[dependency]
+                if dependency in records:
+                    candidates = {dependency}
+                elif dependency in public_libraries:
+                    # Electron bundles advertise private EGL/GLES sonames too;
+                    # they are not the system libraries loaded by core apps.
+                    candidates = candidates & public_libraries[dependency]
+                if not candidates:
+                    self.error(f"No system provider for core dependency {dependency} required by {name}")
+                    return
+                pending.extend(candidates - closure)
+        managed = {"nemo-smpl", "grafium-bin", "eww-smplos"}
+        self.report["aur_policy"] = {
+            "required": sorted((foreign & closure) - managed),
+            "optional": sorted(foreign - closure - managed),
+            "managed_releases": sorted(foreign & managed),
+            "required_closure": sorted(closure),
+        }
 
     def receipt(self, component, names):
         state = self.home / ".local/state/smplos/app-versions"
@@ -509,7 +682,8 @@ class Audit:
                 self.error("EWW fork is missing or behind the required commit; its migration remains incomplete")
         self.repository_versions()
         critical = sorted(
-            name for name in packages if STACK.fullmatch(name) or name in self.library_packages
+            name for name in packages
+            if (STACK.fullmatch(name) and name not in OPTIONAL_PACKAGES) or name in self.library_packages
         )
         self.report["critical_packages"] = critical
         if critical:
@@ -677,6 +851,8 @@ class Audit:
             return self.report
         if mode == "full":
             checks.append(self.core_runtime)
+            if not self.core_only:
+                self.optional_check("Brave runtime", self.brave_runtime)
         checks.append(self.library_owners)
         if mode == "full":
             checks.extend((self.system, self.session))
@@ -691,6 +867,11 @@ class Audit:
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--snapshot", action="store_true", help="Inventory only, before update")
+    parser.add_argument("--core-only", action="store_true", help="Verify core before optional app work")
+    parser.add_argument("--classify-aur", action="store_true", help="Classify local foreign-package dependency closure")
+    parser.add_argument("--optional-apps-report", type=Path)
+    parser.add_argument("--optional-warning", action="append", default=[])
+    parser.add_argument("--required-error", action="append", default=[])
     parser.add_argument("--mode", choices=("full", "apps", "bootstrap"), default="full")
     parser.add_argument("--before", type=Path)
     parser.add_argument("--apps-report", type=Path, help="This run's native release outcomes")
@@ -699,15 +880,22 @@ def main():
     parser.add_argument("--brave-report", type=Path, help="Require Brave to meet this recorded AUR target")
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
-    if args.mode == "bootstrap" and (
-            args.snapshot or args.before or args.apps_report or args.capture_brave_target or args.brave_report):
-        parser.error("bootstrap verification cannot be combined with package/native inventory options")
-    if args.capture_brave_target and (
-            args.snapshot or args.before or args.apps_report or args.brave_report or args.mode != "full"):
-        parser.error("Brave target capture cannot be combined with installed-state verification options")
+    inventory_actions = (args.snapshot, args.classify_aur, args.capture_brave_target)
+    verification_options = (
+        args.before or args.apps_report or args.optional_apps_report or args.brave_report
+        or args.core_only or args.optional_warning or args.required_error
+    )
+    if sum(inventory_actions) > 1 or (
+            (any(inventory_actions) or args.mode == "bootstrap") and verification_options):
+        parser.error("inventory/bootstrap actions cannot be combined with installed-state verification options")
+    if args.mode != "full" and (args.classify_aur or args.capture_brave_target) or (
+            args.mode == "bootstrap" and args.snapshot):
+        parser.error("this inventory action requires full mode")
+    if args.core_only and (args.optional_apps_report or args.brave_report or args.optional_warning):
+        parser.error("core verification cannot include optional application results")
     home = Path.home()
     repo = Path(os.environ.get("SMPLOS_PATH", home / ".local/share/smplos")) / "repo"
-    audit = Audit(home, repo)
+    audit = Audit(home, repo, core_only=args.core_only)
     report = audit.report
     try:
         if args.capture_brave_target:
@@ -720,18 +908,26 @@ def main():
                 report["source_commit"] = commit.stdout.strip()
         else:
             audit.snapshot()
-        if not args.snapshot and not args.capture_brave_target:
+        if args.classify_aur:
+            audit.aur_policy()
+        elif not args.snapshot and not args.capture_brave_target:
             audit.verify(args.mode)
             if args.brave_report:
                 try:
-                    audit.brave_result(args.brave_report)
+                    audit.optional_check("Brave update target", audit.brave_result, args.brave_report)
                 except (OSError, ValueError, KeyError, TypeError) as error:
-                    audit.error(f"Brave update target could not be verified: {error}")
+                    audit.optional_error(f"Brave update target could not be verified: {error}")
             if args.apps_report:
                 try:
                     audit.release_results(args.apps_report)
                 except (OSError, ValueError, KeyError, TypeError) as error:
                     audit.error(f"Native release results unavailable; delivery was skipped or interrupted: {error}")
+            if args.optional_apps_report:
+                audit.optional_check("Optional native apps", audit.optional_release_results, args.optional_apps_report)
+        for warning in args.optional_warning:
+            audit.optional_error(warning)
+        for error in args.required_error:
+            audit.error(error)
         if args.before:
             audit.changes(json.loads(args.before.read_text()))
     except (OSError, RuntimeError, ValueError, KeyError) as error:
@@ -741,14 +937,16 @@ def main():
     except OSError as error:
         print(f"Cannot save update verification report: {error}", file=sys.stderr)
         return 1
-    if not args.snapshot:
+    if not args.snapshot and not args.classify_aur:
         audit.summary()
     for text in report["warnings"]:
         print(f"  WARNING: {text}")
     for text in report["errors"]:
         print(f"  ERROR: {text}", file=sys.stderr)
     print(f"  Verification report: {args.output}")
-    return int(bool(report["errors"]))
+    if report["errors"]:
+        return 1
+    return 2 if report["optional_failures"] else 0
 
 
 if __name__ == "__main__":

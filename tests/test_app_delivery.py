@@ -1060,10 +1060,39 @@ rebuild-app-cache() { echo refreshed; }
         self.assertEqual(report["components"]["micro-smpl"]["status"], "current")
         self.assertIn("refreshed", result.stdout)
 
+    def test_native_groups_do_not_run_unrelated_components_or_overwrite_their_reports(self):
+        path = ROOT / "src/shared/bin/smplos-update-apps"
+        main = path.read_text().split("# ── Main", 1)[1].split("\n", 1)[1]
+        script = function(path, "record_app_result") + """
+STATE_DIR="$HOME/state"; SMPLOS_PATH="$HOME/data"; CHECK_ONLY=0; QUIET=1; SMPLOS_APP_BINS=()
+REPORT_FILE="$HOME/$GROUP.json"; REPORT_WORK="$HOME/results-$GROUP"; n_updated=0
+mkdir -p "$REPORT_WORK"
+installed_component_version() { echo v1.0; }
+warn() { echo "$*" >&2; }; log() { :; }
+release_target() { echo '{"tag_name":"v1.0"}' > "$SMPLOS_APP_RESULT_FILE"; }
+update_smpl_apps() { release_target; }
+update_st_smpl() { release_target; }
+update_nemo_smpl() { release_target; }
+update_micro_smpl() { release_target; }
+update_grafium() { release_target; false; }
+rebuild-app-cache() { :; }
+"""
+        core = self.shell(script + main, GROUP="core")
+        self.assertEqual(core.returncode, 0, core.stderr)
+        original = (self.home / "core.json").read_bytes()
+        self.assertEqual(set(json.loads(original)["components"]),
+                         {"smpl-apps", "st-smpl", "nemo-smpl", "micro-smpl"})
+        optional = self.shell(script + main, GROUP="optional")
+        self.assertNotEqual(optional.returncode, 0)
+        self.assertEqual((self.home / "core.json").read_bytes(), original)
+        results = json.loads((self.home / "optional.json").read_text())["components"]
+        self.assertEqual(set(results), {"grafium"})
+        self.assertEqual(results["grafium"]["status"], "failed")
+
     def test_full_wrapper_records_deployment_and_native_failures(self):
         source = (ROOT / "src/shared/bin/smplos-update").read_text()
-        os_phase = source.split('update_stage desktop', 1)[1].split('# ── Step 4:', 1)[0]
-        apps_phase = source.split('# ── Step 4:', 1)[1].split('# ── Step 5:', 1)[0].split("\n", 1)[1]
+        apps_phase = source.split('# ── Step 4:', 1)[1].split('update_stage desktop', 1)[0].split("\n", 1)[1]
+        os_phase = source.split('update_stage desktop', 1)[1].split('update_stage core-verification', 1)[0]
         result = self.shell("""
 UPDATE_MODE=full; NETWORK_OK=1; UPDATE_FAILED=0; SYSTEM_UPGRADED=1
 LOG_FILE="$HOME/update.log"
@@ -1072,8 +1101,8 @@ update_stage() { :; }
 check_update_power() { :; }
 critical_bundle_prompt_and_apply() { :; }
 smplos-os-update() { echo refreshed > "$HOME/script-version"; return 1; }
-smplos-update-apps() { [[ "$(cat "$HOME/script-version")" == refreshed ]]; return 1; }
-""" + os_phase + apps_phase + '\n[[ "$UPDATE_FAILED" -eq 0 ]]\n')
+smplos-update-apps() { return 1; }
+""" + apps_phase + os_phase + '\n[[ "$UPDATE_FAILED" -eq 0 ]]\n')
         self.assertEqual(result.returncode, 1)
         self.assertIn("smplos-os-update failed", result.stdout)
         self.assertIn("smplos-update-apps failed", result.stdout)

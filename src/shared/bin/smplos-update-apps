@@ -41,16 +41,21 @@ if ! declare -F smplos_app_bundle_valid >/dev/null; then
 fi
 mkdir -p "$STATE_DIR" "$SMPLOS_BIN"
 
-CHECK_ONLY=0; QUIET=0; REPORT_FILE=""
+CHECK_ONLY=0; QUIET=0; REPORT_FILE=""; GROUP=all
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --check) CHECK_ONLY=1 ;;
         --quiet) QUIET=1 ;;
+        --group)
+            case "${2:-}" in
+                all|core|optional) GROUP="$2"; shift ;;
+                *) echo "ERROR: --group requires all, core or optional" >&2; exit 1 ;;
+            esac ;;
         --report)
             [[ -n "${2:-}" ]] || { echo "ERROR: --report needs a path" >&2; exit 1; }
             REPORT_FILE="$2"; shift ;;
         -h|--help)
-            echo "Usage: smplos-update-apps [--check | --quiet] [--report PATH]"
+            echo "Usage: smplos-update-apps [--check | --quiet] [--group all|core|optional] [--report PATH]"
             exit 0 ;;
         *) echo "ERROR: unknown option: $1" >&2; exit 1 ;;
     esac
@@ -742,6 +747,9 @@ update_grafium() {
 failed=0
 record_app_result "" "" "" "" || { warn "Cannot initialize app update report"; exit 1; }
 for component in smpl-apps st-smpl nemo-smpl micro-smpl grafium; do
+    case "${GROUP:-all}:$component" in
+        core:grafium|optional:smpl-apps|optional:st-smpl|optional:nemo-smpl|optional:micro-smpl) continue ;;
+    esac
     before=$(installed_component_version "$component")
     status=current
     function_name="update_${component//-/_}"

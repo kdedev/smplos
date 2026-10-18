@@ -1,4 +1,5 @@
 #!/bin/bash
+# SMPLOS_UPDATE_PRIORITY=optional
 # Migration: Seed VS Code keybindings.json with Ctrl+Alt+C → focus Copilot Chat.
 #
 # Context: Companion to the nvidia+Hyprland black-screen recovery workflow.

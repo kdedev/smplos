@@ -1,4 +1,5 @@
 #!/bin/bash
+# SMPLOS_UPDATE_PRIORITY=optional
 # Migration: Enable the VITURE XR glasses module on existing installs.
 #
 # Context: smplOS gained the xr-workspace virtual-monitor renderer + its

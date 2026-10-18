@@ -106,6 +106,10 @@ class InstalledStateTests(unittest.TestCase):
         self.packages = {"linux-lts": "6.12-1", "glibc": "2.42-1", "hyprland": "0.56.0-2"}
         self.available = {}
         self.foreign = set()
+        self.dependencies = {}
+        self.provides = {}
+        self.foreign_files = {}
+        self.metadata_error = False
         self.repository_error = False
         self.extra_repositories = ""
         self.library_packages = ["glibc"]
@@ -144,6 +148,8 @@ class InstalledStateTests(unittest.TestCase):
                 target = self.home / ".config/hypr" / source.name
             self.write(target, source.read_text())
         self.write(self.home / ".config/eww/theme-colors.scss", "custom generated palette\n")
+        self.write(self.home / ".config/smplos/current/theme.name", "test\n")
+        self.write(self.home / ".config/smplos/current/theme/colors.toml", 'background="#000000"\n')
         self.write(self.home / ".config/hypr/monitors.conf", "user-owned monitor setup\n")
         for name in (*CHECK.APPS, "st-wl", "micro"):
             self.write(self.root / "usr/local/bin" / name, b"\x7fELF" + name.encode())
@@ -192,6 +198,19 @@ class InstalledStateTests(unittest.TestCase):
             status = int(self.repository_error)
         elif args[:2] == ("pacman", "-Qoq"):
             out = "\n".join(self.library_packages) + "\n"
+        elif args == ("pacman", "-Qmq"):
+            out = "\n".join(sorted(self.foreign))
+        elif args == ("pacman", "-Qi"):
+            out = "".join(
+                f"Name : {name}\nProvides : {' '.join(self.provides.get(name, ['None']))}\n"
+                f"Depends On : {' '.join(self.dependencies.get(name, ['None']))}\n"
+                for name in self.packages
+            )
+            if self.metadata_error:
+                out = "Name : glibc\nDepends On : None\n"
+        elif args[:2] == ("pacman", "-Ql"):
+            out = "".join(f"{name} {filename}\n" for name in args[2:]
+                          for filename in self.foreign_files.get(name, [f"/usr/bin/{name}"]))
         elif args[:2] == ("pacman", "-Qql"):
             out = ("/usr/bin/brave\n/opt/brave-bin/brave\n" if args[2] == "brave-bin"
                    else f"/usr/lib/modules/{self.kernel_releases[args[2]]}/pkgbase\n")
@@ -440,16 +459,18 @@ class InstalledStateTests(unittest.TestCase):
             report = self.audit()
             self.assertEqual(report["errors"], [])
             self.assertEqual(report["brave_runtime"]["version"], "1.83.112")
-            self.assertIn("brave-bin", report["critical_packages"])
+            self.assertNotIn("brave-bin", report["critical_packages"])
         self.brave_runtime_version = "Brave Browser 140.1.82.100\n"
-        self.assertIn("actual browser version does not match", "\n".join(self.audit()["errors"]))
+        report = self.audit()
+        self.assertEqual(report["errors"], [])
+        self.assertIn("actual browser version does not match", "\n".join(report["optional_failures"]))
         self.brave_runtime_version = "unrecognized output\n"
-        self.assertIn("Cannot parse Brave's runtime version", "\n".join(self.audit()["errors"]))
+        self.assertIn("Cannot parse Brave's runtime version", "\n".join(self.audit()["optional_failures"]))
         self.brave_runtime_version = "Brave Browser 1.83.112\n"
         self.ldd_error = "brave"
-        self.assertIn("Missing/incompatible shared libraries", "\n".join(self.audit()["errors"]))
+        self.assertIn("Missing/incompatible shared libraries", "\n".join(self.audit()["optional_failures"]))
         binary.unlink()
-        self.assertIn("no installed browser ELF binary", "\n".join(self.audit()["errors"]))
+        self.assertIn("no installed browser ELF binary", "\n".join(self.audit()["optional_failures"]))
 
     def test_apps_mode_does_not_claim_to_deploy_desktop_configs(self):
         (self.home / ".config/eww/quick-settings.scss").unlink()
@@ -478,6 +499,139 @@ class InstalledStateTests(unittest.TestCase):
         self.assertEqual(self.audit()["errors"], [])
         self.yay_alpm_failed = True
         self.assertIn("Yay cannot read the installed pacman/libalpm", "\n".join(self.audit()["errors"]))
+
+    def test_aur_priority_follows_core_dependencies_providers_shared_libraries_and_drivers(self):
+        self.foreign = {"vendor-render", "support-runtime", "ordinary-notes", "wifi-dkms",
+                        "unusual-library", "nemo-smpl", "grafium-bin"}
+        self.packages.update(dict.fromkeys(self.foreign, "1.0-1"))
+        self.dependencies["hyprland"] = ["display-abi>=2", "glibc"]
+        self.dependencies["vendor-render"] = ["support-runtime"]
+        self.provides["vendor-render"] = ["display-abi=2"]
+        self.foreign_files["unusual-library"] = ["/usr/lib/libvendor.so.1"]
+        audit = CHECK.Audit(self.home, self.repo, self.root, self.runner)
+        audit.snapshot()
+        audit.aur_policy()
+        self.assertEqual(audit.report["errors"], [])
+        policy = audit.report["aur_policy"]
+        self.assertEqual(policy["required"],
+                         ["support-runtime", "unusual-library", "vendor-render", "wifi-dkms"])
+        self.assertEqual(policy["optional"], ["ordinary-notes"])
+        self.assertEqual(policy["managed_releases"], ["grafium-bin", "nemo-smpl"])
+
+    def test_incomplete_or_unresolved_dependency_inventory_never_defaults_to_optional(self):
+        for invalid_metadata in (False, True):
+            with self.subTest(invalid_metadata=invalid_metadata):
+                self.metadata_error = invalid_metadata
+                self.dependencies["hyprland"] = ["missing-core-dependency"]
+                audit = CHECK.Audit(self.home, self.repo, self.root, self.runner)
+                audit.snapshot()
+                audit.aur_policy()
+                self.assertTrue(audit.report["errors"])
+                self.assertNotIn("aur_policy", audit.report)
+
+    def test_private_app_libraries_and_debug_sources_do_not_make_apps_required(self):
+        self.foreign = {"brave-bin", "lib32-runtime", "debug-tool"}
+        self.packages.update(dict.fromkeys(self.foreign | {"system-gl", "libgcc"}, "1.0-1"))
+        self.dependencies["hyprland"] = ["libEGL.so=1-64", "libgcc_s.so=1-64"]
+        self.provides["brave-bin"] = ["libEGL.so=1-64"]
+        self.provides["system-gl"] = ["libEGL.so=1-64"]
+        self.provides["libgcc"] = ["libgcc_s.so=1-64"]
+        self.foreign_files.update({
+            "brave-bin": ["/usr/lib/brave-bin/libEGL.so"],
+            "system-gl": ["/usr/lib/libEGL.so.1"],
+            "libgcc": ["/usr/lib/libgcc_s.so.1"],
+            "lib32-runtime": ["/usr/lib32/libgcc_s.so.1"],
+            "debug-tool": ["/usr/src/debug/tool/main.c"],
+        })
+        audit = CHECK.Audit(self.home, self.repo, self.root, self.runner)
+        audit.snapshot()
+        audit.aur_policy()
+        self.assertEqual(audit.report["errors"], [])
+        self.assertEqual(audit.report["aur_policy"]["required"], ["lib32-runtime"])
+        self.assertEqual(audit.report["aur_policy"]["optional"], ["brave-bin", "debug-tool"])
+        self.assertIn("system-gl", audit.report["aur_policy"]["required_closure"])
+        self.assertIn("libgcc", audit.report["aur_policy"]["required_closure"])
+
+    def test_conflicting_inventory_and_verification_flags_are_rejected(self):
+        for arguments in (
+            ["--snapshot", "--classify-aur"], ["--classify-aur", "--mode", "bootstrap"],
+            ["--capture-brave-target", "--optional-warning", "failed"],
+            ["--snapshot", "--core-only"], ["--core-only", "--optional-apps-report", "apps.json"],
+        ):
+            with self.subTest(arguments=arguments), mock.patch.object(
+                CHECK.sys, "argv", ["smplos-update-check", "--output", str(self.base / "invalid.json"), *arguments]
+            ), redirect_stderr(io.StringIO()), self.assertRaises(SystemExit) as error:
+                CHECK.main()
+            self.assertEqual(error.exception.code, 2)
+        self.assertFalse((self.base / "invalid.json").exists())
+
+    def test_generated_essential_config_mismatch_is_still_a_required_error(self):
+        current = self.home / ".config/smplos/current/theme"
+        self.write(current / "nemo.css", "current Nemo CSS\n")
+        self.write(self.home / ".config/smplos/nemo-theme.css", "obsolete Nemo CSS\n")
+        errors = "\n".join(self.audit()["errors"])
+        self.assertIn(".config/smplos/nemo-theme.css", errors)
+        (self.home / ".config/smplos/current/theme.name").unlink()
+        self.assertIn("Missing active theme name", "\n".join(self.audit()["errors"]))
+
+    def test_optional_runtime_failure_is_a_warning_but_missing_core_app_is_an_error(self):
+        (self.root / "usr/bin/grafium").unlink()
+        report = self.audit()
+        self.assertEqual(report["errors"], [])
+        self.assertIn("Grafium runtime", "\n".join(report["optional_failures"]))
+        (self.root / "usr/local/bin/settings").unlink()
+        self.assertIn("Missing application", "\n".join(self.audit()["errors"]))
+
+    def test_optional_private_library_owners_never_become_required_package_checks(self):
+        self.packages["grafium-bin"] = "1.0-1"
+
+        def runner(*args):
+            if args[0] == "ldd" and args[1].endswith("/grafium"):
+                return subprocess.CompletedProcess(args, 0, "libapp.so => /opt/grafium/libapp.so.1\n", "")
+            if args[:2] == ("pacman", "-Qoq"):
+                owners = "glibc\n"
+                if "/opt/grafium/libapp.so.1" in args:
+                    owners += "grafium-bin\n"
+                return subprocess.CompletedProcess(args, 0, owners, "")
+            if args[:4] == ("sudo", "-n", "pacman", "-Qk") and "grafium-bin" in args:
+                return subprocess.CompletedProcess(args, 1, "", "optional app files are incomplete")
+            return self.runner(*args)
+
+        audit = CHECK.Audit(self.home, self.repo, self.root, runner)
+        audit.snapshot()
+        with mock.patch.dict(os.environ, {"DISPLAY": "", "WAYLAND_DISPLAY": "",
+                                         "HYPRLAND_INSTANCE_SIGNATURE": ""}):
+            report = audit.verify("full")
+        self.assertEqual(report["errors"], [])
+        self.assertNotIn("grafium-bin", report["critical_packages"])
+        self.assertIn("/opt/grafium/libapp.so.1", report["linkage"][str(self.root / "usr/bin/grafium")])
+
+    def test_cli_persists_optional_failure_and_uses_a_distinct_nonfatal_status(self):
+        (self.root / "usr/bin/grafium").unlink()
+        output = self.base / "optional-report.json"
+        audit = CHECK.Audit(self.home, self.repo, self.root, self.runner)
+        with mock.patch.object(CHECK, "Audit", return_value=audit), mock.patch.object(
+            CHECK.sys, "argv", ["smplos-update-check", "--output", str(output),
+                               "--optional-warning", "Flatpak application update failed"]
+        ), mock.patch.dict(os.environ, {"DISPLAY": "", "WAYLAND_DISPLAY": "",
+                                       "HYPRLAND_INSTANCE_SIGNATURE": ""}), \
+                redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+            status = CHECK.main()
+        report = json.loads(output.read_text())
+        self.assertEqual(status, 2)
+        self.assertEqual(report["errors"], [])
+        self.assertTrue(any("Grafium" in message for message in report["optional_failures"]))
+        self.assertIn("Flatpak application update failed", report["optional_failures"])
+
+    def test_core_checkpoint_does_not_check_optional_apps(self):
+        (self.root / "usr/bin/grafium").unlink()
+        audit = CHECK.Audit(self.home, self.repo, self.root, self.runner, core_only=True)
+        audit.snapshot()
+        with mock.patch.dict(os.environ, {"DISPLAY": "", "WAYLAND_DISPLAY": "",
+                                         "HYPRLAND_INSTANCE_SIGNATURE": ""}):
+            report = audit.verify("full")
+        self.assertEqual(report["errors"], [])
+        self.assertEqual(report["optional_failures"], [])
 
     def test_non_hyprland_system_does_not_require_hyprland_config_or_binary(self):
         self.packages.pop("hyprland")
@@ -578,6 +732,29 @@ class InstalledStateTests(unittest.TestCase):
         audit.release_results(path)
         self.assertIn("native release update was not completed", "\n".join(audit.report["errors"]))
 
+    def test_optional_native_report_cannot_overwrite_or_weaken_core_outcomes(self):
+        self.packages.update({"nemo-smpl": "1.0-1", "grafium-bin": "1.0-1"})
+        components = {name: {"status": "current", "target": "v1.0"}
+                      for name in CHECK.RELEASE_COMPONENTS - {"grafium"}}
+        components["smpl-apps"]["target"] = "v0.8.28"
+        core = self.base / "core-apps.json"
+        core.write_text(json.dumps({"components": components}))
+        audit = CHECK.Audit(self.home, self.repo, self.root, self.runner)
+        audit.snapshot()
+        audit.release_results(core)
+        self.assertEqual(audit.report["errors"], [])
+        optional = self.base / "optional-apps.json"
+        for result in (
+            {"grafium": {"status": "failed", "target": None}},
+            {"grafium": {"status": "updated", "target": "v2.0"}},
+            {"smpl-apps": {"status": "failed", "target": None}},
+        ):
+            optional.write_text(json.dumps({"components": result}))
+            audit.optional_check("Optional native apps", audit.optional_release_results, optional)
+            self.assertEqual(audit.report["errors"], [])
+            self.assertEqual({name: audit.report["native_updates"][name] for name in components}, components)
+        self.assertEqual(len(audit.report["optional_failures"]), 3)
+
     def test_command_persists_full_failed_comparison_and_prints_end_summary(self):
         self.available["glibc"] = "2.43-1"
         before = self.base / "before.json"
@@ -620,6 +797,7 @@ class ManagedConfigDeliveryTests(unittest.TestCase):
             listener.write_text("#!/bin/bash\ntrue\n")
             log = base / "copies"
             script = function(BIN / "smplos-os-update", "copy_user_config")
+            script += "\n" + function(BIN / "smplos-os-update", "sync_config_defaults")
             script += "\n" + function(BIN / "smplos-os-update", "sync_configs")
             script += """
 as_invoker() {
@@ -644,6 +822,93 @@ sync_configs
                                          "COPIES": str(log)}, timeout=10)
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertTrue(os.access(target / "scripts/listener.sh", os.X_OK))
+
+
+class MigrationPriorityTests(unittest.TestCase):
+    def test_optional_package_migrations_do_not_stamp_real_failures_as_success(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            home = Path(temporary)
+            mocks = home / "bin"
+            mocks.mkdir()
+            for name, body in {
+                "lspci": 'echo "${GPU_VENDOR:-NVIDIA}"',
+                "pacman": """
+case "$*" in
+    "-Q mullvad-vpn-bin") exit "${VPN_MISSING:-1}" ;;
+    "-Q nvidia-container-toolkit") exit 1 ;;
+    "-Q nvidia-open-dkms nvidia-580xx-dkms") exit 0 ;;
+    "-S --needed --noconfirm nvidia-container-toolkit") exit 1 ;;
+    *) echo "FORBIDDEN pacman call: $*" >&2; exit 99 ;;
+esac
+""",
+                "sudo": """
+[[ "$1" == pacman ]] || { echo "FORBIDDEN sudo call: $*" >&2; exit 99; }
+exec "$@"
+""",
+            }.items():
+                path = mocks / name
+                path.write_text("#!/bin/bash\n" + body + "\n")
+                path.chmod(0o755)
+            env = {**os.environ, "HOME": str(home), "SMPLOS_PATH": str(home / "data"),
+                   "PATH": f"{mocks}:{os.environ['PATH']}"}
+            for migration, variables, status in (
+                ("20260719-110000-nvidia-container-toolkit.sh", {}, 1),
+                ("20260719-110000-nvidia-container-toolkit.sh", {"GPU_VENDOR": "Intel"}, 0),
+                ("20260805-100200-mullvad-vpn-install.sh", {}, 1),
+                ("20260805-100200-mullvad-vpn-install.sh", {"VPN_MISSING": "0"}, 0),
+            ):
+                with self.subTest(migration=migration, variables=variables):
+                    result = subprocess.run(["bash", str(ROOT / "migrations" / migration)],
+                                            env={**env, **variables}, capture_output=True,
+                                            text=True, timeout=10)
+                    self.assertEqual(result.returncode, status, result.stdout + result.stderr)
+                    self.assertNotIn("FORBIDDEN", result.stdout + result.stderr)
+
+    def test_optional_failure_is_delayed_and_remains_unmarked_for_retry(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            home = Path(temporary)
+            migrations = home / "data/repo/migrations"
+            migrations.mkdir(parents=True)
+            calls = home / "calls"
+            core = migrations / "001-core.sh"
+            optional = migrations / "002-ordinary-app.sh"
+            core.write_text('echo core >> "$CALLS"\n')
+            optional.write_text('# SMPLOS_UPDATE_PRIORITY=optional\necho optional >> "$CALLS"\nexit 1\n')
+            env = {**os.environ, "HOME": str(home), "SMPLOS_PATH": str(home / "data"), "CALLS": str(calls)}
+            command = ["bash", str(BIN / "smplos-migrate"), "--phase"]
+            result = subprocess.run([*command, "core"], env=env, capture_output=True, text=True, timeout=10)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(calls.read_text(), "core\n")
+            markers = home / ".local/state/smplos/migrations"
+            self.assertTrue((markers / core.name).is_file())
+            self.assertFalse((markers / optional.name).exists())
+            result = subprocess.run([*command, "optional"], env=env, capture_output=True, text=True, timeout=10)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertEqual(calls.read_text(), "core\noptional\n")
+            self.assertFalse((markers / optional.name).exists())
+            self.assertIn("will retry", result.stdout)
+            optional.write_text('# SMPLOS_UPDATE_PRIORITY=optional\necho repaired >> "$CALLS"\n')
+            result = subprocess.run([*command, "optional"], env=env, capture_output=True, text=True, timeout=10)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertTrue((markers / optional.name).is_file())
+
+    def test_unclassified_failure_is_required_and_invalid_priority_is_rejected(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            home = Path(temporary)
+            migrations = home / "data/repo/migrations"
+            migrations.mkdir(parents=True)
+            migration = migrations / "001-required.sh"
+            env = {**os.environ, "HOME": str(home), "SMPLOS_PATH": str(home / "data")}
+            command = ["bash", str(BIN / "smplos-migrate"), "--phase", "core"]
+            for text in (
+                "exit 1\n", "# SMPLOS_UPDATE_PRIORITY=invalid\nexit 0\n",
+                "# SMPLOS_UPDATE_PRIORITY=\nexit 0\n",
+                "# SMPLOS_UPDATE_PRIORITY=optional\n# SMPLOS_UPDATE_PRIORITY=optional\nexit 0\n",
+            ):
+                migration.write_text(text)
+                result = subprocess.run(command, env=env, capture_output=True, text=True, timeout=10)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertFalse((home / ".local/state/smplos/migrations" / migration.name).exists())
 
 
 class UpdaterFlowTests(unittest.TestCase):
@@ -697,20 +962,41 @@ case "$1" in
     --deploy) exit "${DEPLOY_FAIL:-0}" ;;
     --scripts) exit "${BOOTSTRAP_FAIL:-0}" ;;
     --finalize) exit "${FINALIZE_FAIL:-0}" ;;
+    --optional) exit "${OPTIONAL_CONFIG_FAIL:-0}" ;;
 esac
 """)
-        self.mock("smplos-update-apps", 'echo native-apps >> "$CALLS"\nexit "${APPS_FAIL:-0}"\n')
+        self.mock("smplos-update-apps", """echo "native-apps $*" >> "$CALLS"
+[[ "$*" != *"--group optional"* ]] || exit "${OPTIONAL_APPS_FAIL:-0}"
+exit "${APPS_FAIL:-0}"
+""")
         self.mock("smplos-update-check", """echo "check $*" >> "$CALLS"
 snapshot=0
 [[ "$*" != *--snapshot* ]] || snapshot=1
 capture_brave=0
 [[ "$*" != *--capture-brave-target* ]] || capture_brave=1
+classify=0
+[[ "$*" != *--classify-aur* ]] || classify=1
+core=0
+[[ "$*" != *--core-only* ]] || core=1
 while [[ $# -gt 0 ]]; do
-    if [[ "$1" == --output ]]; then echo '{"packages":{}}' > "$2"; break; fi
+    if [[ "$1" == --output ]]; then
+        if [[ "$classify" == 1 ]]; then
+            required='[]'
+            [[ "${CORE_AUR:-0}" == 0 ]] || required='["test-driver-dkms"]'
+            printf '{"errors":[],"aur_policy":{"required":%s,"optional":["brave-bin"]}}' "$required" > "$2"
+        else
+            echo '{"packages":{}}' > "$2"
+        fi
+        break
+    fi
     shift
 done
 [[ "$snapshot" != 1 ]] || exit 0
+[[ "$classify" != 1 ]] || exit "${AUR_POLICY_FAIL:-0}"
 [[ "$capture_brave" != 1 ]] || exit "${BRAVE_TARGET_FAIL:-0}"
+[[ "$core" != 1 ]] || exit "${VERIFY_FAIL:-0}"
+[[ "${FINAL_VERIFY_FAIL:-0}" == 0 ]] || exit 1
+[[ "${OPTIONAL_AUDIT_FAIL:-0}" == 0 ]] || exit 2
 exit "${VERIFY_FAIL:-0}"
 """)
         source_bin = self.repo / "src/shared/bin"
@@ -723,7 +1009,10 @@ sys.exit(int(os.environ.get("BOOTSTRAP_VERIFY_FAIL", "0")))
 """)
         (source_bin / "smplos-update-handoff").write_text("# isolated repair-command fixture\n")
         self.mock("smplos-ensure-yay", 'echo enroll-yay >> "$CALLS"\nexit "${YAY_ENROLL_FAIL:-0}"\n')
-        self.mock("yay", 'echo "yay $*" >> "$CALLS"\nexit "${AUR_FAIL:-0}"\n')
+        self.mock("yay", """echo "yay $*" >> "$CALLS"
+[[ "$*" != *brave-bin* ]] || exit "${CORE_AUR_FAIL:-0}"
+exit "${AUR_FAIL:-0}"
+""")
         self.mock("curl", "exit 0\n")
         self.mock("flatpak", """echo "flatpak $*" >> "$CALLS"
 [[ "${FLATPAK_FAIL:-0}" != 1 || "$*" != *"update"* ]] || exit 1
@@ -755,12 +1044,16 @@ check_update_power() {
         self.assertNotIn("FORBIDDEN", result.stdout + result.stderr)
         return result
 
-    def test_successful_full_flow_upgrades_base_before_deploy_and_native_and_finalizes_last(self):
+    def test_core_packages_native_and_configs_are_verified_before_any_optional_work(self):
         result = self.run_body()
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         calls = self.calls.read_text()
         self.assertLess(calls.index("pacman -Su"), calls.index("os-update --deploy"))
-        self.assertLess(calls.index("os-update --deploy"), calls.index("native-apps"))
+        self.assertLess(calls.index("native-apps --group core"), calls.index("os-update --deploy --core"))
+        self.assertLess(calls.index("os-update --deploy --core"), calls.index("check --core-only"))
+        self.assertLess(calls.index("check --core-only"), calls.index("os-update --optional"))
+        self.assertLess(calls.index("check --core-only"), calls.index("native-apps --group optional"))
+        self.assertLess(calls.index("native-apps --group optional"), calls.index("yay -Sua"))
         self.assertLess(calls.index("check --before"), calls.index("os-update --finalize"))
         state = (self.home / ".local/state/smplos/update/status").read_text()
         self.assertIn("status=complete", state)
@@ -802,7 +1095,7 @@ check_update_power() {
         self.assertNotIn("--capture-brave-target", calls)
         self.assertNotIn("--brave-report", calls)
 
-    def test_brave_target_capture_precedes_aur_upgrade_and_final_verification_requires_that_record(self):
+    def test_brave_target_capture_precedes_optional_aur_and_failure_is_a_warning(self):
         result = self.run_body()
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         calls = self.calls.read_text()
@@ -812,10 +1105,10 @@ check_update_power() {
         self.assertIn(f"--brave-report {self.log}.brave.json", calls)
         self.calls.write_text("")
         result = self.run_body(BRAVE_TARGET_FAIL="1")
-        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(result.returncode, 0, result.stdout)
         self.assertIn("yay -Sua", self.calls.read_text())
-        self.assertNotIn("--finalize", self.calls.read_text())
-        self.assertNotIn("Update complete!", result.stdout)
+        self.assertIn("--finalize", self.calls.read_text())
+        self.assertIn("Update complete with warnings", result.stdout)
 
     def test_failed_yay_enrollment_skips_aur_and_never_finalizes(self):
         result = self.run_body(YAY_ENROLL_FAIL="1")
@@ -874,14 +1167,53 @@ check_update_power() {
         self.assertNotIn("sudo -v", calls)
         self.assertIn("--apps-report", calls)
 
-    def test_failed_flatpak_update_is_incomplete_and_never_reauthenticates(self):
+    def test_failed_flatpak_update_is_warning_only_and_never_reauthenticates(self):
         result = self.run_body(FLATPAK_INSTALLED="1", FLATPAK_FAIL="1")
-        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(result.returncode, 0, result.stdout)
         calls = self.calls.read_text()
-        self.assertNotIn("--finalize", calls)
+        self.assertIn("--finalize", calls)
         self.assertNotIn("sudo -v", calls)
         self.assertIn("system Flatpak update failed", result.stdout)
-        self.assertNotIn("Update complete!", result.stdout)
+        self.assertIn("Update complete with warnings", result.stdout)
+        self.assertIn("status=complete-with-warnings", (self.home / ".local/state/smplos/update/status").read_text())
+
+    def test_optional_failures_continue_other_apps_and_preserve_core_completion(self):
+        for failure in ("OPTIONAL_CONFIG_FAIL", "OPTIONAL_APPS_FAIL", "AUR_FAIL", "OPTIONAL_AUDIT_FAIL"):
+            with self.subTest(failure=failure):
+                self.calls.write_text("")
+                result = self.run_body(FLATPAK_INSTALLED="1", **{failure: "1"})
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                calls = self.calls.read_text()
+                for expected in ("--group core", "--deploy --core", "--optional", "--group optional",
+                                 "yay -Sua", "flatpak --user update", "--finalize"):
+                    self.assertIn(expected, calls)
+                self.assertIn("Update complete with warnings", result.stdout)
+                self.assertIn("core_verified=1", (self.home / ".local/state/smplos/update/status").read_text())
+
+    def test_required_foreign_driver_updates_before_native_and_failure_remains_blocking(self):
+        result = self.run_body(CORE_AUR="1")
+        self.assertEqual(result.returncode, 0, result.stdout)
+        calls = self.calls.read_text()
+        self.assertEqual(calls.count("yay -Sua"), 2)
+        self.assertLess(calls.index("yay -Sua"), calls.index("native-apps --group core"))
+        self.assertIn("eww-smplos,brave-bin", calls)
+        self.assertIn("eww-smplos,test-driver-dkms", calls)
+        self.calls.write_text("")
+        result = self.run_body(CORE_AUR="1", CORE_AUR_FAIL="1")
+        self.assertNotEqual(result.returncode, 0, result.stdout)
+        self.assertIn("native-apps --group core", self.calls.read_text())
+        self.assertIn("os-update --deploy --core", self.calls.read_text())
+        self.assertNotIn("--group optional", self.calls.read_text())
+        self.assertNotIn("--finalize", self.calls.read_text())
+
+    def test_unknown_aur_priority_and_late_core_breakage_never_publish_success(self):
+        for failure in ("AUR_POLICY_FAIL", "FINAL_VERIFY_FAIL"):
+            with self.subTest(failure=failure):
+                self.calls.write_text("")
+                result = self.run_body(**{failure: "1"})
+                self.assertNotEqual(result.returncode, 0, result.stdout)
+                self.assertNotIn("--finalize", self.calls.read_text())
+                self.assertIn("Update incomplete", result.stdout)
 
     def test_refresh_reexecutes_new_wrapper_keeps_lock_and_authenticates_once(self):
         # Exercise the real front-end/bootstrap, replacing only terminal/root

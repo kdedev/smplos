@@ -656,10 +656,17 @@ A full update runs through these stages:
 
 1. **Bootstrap** — check external power, authenticate once, safely fast-forward upstream source, refresh and verify all updater commands/helpers.
 2. **Pacman** — complete the official base upgrade, including compositor, libraries and drivers; unsupported stack versions stop the transaction.
-3. **Desktop** — deploy managed configs/themes and run pending migrations only after the base upgrade.
-4. **Native apps** — deliver and verify the complete published smpl-apps suite and other managed native releases.
-5. **AUR** — enroll prebuilt Yay without compiling it, retire Paru rebuilds, record Brave's update target and run `yay -Sua`.
-6. **Flatpak and verification** — update user/system apps and runtimes, compare installed versions/files/libraries, save local reports, and publish the OS version only on complete success.
+3. **Required AUR** — enroll prebuilt Yay, then update foreign drivers, public shared libraries and dependencies of the core stack.
+4. **Core desktop** — deliver smpl-apps, st, Nemo and micro; deploy essential configs/themes and core migrations, then verify the core before ordinary apps run.
+5. **Optional apps** — attempt application configs/integrations, optional migrations, Grafium, ordinary AUR apps and user/system Flatpaks.
+6. **Final verification** — check core integrity again, save local reports, and publish the OS version when required work succeeds.
+
+Ordinary app failures do not prevent core delivery or OS version completion.
+They remain logged and retryable, with **Update complete with warnings** rather
+than a false claim that every app updated. Required system/native/configuration
+failures still produce **Update incomplete**. Official packages stay together in
+one complete Arch transaction; the priority split never creates partial library
+upgrades.
 
 Supported older Git-based updaters automatically stop their old runner and
 reopen the current updater from the same button click; no separate enrollment
@@ -694,6 +701,7 @@ Breaking changes (upstream Hyprland renames, config format changes, etc.) are ha
 ```bash
 smplos-migrate --list       # show all migrations and their status
 smplos-migrate --pending    # show only pending migrations
+smplos-migrate --pending --phase optional  # app work awaiting retry
 ```
 
 For contributors: see [UPDATING.md](UPDATING.md) for how to write and ship updates.

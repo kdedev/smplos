@@ -122,6 +122,48 @@ class ThemeSwitchingTests(unittest.TestCase):
         # VS Code accepts JSONC (including the trailing comma on a new settings file).
         self.assertIn(f'"workbench.colorTheme": "{name}"', settings.read_text())
 
+    def test_core_theme_skips_optional_editors_and_apps_phase_keeps_core_unchanged(self):
+        (self.stock / "new/foot.ini").write_text("new foot colors\n")
+        (self.stock / "new/btop.theme").write_text("new btop colors\n")
+        core = subprocess.run(
+            ["bash", str(BIN / "theme-set"), "--core", "new"],
+            env=self.env, capture_output=True, text=True, timeout=15,
+        )
+        self.assertEqual(core.returncode, 0, core.stderr)
+        palette = self.home / ".config/eww/theme-colors.scss"
+        nemo = self.home / ".config/smplos/nemo-theme.css"
+        before = (palette.read_bytes(), nemo.read_bytes(), (self.current / "theme.name").read_bytes())
+        self.assertFalse((self.home / ".config/Code/User/settings.json").exists())
+        self.assertFalse((self.home / ".config/foot/theme.ini").exists())
+        self.assertFalse((self.home / ".config/btop/themes/current.theme").exists())
+        apps = subprocess.run(
+            ["bash", str(BIN / "theme-set"), "--apps"],
+            env=self.env, capture_output=True, text=True, timeout=15,
+        )
+        self.assertEqual(apps.returncode, 0, apps.stderr)
+        self.assertEqual(before, (palette.read_bytes(), nemo.read_bytes(),
+                                  (self.current / "theme.name").read_bytes()))
+        self.assert_switched("new")
+        self.assertEqual((self.home / ".config/foot/theme.ini").read_text(), "new foot colors\n")
+        self.assertEqual((self.home / ".config/btop/themes/current.theme").read_text(), "new btop colors\n")
+
+    def test_failed_optional_theme_copy_is_visible_and_leaves_verified_core_unchanged(self):
+        self.assertEqual(subprocess.run(
+            ["bash", str(BIN / "theme-set"), "--core", "new"],
+            env=self.env, capture_output=True, timeout=15,
+        ).returncode, 0)
+        (self.current / "theme/foot.ini").write_text("optional colors\n")
+        palette = self.home / ".config/eww/theme-colors.scss"
+        nemo = self.home / ".config/smplos/nemo-theme.css"
+        before = (palette.read_bytes(), nemo.read_bytes())
+        apps = subprocess.run(
+            ["bash", str(BIN / "theme-set"), "--apps"],
+            env={**self.env, "FAIL_COPY": "1"}, capture_output=True, timeout=15,
+        )
+        self.assertNotEqual(apps.returncode, 0)
+        self.assertEqual(before, (palette.read_bytes(), nemo.read_bytes()))
+        self.assertEqual((self.current / "theme.name").read_text().strip(), "new")
+
     def test_switch_updates_all_consumers_and_keeps_editor_settings(self):
         settings = self.home / ".config/Code/User/settings.json"
         settings.parent.mkdir(parents=True)

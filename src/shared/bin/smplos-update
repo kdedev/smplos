@@ -285,6 +285,8 @@ declare -f check_update_power stop_sudo_keepalive >> "$UPDATE_SCRIPT" || bootstr
 cat >> "$UPDATE_SCRIPT" << 'EOF' || bootstrap_fail "Cannot write updater body."
 set -o pipefail
 UPDATE_FAILED=0
+CORE_VERIFIED=0
+OPTIONAL_WARNINGS=()
 # Set only when this run's system upgrade completed; gates the bundle.
 SYSTEM_UPGRADED=0
 
@@ -323,7 +325,8 @@ FINISHED=0
 record_update_state() {
     local status="$1" temporary
     temporary=$(mktemp "$STATE_DIR/.status.XXXXXX") || return 1
-    printf 'status=%s\nstage=%s\nlog=%s\n' "$status" "$CURRENT_STAGE" "$LOG_FILE" > "$temporary" &&
+    printf 'status=%s\nstage=%s\nlog=%s\nmode=%s\ncore_verified=%s\noptional_phase_warnings=%s\n' \
+        "$status" "$CURRENT_STAGE" "$LOG_FILE" "$UPDATE_MODE" "$CORE_VERIFIED" "${#OPTIONAL_WARNINGS[@]}" > "$temporary" &&
         sync -f "$temporary" &&
         mv -f -- "$temporary" "$STATE_DIR/status" &&
         sync -f "$STATE_DIR"
@@ -343,6 +346,7 @@ finish_update() {
     rm -f -- "$0"
     if [[ $FINISHED -eq 0 ]]; then
         echo "Update stopped during $CURRENT_STAGE. Log: $LOG_FILE" >&2
+        [[ $CORE_VERIFIED -ne 1 ]] || echo "Core update was verified before optional work was interrupted." >&2
         [[ ! -t 0 ]] || read -r -p "Update stopped. Press Enter to close. " _
     fi
     return "$status"
@@ -356,6 +360,30 @@ export SMPLOS_SUDO_READY=1
 csv_join() {
     local IFS=,
     echo "$*"
+}
+
+optional_warning() {
+    OPTIONAL_WARNINGS+=("$*")
+    echo "  WARNING (optional): $*"
+}
+
+run_optional() {
+    local label="$1"
+    shift
+    if "$@"; then
+        return 0
+    else
+        local status=$?
+        optional_warning "$label failed (exit $status); pending for retry. See $LOG_FILE."
+    fi
+}
+
+_yay_run() {
+    if command -v ionice &>/dev/null; then
+        nice -n 10 ionice -c 3 yay "$@"
+    else
+        nice -n 10 yay "$@"
+    fi
 }
 
 load_critical_packages() {
@@ -701,18 +729,51 @@ else
 fi
 echo
 
-update_stage desktop
+update_stage core-aur
+AUR_POLICY_READY=0
+CORE_AUR_PACKAGES=""
+OPTIONAL_AUR_PACKAGES=""
 if [[ "$UPDATE_MODE" == full && $SYSTEM_UPGRADED -eq 1 ]] && check_update_power; then
-    export SMPLOS_SYSTEM_UPGRADED=1
-    export SMPLOS_UPDATE_APP_OWNER=1
-    smplos-os-update --deploy 2>&1 || {
-        echo "  ERROR: smplos-os-update failed (exit $?)"
-        UPDATE_FAILED=1
-    }
     critical_bundle_prompt_and_apply
-elif [[ "$UPDATE_MODE" == full ]]; then
-    echo "  Desktop deployment skipped: the base upgrade and external power are required."
-    UPDATE_FAILED=1
+    echo "── Required AUR drivers, libraries and update tools ──"
+    if SMPLOS_SYSTEM_UPGRADED=1 smplos-ensure-yay &&
+        smplos-update-check --classify-aur --output "$LOG_FILE.aur.json"; then
+        if policy_lines=$(python3 - "$LOG_FILE.aur.json" <<'PY'
+import json, re, sys
+with open(sys.argv[1]) as stream:
+    report = json.load(stream)
+if report["errors"]:
+    sys.exit("ERROR: AUR priority inventory contains errors")
+for group in ("required", "optional"):
+    packages = report["aur_policy"][group]
+    if not isinstance(packages, list) or not all(
+            isinstance(name, str) and re.fullmatch(r"[A-Za-z0-9@._+:-]+", name) for name in packages):
+        sys.exit("ERROR: malformed AUR priority inventory")
+    print(group + "=" + ",".join(packages))
+PY
+        ); then
+            while IFS='=' read -r group packages; do
+                case "$group" in
+                    required) CORE_AUR_PACKAGES="$packages" ;;
+                    optional) OPTIONAL_AUR_PACKAGES="$packages" ;;
+                esac
+            done <<< "$policy_lines"
+            AUR_POLICY_READY=1
+        else
+            echo "  ERROR: cannot read required/optional AUR package policy."
+            UPDATE_FAILED=1
+        fi
+    else
+        echo "  ERROR: required AUR tooling or dependency classification failed."
+        UPDATE_FAILED=1
+    fi
+    if [[ $AUR_POLICY_READY -eq 1 && -n "$CORE_AUR_PACKAGES" ]]; then
+        if ! _yay_run -Sua --noconfirm --sudoloop=false --sudo sudo --sudoflags=-n \
+            --ignore "$CRITICAL_IGNORE,nemo-smpl,grafium-bin,eww-smplos${OPTIONAL_AUR_PACKAGES:+,$OPTIONAL_AUR_PACKAGES}"; then
+            echo "  ERROR: required AUR drivers/libraries were not updated."
+            UPDATE_FAILED=1
+        fi
+    fi
 fi
 
 # ── Step 4: Forked smplOS apps (GitHub releases) ────────────────────────────
@@ -734,72 +795,84 @@ elif ! command -v smplos-update-apps &>/dev/null; then
     UPDATE_FAILED=1
 else
     # Reuse the same user's tty credential context.
-    SMPLOS_SUDO_READY=1 smplos-update-apps --report "$LOG_FILE.apps.json" 2>&1 \
+    SMPLOS_SUDO_READY=1 smplos-update-apps --group core --report "$LOG_FILE.apps.json" 2>&1 \
         || { echo "  WARNING: smplos-update-apps failed (exit $?)"; UPDATE_FAILED=1; }
 fi
 echo
 
-# ── Step 5: AUR packages (prebuilt Yay) ────────────────────────────────────
-update_stage aur
+update_stage desktop
 if [[ "$UPDATE_MODE" == full && $SYSTEM_UPGRADED -eq 1 ]] && check_update_power; then
-if SMPLOS_SYSTEM_UPGRADED=1 smplos-ensure-yay; then
-    # Run Yay at background CPU/IO priority so AUR compilation (e.g. webkit2gtk,
-    # edk2) never starves Hyprland and causes input event drops / apparent
-    # keybinding failures. nice -n 10 keeps compile threads below interactive
-    # priority; ionice -c 3 (idle) ensures disk I/O doesn't block the compositor.
-    _yay_run() {
-        if command -v ionice &>/dev/null; then
-            nice -n 10 ionice -c 3 yay "$@"
-        else
-            nice -n 10 yay "$@"
-        fi
+    export SMPLOS_SYSTEM_UPGRADED=1 SMPLOS_UPDATE_APP_OWNER=1
+    smplos-os-update --deploy --core 2>&1 || {
+        echo "  ERROR: smplos-os-update failed (exit $?)"
+        UPDATE_FAILED=1
     }
-        echo "── AUR (excluding critical stack, background priority) ──"
-        if [[ "$NETWORK_OK" -eq 0 ]]; then
-            echo "  Skipped: no internet connection"
-            UPDATE_FAILED=1
-        else
-            smplos-update-check --capture-brave-target --output "$LOG_FILE.brave.json" || UPDATE_FAILED=1
-            if ! _yay_run -Sua --noconfirm --sudoloop=false --sudo sudo --sudoflags=-n --ignore "$CRITICAL_IGNORE"; then
-                echo "  WARNING: AUR update failed (check internet/mirrors)"
-                UPDATE_FAILED=1
-            fi
-        fi
-    echo
-else
-    echo "  ERROR: Yay enrollment failed; AUR updates were not completed."
+elif [[ "$UPDATE_MODE" == full ]]; then
+    echo "  Desktop deployment skipped: the base upgrade and external power are required."
     UPDATE_FAILED=1
 fi
+
+update_stage core-verification
+if smplos-update-check --core-only --before "$LOG_FILE.before.json" \
+    --output "$LOG_FILE.core.json" --apps-report "$LOG_FILE.apps.json" --mode "$UPDATE_MODE"; then
+    if [[ $UPDATE_FAILED -eq 0 ]]; then
+        CORE_VERIFIED=1
+        update_stage core-verified
+        echo "  Core update verified: packages, native apps and essential configs."
+    fi
 else
-    echo "  AUR host packages require a completed full system upgrade."
-    [[ "$UPDATE_MODE" != full || $SYSTEM_UPGRADED -ne 1 ]] || UPDATE_FAILED=1
+    echo "  ERROR: core verification failed; optional work will not start."
+    UPDATE_FAILED=1
 fi
 
-# ── Step 6: Flatpak (always safe — sandboxed, no kernel interaction) ─────────
+# ── Step 5: Optional applications and integrations ────────────────────────
+update_stage optional-apps
+if [[ $CORE_VERIFIED -eq 1 ]] && check_update_power; then
+    echo "── Optional apps and configurations ──"
+    if [[ "$UPDATE_MODE" == full ]]; then
+        run_optional "App configurations/migrations" smplos-os-update --optional
+    fi
+    run_optional "Optional native apps" smplos-update-apps --group optional \
+        --report "$LOG_FILE.optional-apps.json"
+else
+    optional_warning "Optional apps/configurations deferred: verified core update and external power are required."
+fi
+
+update_stage aur
+if [[ "$UPDATE_MODE" == full && $CORE_VERIFIED -eq 1 && $AUR_POLICY_READY -eq 1 ]]; then
+    echo "── Optional AUR apps (background priority) ──"
+    if [[ "$NETWORK_OK" -eq 1 ]] && check_update_power; then
+        run_optional "Brave target capture" smplos-update-check \
+            --capture-brave-target --output "$LOG_FILE.brave.json"
+        if [[ -n "$OPTIONAL_AUR_PACKAGES" ]]; then
+            run_optional "Optional AUR apps" _yay_run -Sua --noconfirm --sudoloop=false \
+                --sudo sudo --sudoflags=-n \
+                --ignore "$CRITICAL_IGNORE,nemo-smpl,grafium-bin,eww-smplos${CORE_AUR_PACKAGES:+,$CORE_AUR_PACKAGES}"
+        fi
+    else
+        optional_warning "Optional AUR updates deferred: network and external power are required."
+    fi
+fi
+
+# ── Step 6: Sandboxed apps ─────────────────────────────────────────────────
 update_stage flatpak
-if command -v flatpak &>/dev/null; then
+if [[ $CORE_VERIFIED -eq 1 ]] && command -v flatpak &>/dev/null; then
     echo "── Flatpak ──"
     for scope in user system; do
         if ! installed=$(flatpak list "--$scope" --columns=ref); then
-            echo "  ERROR: cannot inventory $scope Flatpak apps/runtimes"
-            UPDATE_FAILED=1
+            optional_warning "Cannot inventory $scope Flatpak apps/runtimes."
             continue
         fi
         [[ -n "$installed" ]] || continue
         echo "  Updating $scope apps and runtimes..."
         if [[ "$NETWORK_OK" -eq 0 ]]; then
-            echo "  Skipped: no internet connection"
-            UPDATE_FAILED=1
+            optional_warning "$scope Flatpak updates deferred: no internet connection."
         elif ! check_update_power; then
-            UPDATE_FAILED=1
+            optional_warning "$scope Flatpak updates deferred: external power is required."
         elif [[ "$scope" == system ]]; then
-            sudo flatpak --system update -y --noninteractive || {
-                echo "  ERROR: system Flatpak update failed; no extra authentication was requested."
-                UPDATE_FAILED=1
-            }
-        elif ! flatpak --user update -y --noninteractive; then
-            echo "  WARNING: flatpak update failed (check internet/remotes)"
-            UPDATE_FAILED=1
+            run_optional "system Flatpak update" sudo flatpak --system update -y --noninteractive
+        else
+            run_optional "user Flatpak update" flatpak --user update -y --noninteractive
         fi
     done
     echo
@@ -847,15 +920,32 @@ fi
 echo
 
 check_args=(--before "$LOG_FILE.before.json" --output "$LOG_FILE.after.json"
-    --apps-report "$LOG_FILE.apps.json" --mode "$UPDATE_MODE")
+    --apps-report "$LOG_FILE.apps.json" --optional-apps-report "$LOG_FILE.optional-apps.json"
+    --mode "$UPDATE_MODE")
 [[ "$UPDATE_MODE" != full ]] || check_args+=(--brave-report "$LOG_FILE.brave.json")
-smplos-update-check "${check_args[@]}" || UPDATE_FAILED=1
+for warning in "${OPTIONAL_WARNINGS[@]}"; do check_args+=(--optional-warning "$warning"); done
+[[ $UPDATE_FAILED -eq 0 ]] || check_args+=(--required-error "A required update operation failed; see $LOG_FILE")
+AUDIT_WARNINGS=0
+if smplos-update-check "${check_args[@]}"; then
+    :
+else
+    check_status=$?
+    if [[ $check_status -eq 2 ]]; then
+        AUDIT_WARNINGS=1
+    else
+        UPDATE_FAILED=1
+    fi
+fi
 if [[ "$UPDATE_MODE" == full && $UPDATE_FAILED -eq 0 ]]; then
     smplos-os-update --finalize || UPDATE_FAILED=1
 fi
 CURRENT_STAGE=finished
 if [[ $UPDATE_FAILED -eq 0 ]]; then
-    record_update_state complete || UPDATE_FAILED=1
+    completion=complete
+    if [[ ${#OPTIONAL_WARNINGS[@]} -gt 0 || $AUDIT_WARNINGS -eq 1 ]]; then
+        completion=complete-with-warnings
+    fi
+    record_update_state "$completion" || UPDATE_FAILED=1
 else
     record_update_state failed || echo "ERROR: could not record update failure"
 fi
@@ -863,7 +953,10 @@ FINISHED=1
 stop_sudo_keepalive
 
 echo "══════════════════════════════════════"
-if [[ "$UPDATE_FAILED" -eq 0 ]]; then
+if [[ "$UPDATE_FAILED" -eq 0 && "$completion" == complete-with-warnings ]]; then
+    echo "  Update complete with warnings: core updated; optional app work remains pending."
+    echo "  Optional errors and retry details: $LOG_FILE.after.json"
+elif [[ "$UPDATE_FAILED" -eq 0 ]]; then
     echo "  Update complete!"
 else
     echo "  Update incomplete: see errors above, resolve them, then retry Update OS."

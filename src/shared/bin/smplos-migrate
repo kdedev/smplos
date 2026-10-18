@@ -21,23 +21,39 @@ SKIPPED_DIR="$STATE_DIR/skipped"
 mkdir -p "$STATE_DIR" "$SKIPPED_DIR"
 
 # ── Argument parsing ──────────────────────────────────────────────────────────
-MODE="run"
-for arg in "$@"; do
-    case "$arg" in
+MODE="run"; PHASE=all
+while [[ $# -gt 0 ]]; do
+    case "$1" in
         --list)    MODE="list" ;;
         --pending) MODE="pending" ;;
         --dry-run) MODE="dry-run" ;;
+        --phase)
+            case "${2:-}" in
+                all|core|optional) PHASE="$2"; shift ;;
+                *) echo "ERROR: --phase requires all, core or optional" >&2; exit 1 ;;
+            esac ;;
         -h|--help)
-            echo "Usage: smplos-migrate [--list | --pending | --dry-run]"
+            echo "Usage: smplos-migrate [--list | --pending | --dry-run] [--phase all|core|optional]"
             echo "  --list     Show all migrations and their status"
             echo "  --pending  Show only pending migrations"
             echo "  --dry-run  Show what would run without executing"
             exit 0 ;;
-        *) echo "Unknown option: $arg" >&2; exit 1 ;;
+        *) echo "Unknown option: $1" >&2; exit 1 ;;
     esac
+    shift
 done
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
+migration_priority() {
+    local priority
+    priority=$(sed -n '1,12{/^# SMPLOS_UPDATE_PRIORITY=/p;}' "$1") || return 1
+    case "$priority" in
+        "") echo core ;;
+        "# SMPLOS_UPDATE_PRIORITY=core"|"# SMPLOS_UPDATE_PRIORITY=optional") echo "${priority#*=}" ;;
+        *) echo "ERROR: invalid migration priority in $1" >&2; return 1 ;;
+    esac
+}
+
 migration_status() {
     local filename="$1"
     if [[ -f "$STATE_DIR/$filename" ]]; then
@@ -56,6 +72,8 @@ if [[ "$MODE" == "list" || "$MODE" == "pending" ]]; then
         exit 0
     fi
     for file in "$MIGRATIONS_DIR"/*.sh; do
+        priority=$(migration_priority "$file") || exit 1
+        [[ "$PHASE" == all || "$PHASE" == "$priority" ]] || continue
         filename=$(basename "$file")
         status=$(migration_status "$filename")
         if [[ "$MODE" == "pending" && "$status" != "pending" ]]; then
@@ -74,6 +92,8 @@ fi
 n_run=0 n_skip=0 n_fail=0 n_defer=0
 
 for file in "$MIGRATIONS_DIR"/*.sh; do
+    priority=$(migration_priority "$file") || exit 1
+    [[ "$PHASE" == all || "$PHASE" == "$priority" ]] || continue
     filename=$(basename "$file")
 
     # Already done or skipped
