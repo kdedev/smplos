@@ -1,10 +1,12 @@
 --- a/crates/eww/src/client.rs
 +++ b/crates/eww/src/client.rs
-@@ -13,5 +13,13 @@
+@@ -13,5 +13,15 @@
  pub fn handle_client_only_action(paths: &EwwPaths, action: ActionClientOnly) -> Result<()> {
      match action {
 +        ActionClientOnly::CheckConfig => {
 +            use gtk::prelude::*;
++            std::env::set_current_dir(paths.get_config_dir())
++                .context("Failed to enter Eww config directory")?;
 +            crate::config::read_from_eww_paths(paths)?;
 +            let (_, css) = crate::config::scss::parse_scss_from_config(paths.get_config_dir())?;
 +            gtk::init()?;

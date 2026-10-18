@@ -15,6 +15,7 @@ import unittest
 ROOT = Path(__file__).resolve().parents[1]
 RECIPE = ROOT / "src/shared/pkgbuilds/eww-smplos"
 MIGRATION = ROOT / "migrations/20261018-060000-eww-ipc-deadlines.sh"
+PREFLIGHT_MIGRATION = ROOT / "migrations/20261018-072000-eww-preflight-relative-paths.sh"
 
 
 class EwwDeliveryTests(unittest.TestCase):
@@ -33,13 +34,14 @@ smplos_pkgbuild_install() {
     printf '%s\\n' "$*" > "$CALLS"
     [[ -s "$1/ipc-repair.patch" ]] || return 1
     [[ "${BUILD_FAIL:-0}" == 0 ]] || return 1
-    printf '%s\\n' "${DELIVERED:-0.6.0.r721.g0eb4604-4}" > "$VERSION"
+    printf '%s\\n' "${DELIVERED:-0.6.0.r721.g0eb4604-5}" > "$VERSION"
 }
 """)
         self.version = self.root / "version"
         self.version.write_text("0.6.0.r721.g0eb4604-1\n")
         self.calls = self.root / "calls"
         self.env = {**os.environ, "SMPLOS_REPO": str(self.repo),
+                    "SMPLOS_PATH": str(self.root), "HOME": str(self.root / "home"),
                     "VERSION": str(self.version), "CALLS": str(self.calls)}
 
     def migrate(self, **env):
@@ -50,14 +52,14 @@ smplos_pkgbuild_install() {
         result = self.migrate()
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertIn("--ask 4", self.calls.read_text())
-        self.assertEqual(self.version.read_text().strip(), "0.6.0.r721.g0eb4604-4")
+        self.assertEqual(self.version.read_text().strip(), "0.6.0.r721.g0eb4604-5")
         self.assertNotIn("bar-ctl", MIGRATION.read_text())
         self.calls.unlink()
         self.assertEqual(self.migrate().returncode, 0)
         self.assertFalse(self.calls.exists())
 
     def test_current_and_newer_revisions_are_not_rebuilt(self):
-        for revision in (4, 5, 10):
+        for revision in (5, 6, 10):
             self.version.write_text(f"0.6.0.r721.g0eb4604-{revision}\n")
             self.assertEqual(self.migrate().returncode, 0)
             self.assertFalse(self.calls.exists())
@@ -73,9 +75,37 @@ smplos_pkgbuild_install() {
         self.version.write_text("")
         self.assertNotEqual(self.migrate().returncode, 0)
 
+    def test_preflight_repair_runs_after_the_ipc_migration_was_already_completed(self):
+        migrations = self.repo / "migrations"
+        migrations.mkdir()
+        for migration in (MIGRATION, PREFLIGHT_MIGRATION):
+            shutil.copy2(migration, migrations / migration.name)
+        state = Path(self.env["HOME"]) / ".local/state/smplos/migrations"
+        state.mkdir(parents=True)
+        (state / MIGRATION.name).touch()
+        self.version.write_text("0.6.0.r721.g0eb4604-4\n")
+        command = ["bash", str(ROOT / "src/shared/bin/smplos-migrate"), "--phase", "core"]
+
+        failed = subprocess.run(command, env={**self.env, "BUILD_FAIL": "1"},
+                                capture_output=True, text=True, timeout=5)
+        self.assertEqual(failed.returncode, 1, failed.stdout + failed.stderr)
+        self.assertFalse((state / PREFLIGHT_MIGRATION.name).exists())
+        self.assertEqual(self.version.read_text(), "0.6.0.r721.g0eb4604-4\n")
+
+        result = subprocess.run(command, env=self.env, capture_output=True, text=True, timeout=5)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("--ask 4", self.calls.read_text())
+        self.assertEqual(self.version.read_text(), "0.6.0.r721.g0eb4604-5\n")
+        self.assertTrue((state / MIGRATION.name).is_file())
+        self.assertTrue((state / PREFLIGHT_MIGRATION.name).is_file())
+        self.calls.unlink()
+        result = subprocess.run(command, env=self.env, capture_output=True, text=True, timeout=5)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertFalse(self.calls.exists())
+
     def test_patch_checksum_and_real_pkgver_prevent_makepkg_resetting_revision_to_one(self):
         recipe = (RECIPE / "PKGBUILD").read_text()
-        self.assertIn("pkgver=0.6.0.r721.g0eb4604\npkgrel=4\n", recipe)
+        self.assertIn("pkgver=0.6.0.r721.g0eb4604\npkgrel=5\n", recipe)
         self.assertIn(hashlib.sha256((RECIPE / "ipc-repair.patch").read_bytes()).hexdigest(), recipe)
         self.assertIn("cargo test --frozen --release -p eww ipc_repair", recipe)
         for source in ("src/shared/lib/smplos-pkgbuild.sh",
@@ -127,9 +157,11 @@ class EwwNativeReloadTests(unittest.TestCase):
         self.home = self.root / "home"
         self.config = self.home / ".config/eww"
         (self.config / "scripts").mkdir(parents=True)
-        (self.config / "eww.yuck").write_text(
+        (self.config / "quick-settings.yuck").write_text(
             '(defvar ws-count 4)\n(defvar ws-position "center")\n'
-            '(defvar ws-spacing 1)\n(defvar ws-style "numbers")\n'
+            '(defvar ws-spacing 1)\n(defvar ws-style "numbers")\n')
+        (self.config / "eww.yuck").write_text(
+            '(include "./quick-settings.yuck")\n'
             '(defwindow bar :namespace "eww-repair-test"'
             ' :geometry (geometry :width "100%" :height "24px" :anchor "top center")'
             ' (label :text ws-count))\n')
@@ -193,7 +225,8 @@ class EwwNativeReloadTests(unittest.TestCase):
 
     def eww(self, *args, check=True):
         return subprocess.run([str(self.binary), "--config", str(self.config), *args],
-                              env=self.env, capture_output=True, text=True, timeout=20, check=check)
+                              env=self.env, cwd=self.root,
+                              capture_output=True, text=True, timeout=20, check=check)
 
     def start(self, binary=None):
         process = subprocess.Popen(
@@ -215,6 +248,48 @@ class EwwNativeReloadTests(unittest.TestCase):
     def bar(self, action):
         return subprocess.run(["bash", str(self.controller), action], env=self.env,
                               capture_output=True, text=True, timeout=20)
+
+    def test_check_config_resolves_includes_from_config_not_caller_or_decoy_files(self):
+        for decoy in (False, True):
+            with self.subTest(decoy=decoy):
+                if decoy:
+                    (self.root / "quick-settings.yuck").write_text("(invalid caller-owned configuration\n")
+                result = self.eww("check-config", check=False)
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertIn("Configuration and stylesheet valid", result.stdout)
+        self.assertNotEqual(self.eww("ping", check=False).returncode, 0)
+
+    def test_full_stock_amber_preflight_does_not_start_scripts_or_a_daemon(self):
+        shutil.copytree(ROOT / "src/shared/eww", self.config, dirs_exist_ok=True)
+        shutil.copy2(ROOT / "src/shared/themes/amber/eww-colors.scss",
+                     self.config / "theme-colors.scss")
+        marker = self.root / "must-not-run"
+        with (self.config / "eww.yuck").open("a") as yuck:
+            yuck.write(f'\n(defpoll preflight-poll :interval "1s" "touch {marker}")\n'
+                       f'(deflisten preflight-listener "touch {marker}")\n')
+        (self.root / "quick-settings.yuck").write_text("(invalid caller-owned configuration\n")
+        result = self.eww("check-config", check=False)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertFalse(marker.exists(), "Preflight executed a poll/listener")
+        self.assertNotEqual(self.eww("ping", check=False).returncode, 0)
+
+    def test_missing_include_cannot_use_a_caller_decoy_or_stop_the_old_daemon(self):
+        old = self.root / "old/eww"
+        old.parent.mkdir()
+        shutil.copy2(self.binary, old)
+        process = self.start(old)
+        with (self.config / ".smplos-reload.lock").open("w") as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            include = self.config / "quick-settings.yuck"
+            shutil.copy2(include, self.root / include.name)
+            include.unlink()
+            result = self.eww("check-config", check=False)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("Included file", result.stderr)
+            result = self.bar("reload")
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIsNone(process.poll())
+            self.assertIn("bar: bar", self.eww("active-windows").stdout)
 
     def test_batched_files_reload_exactly_once_and_ensure_does_not_blink(self):
         self.start()

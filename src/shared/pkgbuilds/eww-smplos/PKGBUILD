@@ -38,7 +38,7 @@ _commit=0eb460422278dfaec64e5a527c1fd35dd3b35a1b
 
 pkgname=eww-smplos
 pkgver=0.6.0.r721.g0eb4604
-pkgrel=4
+pkgrel=5
 pkgdesc='Standalone widget system made in Rust (smplOS fork with Wayland button-grab fixes)'
 arch=(x86_64)
 url="https://github.com/${_gh_owner}/${_gh_repo}"
@@ -51,7 +51,7 @@ replaces=(eww)
 options=(!debug)
 
 source=("git+${url}.git#commit=${_commit}" 'ipc-repair.patch')
-sha256sums=('SKIP' '89ffc93b9735320229c958bcfda4fac691178f61d2778c1c8fe7ad11bf3399a8')
+sha256sums=('SKIP' 'eb30b0a1c2dc7bf8b44a52d1f5f39cdbecbdaa67c9c6737deb7370d00555c538')
 
 pkgver() {
     cd "$srcdir/$_gh_repo"

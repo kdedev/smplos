@@ -168,6 +168,12 @@ The pinned `pkgver` matches the actual source version so makepkg does not reset
 the package revision to 1. A required, retryable core migration builds and
 installs the repair; a failed build leaves the old package installed.
 
+Revision 5 corrects the `check-config` preflight to enter the EWW config directory,
+just like daemon startup, before resolving relative Yuck includes. Revision 4
+could incorrectly reject stock files such as `./quick-settings.yuck` when called
+from the updater's working directory. A separate required core migration delivers
+the correction even when the earlier IPC migration is already marked complete.
+
 Config and palette publishers hold `.config/eww/.smplos-reload.lock`; the
 repaired file watcher defers their intermediate changes to one checked explicit
 reload. Direct edits outside a publication batch retain normal automatic reload.

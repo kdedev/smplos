@@ -1076,7 +1076,7 @@ class EwwPassthroughMigrationTests(KeypadCase):
     def test_pkgbuild_pins_the_passthrough_commit(self):
         pkgbuild = EWW_PKGBUILD.read_text()
         self.assertIn("_commit=0eb460422278dfaec64e5a527c1fd35dd3b35a1b\n", pkgbuild)
-        self.assertIn("pkgrel=4\n", pkgbuild)
+        self.assertIn("pkgrel=5\n", pkgbuild)
         self.assertIn("options=(!debug)", pkgbuild)
         self.assertIn("Verified on X11 only", (ROOT / "KEYPAD.md").read_text())
 
