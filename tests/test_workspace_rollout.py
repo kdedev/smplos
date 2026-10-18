@@ -82,7 +82,7 @@ as_invoker() {
     fi
     "$@"
 }
-""" + function("copy_user_config") + function("sync_configs") + function("sync_hypr_configs")
+""" + function("copy_user_config") + function("sync_config_defaults") + function("sync_configs") + function("sync_hypr_configs")
 
     def test_update_publishes_fragments_and_modules_before_entrypoints(self):
         self.write(self.repo / "src/shared/eww/workspace-overview.yuck", "(defwidget overview [] (label :text \"map\"))\n")

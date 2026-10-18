@@ -388,7 +388,8 @@ class IconSyncTests(KeypadCase):
         self.tool("fc-cache", 'echo "fc-cache $*" >> "$CALLS"\n')
         script = ("set -euo pipefail\nheader() { :; }\nok() { :; }\ndie() { echo \"$*\" >&2; exit 1; }\n"
                   "as_invoker() { [[ $1 == mv ]] && echo \"mv ${@: -1}\" >> \"$CALLS\"; \"$@\"; }\n"
-                  + function("copy_user_config") + function("sync_configs") + "sync_configs\n")
+                  + function("copy_user_config") + function("sync_config_defaults")
+                  + function("sync_configs") + "sync_configs\n")
         env = dict(self.env, SMPLOS_REPO=str(repo))
         for _ in range(2):
             subprocess.run(["bash", "-c", script], env=env, check=True, capture_output=True, text=True, timeout=20)
