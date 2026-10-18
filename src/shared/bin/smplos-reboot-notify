@@ -37,7 +37,7 @@ pending=0
 smplos_reboot_pending "$MARKER" || pending=$?
 if [[ $pending -ne 0 ]]; then
     [[ $pending -eq 1 ]] || die "cannot verify the pending reboot"
-    rm -f -- "$MARKER" || die "cannot clear the expired reboot marker"
+    # An updater may have replaced an expired marker since we read it.
     exit 0
 fi
 

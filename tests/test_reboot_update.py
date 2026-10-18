@@ -74,7 +74,7 @@ if "-A" in sys.argv or "--wait" in sys.argv:
         self.marker.write_text("0" * 32 + "\n")
         self.assertEqual(self.check_marker().returncode, 1)
         self.assertEqual(self.run_notifier().returncode, 0)
-        self.assertFalse(self.marker.exists())
+        self.assertEqual(self.marker.read_text(), "0" * 32 + "\n")
         for content in ("", "invalid", "0" * 32 + "\nextra"):
             with self.subTest(content=content):
                 self.marker.write_text(content)
