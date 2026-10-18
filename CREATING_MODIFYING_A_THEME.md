@@ -43,7 +43,6 @@ Each theme lives in:
 - `hyprland.conf`
 - `niri-theme.kdl`
 - `hyprlock.conf`
-- `logseq-custom.css`
 - `micro.theme`
 - `smplos-launcher.rasi`
 - `nemo.css` (dedicated Python generator, not a template)
@@ -168,14 +167,13 @@ Most themes never need overrides. Use `term_N` only when a terminal slot should 
 
 - **Decoration**: `rounding`, `blur_size`, `blur_passes`, `opacity_active`, `opacity_inactive`, `app_background_opacity`, `term_opacity_active`, `term_opacity_inactive`, `popup_opacity`, `messenger_opacity`, `browser_opacity`
 - **Layout**: `gaps_in`, `gaps_out`, `border_size`, `border_active` (optional), `border_inactive` (optional)
-- **App selectors**: `app_theme_nvim`, `app_theme_vscode`, `app_theme_logseq`
+- **App selectors**: `app_theme_nvim`, `app_theme_vscode`
 
 Example:
 
 ```toml
 app_theme_nvim = "tokyo-night"
 app_theme_vscode = "tokyo-night"
-app_theme_logseq = "tokyo-night"
 ```
 
 ## 4) Generate theme files
@@ -224,7 +222,6 @@ theme-set <theme>
 
 - `app_theme_nvim`
 - `app_theme_vscode`
-- `app_theme_logseq`
 
 Then it resolves that theme ID from:
 
@@ -232,6 +229,9 @@ Then it resolves that theme ID from:
 2. `~/.local/share/smplos/themes/<id>` (stock)
 
 So one theme can reuse another theme's app presets without duplicating settings.
+Full OS updates reset overrides whose names match bundled themes after verified
+backups in `~/.local/state/smplos/theme-backups/`. Use a distinct name for a
+custom theme that should remain independent of stock updates.
 
 ---
 
@@ -243,7 +243,6 @@ So one theme can reuse another theme's app presets without duplicating settings.
 - `foot.ini` -- generated terminal palette (auto-derived from semantic names)
 - `neovim.lua` → app preset payload for LazyVim/Lazy.nvim colorscheme
 - `vscode.json` → app preset payload (theme name + extension/vsix)
-- `logseq-custom.css` → generated Logseq custom css layer
 - `nemo.css` → generated Nemo GTK controls and capability-gated backgrounds
 
 ### Nemo control and alpha checks
@@ -468,22 +467,14 @@ blur contrast/brightness/vibrancy controls are shared, not per-layer material
 properties. Vibrancy boosts saturation; zero disables that boost but is not
 desaturation. This material does not change those global controls.
 
-### Logseq data preservation during switching
+### Grafium and retired Logseq support
 
-`theme-set` merges only known dark/light and plugin theme fields in
-`preferences.json`, preserving graph/external lists, unrelated settings and
-other nested theme fields. Existing preferences receive a byte-verified
-`preferences.json.backup.*` preimage before publication. Invalid or unsupported
-JSON and symbolic links are left unchanged.
-
-There is no safe arbitrary-EDN merge helper in this checkout. Existing
-`config/config.edn` and custom CSS (global or graph-local) are never replaced
-by theme switching; missing files can be initialized. A skipped update emits
-a visible desktop warning and nonzero partial-failure status after the desktop
-theme applies. This deliberately leaves Logseq's previous custom theme intact
-rather than erasing unrelated user configuration. Updating existing Logseq CSS
-requires an explicit, backed-up manual merge; inline CSS is content, not a
-`file://` or `assets://` URL.
+Grafium follows the active theme automatically, including atomic theme-directory
+replacement; it does not need a separate app selector. Logseq is no longer
+bundled or configured by `theme-set`. Existing graphs, `~/.logseq`, graph-local
+configuration and Flatpak application data must remain untouched. Legacy
+`logseq-custom.css` and `app_theme_logseq` assets may remain in theme bundles
+but are ignored; do not revive the removed configuration-writing hooks.
 
 ### Native Frosted rendering
 

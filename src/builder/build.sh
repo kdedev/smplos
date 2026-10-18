@@ -616,7 +616,7 @@ process_aur_packages() {
     log_info "AUR packages processed"
     
     # AUR packages have dependencies on official repo packages (e.g. eww needs
-    # gtk-layer-shell, logseq needs nodejs, vscode needs lsof).  Extract those
+    # gtk-layer-shell, vscode needs lsof). Extract those
     # deps from the prebuilt .PKGINFO and download them to the offline mirror.
     log_info "Resolving AUR package dependencies..."
     local aur_deps=()
@@ -665,8 +665,54 @@ process_aur_packages() {
 # Create Repository Database
 ###############################################################################
 
+stage_selected_app_formats() {
+    local airootfs="$1" entry name archive
+    mkdir -p "$airootfs/opt/appimages" "$airootfs/opt/flatpaks" || return 1
+    rm -f -- "$airootfs/opt/appimages/Logseq.AppImage" || return 1
+    for entry in "${APPIMAGE_PACKAGES[@]}"; do
+        name="${entry%%|*}"
+        archive="$CACHE_DIR/appimages/$name.AppImage"
+        if [[ ! -f "$archive" ]]; then
+            log_error "Selected AppImage is missing from the build cache: $name"
+            return 1
+        fi
+        install -m755 -- "$archive" "$airootfs/opt/appimages/$name.AppImage" || return 1
+    done
+    if (( ${#FLATPAK_PACKAGES[@]} )); then
+        printf '%s\n' "${FLATPAK_PACKAGES[@]}" > "$airootfs/opt/flatpaks/install-online.txt" || return 1
+    else
+        rm -f -- "$airootfs/opt/flatpaks/install-online.txt" || return 1
+    fi
+    log_info "Bundled ${#APPIMAGE_PACKAGES[@]} selected AppImage(s); ${#FLATPAK_PACKAGES[@]} selected Flatpak(s)"
+}
+
+prune_retired_note_packages() {
+    local package archive candidate entries=""
+    local database="$OFFLINE_MIRROR_DIR/offline.db.tar.gz"
+    if [[ -f "$database" ]]; then
+        entries=$(bsdtar -tf "$database") || return 1
+    fi
+    for package in logseq logseq-bin logseq-git logseq-desktop logseq-desktop-bin logseq-desktop-git; do
+        for archive in "$OFFLINE_MIRROR_DIR/$package"-[0-9]*.pkg.tar.{zst,xz} \
+                       "$OFFLINE_MIRROR_DIR/$package-debug"-[0-9]*.pkg.tar.{zst,xz}; do
+            [[ -f "$archive" ]] || continue
+            log_info "Removing retired build package: $(basename "$archive")"
+            rm -f -- "$archive" "$archive.sig" || return 1
+        done
+        for candidate in "$package" "$package-debug"; do
+            if grep -qE "^${candidate}-[0-9][^/]*/desc$" <<< "$entries"; then
+                repo-remove "$database" "$candidate" || return 1
+            fi
+        done
+    done
+}
+
 create_repo_database() {
     log_step "Creating offline repository database"
+    prune_retired_note_packages || {
+        log_error "Cannot retire Logseq from the offline build cache"
+        return 1
+    }
     
     cd "$OFFLINE_MIRROR_DIR"
 
@@ -1048,28 +1094,7 @@ setup_airootfs() {
     mkdir -p "$airootfs/opt/flatpaks"
     mkdir -p "$airootfs/var/cache/smplos/mirror"
 
-    # Copy cached AppImages into airootfs
-    local appimage_cache="$CACHE_DIR/appimages"
-    if [[ -d "$appimage_cache" ]] && ls "$appimage_cache"/*.AppImage &>/dev/null; then
-        log_info "Copying AppImages into ISO..."
-        cp "$appimage_cache"/*.AppImage "$airootfs/opt/appimages/"
-        chmod +x "$airootfs/opt/appimages/"*.AppImage
-        local ai_count
-        ai_count=$(ls -1 "$airootfs/opt/appimages/"*.AppImage 2>/dev/null | wc -l)
-        log_info "Bundled $ai_count AppImage(s)"
-    fi
-
-    # Copy Flatpak online-install list (offline bundles are complex;
-    # for now we install from Flathub on first boot when internet is available)
-    local flatpak_cache="$CACHE_DIR/flatpaks"
-    if [[ -f "$flatpak_cache/install-online.txt" ]]; then
-        cp "$flatpak_cache/install-online.txt" "$airootfs/opt/flatpaks/install-online.txt"
-    fi
-    # Write the flatpak list directly from our package array
-    if [[ ${#FLATPAK_PACKAGES[@]} -gt 0 ]]; then
-        printf '%s\n' "${FLATPAK_PACKAGES[@]}" > "$airootfs/opt/flatpaks/install-online.txt"
-        log_info "Flatpak install list: ${#FLATPAK_PACKAGES[@]} app(s)"
-    fi
+    stage_selected_app_formats "$airootfs" || return 1
 
     # ── Bundle Whisper AI models for offline dictation ──────────────────────────
     local whisper_cache="$CACHE_DIR/models/whisper"

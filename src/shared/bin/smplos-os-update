@@ -427,17 +427,56 @@ sync_configs() {
 # theme-set from $STOCK_THEMES_PATH ($HOME/.local/share/smplos/themes). They are
 # stamped into the installed system from the ISO and otherwise never updated,
 # which means CSS fixes (e.g. nemo submenu rendering) shipped via the repo never
-# reach existing installs. User-overridden themes live in $USER_THEMES_PATH
-# ($HOME/.config/smplos/themes) and are NOT touched here.
+# reach existing installs. Matching personal overrides are reset after verified
+# backups; custom-only theme names are never touched.
+replace_theme_tree() {
+    local source="$1" destination="$2" name="$3"
+    local parent="${destination%/*}" stage previous backup=""
+    stage=$(mktemp -d "$parent/.$name.update.XXXXXX") || die "Cannot stage theme $name"
+    previous="$stage.previous"
+    if ! cp -a -- "$source/." "$stage/" ||
+        ! diff -rq --no-dereference -- "$source" "$stage"; then
+        die "Cannot verify staged theme $name; existing theme is unchanged; staging: $stage"
+    fi
+    if [[ -e "$destination" || -L "$destination" ]]; then
+        local backup_root="${XDG_STATE_HOME:-$HOME/.local/state}/smplos/theme-backups"
+        mkdir -p "$backup_root" || die "Cannot create theme backup directory"
+        backup=$(mktemp -d "$backup_root/$name.XXXXXX") || die "Cannot back up theme $name"
+        if ! cp -a -- "$destination" "$backup/original" ||
+            ! diff -rq --no-dereference -- "$destination" "$backup/original"; then
+            die "Cannot verify theme backup $backup; existing theme is unchanged"
+        fi
+        printf '%s\n' "$destination" > "$backup/path" || die "Cannot record theme backup path"
+        mv -T -- "$destination" "$previous" || die "Cannot move old theme $destination"
+    fi
+    if ! mv -T -- "$stage" "$destination"; then
+        if [[ -e "$previous" || -L "$previous" ]]; then
+            mv -T -- "$previous" "$destination" ||
+                die "Cannot restore theme $destination; old theme: $previous; backup: $backup"
+        fi
+        die "Cannot publish theme $name; previous theme restored"
+    fi
+    if [[ -e "$previous" || -L "$previous" ]]; then
+        if ! rm -rf -- "$previous"; then
+            warn "Theme replaced; protected old files retained at $previous; verified backup: $backup"
+        fi
+        ok "Theme backup: $backup"
+    fi
+}
+
 sync_themes() {
     local themes_src="$SMPLOS_REPO/src/shared/themes"
     local themes_dst="$HOME/.local/share/smplos/themes"
-    [[ -d "$themes_src" ]] || { warn "No themes directory found at $themes_src"; return; }
+    local user_themes="$HOME/.config/smplos/themes"
+    [[ -d "$themes_src" ]] || die "No themes directory found at $themes_src"
 
     header ""
     header "── Syncing themes ──"
 
-    mkdir -p "$themes_dst"
+    mkdir -p "$themes_dst" "$HOME/.config/smplos/current" || die "Cannot create theme directories"
+    local theme_lock
+    exec {theme_lock}>"$HOME/.config/smplos/current/.theme-set.lock" || die "Cannot open theme lock"
+    flock "$theme_lock" || die "Cannot lock theme state"
 
     local n_updated=0 n_total=0
     for theme_dir in "$themes_src"/*/; do
@@ -448,14 +487,21 @@ sync_themes() {
         [[ "$theme_name" == _* ]] && continue
         ((n_total++)) || true
 
-        local dst="$themes_dst/$theme_name"
-        # rsync would be cleaner but is not always present in the live ISO
-        if [[ ! -d "$dst" ]] || ! diff -rq "$theme_dir" "$dst" &>/dev/null; then
-            mkdir -p "$dst"
-            cp -rT "$theme_dir" "$dst"
-            ((n_updated++)) || true
+        local dst changed=0 targets=("$themes_dst/$theme_name")
+        if [[ -e "$user_themes/$theme_name" || -L "$user_themes/$theme_name" ]]; then
+            targets+=("$user_themes/$theme_name")
         fi
+        for dst in "${targets[@]}"; do
+            if [[ -L "$dst" || ! -d "$dst" ]] ||
+                ! diff -rq --no-dereference -- "$theme_dir" "$dst" >/dev/null; then
+                replace_theme_tree "${theme_dir%/}" "$dst" "$theme_name"
+                changed=1
+            fi
+        done
+        ((n_updated+=changed)) || true
     done
+    flock -u "$theme_lock" || die "Cannot unlock theme state"
+    exec {theme_lock}>&-
 
     if [[ $n_updated -gt 0 ]]; then
         ok "$n_updated of $n_total themes updated"

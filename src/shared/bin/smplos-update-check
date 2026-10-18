@@ -7,6 +7,7 @@ import json
 import os
 from pathlib import Path
 import re
+import stat
 import subprocess
 import sys
 import tempfile
@@ -32,7 +33,7 @@ STACK = re.compile(
     r"python|curl|git|gnupg|ca-certificates.*|yay(?:-bin|-git)?|flatpak|"
     r"greetd.*|plymouth|dbus.*|networkmanager|pipewire.*|wireplumber|brave-bin)$"
 )
-KERNELS = {"linux", "linux-lts", "linux-zen", "linux-hardened"}
+KERNELS = {"linux", "linux-lts", "linux-zen", "linux-hardened", "linux-surface"}
 RELEASE_COMPONENTS = {"smpl-apps", "st-smpl", "nemo-smpl", "micro-smpl", "grafium"}
 CORE_BINARIES = {
     "bash": ("usr/bin/bash",),
@@ -173,10 +174,27 @@ class Audit:
                     if source.is_file() and source.name not in USER_HYPR:
                         self.compare(source, self.home / ".config/hypr" / source.relative_to(hypr))
         themes = self.repo / "src/shared/themes"
-        for source in themes.rglob("*"):
-            relative = source.relative_to(themes)
-            if source.is_file() and not relative.parts[0].startswith("_"):
-                self.compare(source, self.home / ".local/share/smplos/themes" / relative)
+        for theme in themes.glob("*"):
+            if not theme.is_dir() or theme.name.startswith("_"):
+                continue
+            sources = {path.relative_to(theme): path for path in theme.rglob("*")}
+            destinations = [self.home / ".local/share/smplos/themes" / theme.name]
+            override = self.home / ".config/smplos/themes" / theme.name
+            if override.exists() or override.is_symlink():
+                destinations.append(override)
+            for destination in destinations:
+                if destination.is_symlink():
+                    self.error(f"Managed theme directory was not replaced: {destination}")
+                    continue
+                for relative, source in sources.items():
+                    target = destination / relative
+                    if source.is_file():
+                        self.compare(source, target)
+                    elif source.is_dir() and not target.is_dir():
+                        self.error(f"Missing managed theme directory: {target}")
+                installed = {path.relative_to(destination) for path in destination.rglob("*")}
+                for extra in sorted(installed - sources.keys()):
+                    self.error(f"Obsolete managed theme entry: {destination / extra}")
 
     def linkage(self, path):
         try:
@@ -372,6 +390,7 @@ class Audit:
             if len(fields := line.split(maxsplit=1)) == 2
         }
         expected = {str(self.root / "usr/local/bin" / name) for name in names}
+        retained = {}
         # Optional bundled executables are verified when delivered, not required
         # on machines whose release never included them.
         if component == "smpl-apps":
@@ -381,6 +400,20 @@ class Audit:
                 if path.exists() or path.is_symlink() or str(path) in recorded:
                     expected.add(str(path))
                     self.linkage(path)
+            retained_receipt = state / "smpl-apps-retained.sha256"
+            if retained_receipt.is_file():
+                optional_paths = {str(self.root / "usr/local/bin" / name) for name in optional}
+                for line in retained_receipt.read_text().splitlines():
+                    fields = line.split(maxsplit=1)
+                    if (len(fields) != 2 or not re.fullmatch(r"[0-9a-f]{64}", fields[0])
+                            or fields[1] not in optional_paths):
+                        self.error("Malformed retained optional smpl-apps checksum receipt")
+                        continue
+                    retained[fields[1]] = fields[0]
+                    if fields[1] not in expected:
+                        expected.add(fields[1])
+                        self.linkage(Path(fields[1]))
+                    entries.append(line)
         checked = set()
         files = self.report.setdefault("native_files", {})
         for line in entries:
@@ -391,6 +424,8 @@ class Audit:
             checksum, filename = fields
             filename = filename.lstrip("*")
             if filename in expected:
+                if filename in checked:
+                    self.error(f"Duplicate native app checksum entry: {filename}")
                 checked.add(filename)
                 path = Path(filename)
                 actual = digest(path) if path.is_file() else None
@@ -398,10 +433,20 @@ class Audit:
                     "component": component, "expected_sha256": checksum,
                     "installed_sha256": actual, "status": "verified" if actual == checksum else "mismatch",
                 }
+                if filename in retained:
+                    files[filename]["delivery"] = "retained-not-upgraded"
+                    if retained[filename] != checksum:
+                        self.error(f"Retained optional checksum differs from installed receipt: {path}")
+                    self.report["warnings"].append(
+                        f"Optional native app retained from an earlier release, not upgraded: {path}"
+                    )
                 if actual != checksum:
-                    self.error(f"Installed native app differs from its release receipt: {path}")
+                    origin = "retained checksum receipt" if filename in retained else "release receipt"
+                    self.error(f"Installed native app differs from its {origin}: {path}")
         if checked != expected:
             self.error(f"Installed {component} checksum receipt is incomplete")
+        if retained.keys() - checked:
+            self.error("Retained optional smpl-apps receipt is not covered by installed checksums")
 
     def repository_versions(self):
         result = self.command("pacman", "-Sl")
@@ -468,17 +513,30 @@ class Audit:
         )
         self.report["critical_packages"] = critical
         if critical:
-            result = self.command("pacman", "-Qk", *critical)
+            result = self.command("sudo", "-n", "pacman", "-Qk", *critical)
             if result is not None:
                 self.report["critical_package_files"] = result.stdout + result.stderr
                 if result.returncode:
-                    self.error("Critical packages have missing files; see critical_package_files in the report")
+                    self.error("Critical package files could not be verified; see critical_package_files in the report")
         installed_modules = []
         for kernel in sorted(KERNELS & packages.keys()):
+            artifacts = {}
             for name in (f"vmlinuz-{kernel}", f"initramfs-{kernel}.img"):
                 path = self.root / "boot" / name
-                if not path.is_file() or not path.stat().st_size:
+                result = self.command("sudo", "-n", "stat", "-L", "-c", "%f %s", "--", path)
+                if result is None:
+                    continue
+                if result.returncode:
+                    self.error(f"Cannot inspect boot artifact {path}: {result.stdout}{result.stderr}")
+                    continue
+                fields = result.stdout.split()
+                if len(fields) != 2 or not re.fullmatch(r"[0-9a-fA-F]+", fields[0]) or not fields[1].isdigit():
+                    self.error(f"Invalid boot artifact metadata for {path}: {result.stdout}")
+                    continue
+                if not stat.S_ISREG(int(fields[0], 16)) or not int(fields[1]):
                     self.error(f"Missing/empty boot artifact: {path}; repair before rebooting")
+                    continue
+                artifacts[name] = path
             listing = self.command("pacman", "-Qql", kernel)
             if listing is None or listing.returncode:
                 self.error(f"Cannot identify package-owned kernel modules for {kernel}")
@@ -496,12 +554,23 @@ class Audit:
             installed_modules.append(modules)
             boot_kernel = self.root / "boot" / f"vmlinuz-{kernel}"
             packaged_kernel = modules / "vmlinuz"
-            if not packaged_kernel.is_file() or not boot_kernel.is_file() or digest(packaged_kernel) != digest(boot_kernel):
-                self.error(f"Boot kernel does not match installed {kernel} modules; repair before rebooting")
+            if boot_kernel.name in artifacts:
+                result = self.command("sudo", "-n", "sha256sum", "--", boot_kernel, packaged_kernel)
+                if result is not None:
+                    checksums = [line.split(maxsplit=1)[0] for line in result.stdout.splitlines()]
+                    if result.returncode or len(checksums) != 2 or any(
+                        not re.fullmatch(r"[0-9a-f]{64}", value) for value in checksums
+                    ):
+                        self.error(f"Cannot verify boot kernel for {kernel}: {result.stdout}{result.stderr}")
+                    elif checksums[0] != checksums[1]:
+                        self.error(f"Boot kernel does not match installed {kernel} modules; repair before rebooting")
             image = self.root / "boot" / f"initramfs-{kernel}.img"
             result = self.command("sudo", "-n", "lsinitcpio", "-l", image)
-            if result is not None and (result.returncode or f"usr/lib/modules/{modules.name}/" not in result.stdout):
-                self.error(f"Initramfs does not contain the installed {kernel} module version {modules.name}")
+            if result is not None:
+                if result.returncode:
+                    self.error(f"Cannot inspect initramfs {image}: {result.stdout}{result.stderr}")
+                elif f"usr/lib/modules/{modules.name}/" not in result.stdout:
+                    self.error(f"Initramfs does not contain the installed {kernel} module version {modules.name}")
         driver_versions = {
             version.split(":")[-1].rsplit("-", 1)[0]
             for name, version in packages.items()

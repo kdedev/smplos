@@ -119,15 +119,19 @@ _cached_ver() {
 }
 
 component_files_current() {
-    local receipt="$STATE_DIR/$1.sha256"
+    local component="$1" receipt="$STATE_DIR/$1.sha256" receipts=()
     shift
     [[ -s "$receipt" && $# -gt 0 ]] || return 1
+    receipts+=("$receipt")
+    if [[ "$component" == smpl-apps && -s "$STATE_DIR/smpl-apps-retained.sha256" ]]; then
+        receipts+=("$STATE_DIR/smpl-apps-retained.sha256")
+    fi
     local file
     for file in "$@"; do
         [[ -x "$file" ]] || return 1
-        grep -qFx "$(sha256sum "$file")" "$receipt" || return 1
+        [[ "$(grep -hFx "$(sha256sum "$file")" "${receipts[@]}" | wc -l)" == 1 ]] || return 1
     done
-    sha256sum --check --status "$receipt"
+    sha256sum --check --status "${receipts[@]}"
 }
 
 repair_release_allowed() {
@@ -141,7 +145,7 @@ record_component_files() {
     local component="$1" temporary
     shift
     temporary=$(mktemp "$STATE_DIR/.receipt.XXXXXX") || return 1
-    if sha256sum "$@" > "$temporary" &&
+    if { (( $# == 0 )) || sha256sum "$@"; } > "$temporary" &&
         mv -f -- "$temporary" "$STATE_DIR/$component.sha256"; then
         return 0
     fi
@@ -214,14 +218,20 @@ n_updated=0
 # ── smpl-apps ─────────────────────────────────────────────────────────────────
 update_smpl_apps() {
     local cached_ver remote_ver
-    local app xrbin installed=()
+    local app xrbin receipt installed=() retained=() retain_xr=0
     for app in "${SMPLOS_APP_BINS[@]}"; do installed+=("/usr/local/bin/$app"); done
     for xrbin in xr-workspace xrctl xr-game xr-glasses-hotplugd; do
-        if [[ -e "/usr/local/bin/$xrbin" || -L "/usr/local/bin/$xrbin" ]] ||
-            { [[ -f "$STATE_DIR/smpl-apps.sha256" ]] &&
-              grep -qF "  /usr/local/bin/$xrbin" "$STATE_DIR/smpl-apps.sha256"; }; then
+        if [[ -e "/usr/local/bin/$xrbin" || -L "/usr/local/bin/$xrbin" ]]; then
             installed+=("/usr/local/bin/$xrbin")
+            continue
         fi
+        for receipt in "$STATE_DIR/smpl-apps.sha256" "$STATE_DIR/smpl-apps-retained.sha256"; do
+            if [[ -f "$receipt" ]] &&
+                grep -qFx "/usr/local/bin/$xrbin" <(cut -c67- "$receipt"); then
+                installed+=("/usr/local/bin/$xrbin")
+                break
+            fi
+        done
     done
     cached_ver=$(_cached_ver smpl-apps)
 
@@ -238,6 +248,9 @@ update_smpl_apps() {
         && component_files_current smpl-apps "${installed[@]}" \
         && [[ -f "${XDG_STATE_HOME:-$HOME/.local/state}/smplos/calendar-service/last-installed.service" ]]; then
         ok "smpl-apps: up to date ($cached_ver)"
+        if [[ -s "$STATE_DIR/smpl-apps-retained.sha256" ]]; then
+            log "XR module: optional binaries retained from an earlier release, not upgraded by $cached_ver"
+        fi
         return
     fi
     repair_release_allowed smpl-apps "$cached_ver" "$remote_ver" || return 1
@@ -274,8 +287,30 @@ update_smpl_apps() {
     done
     for xrbin in xr-workspace xrctl xr-game xr-glasses-hotplugd; do
         if [[ " ${installed[*]} " == *" /usr/local/bin/$xrbin "* && ! -f "$tmpdir/$xrbin" ]]; then
-            warn "smpl-apps: release omits installed optional binary $xrbin; not replacing the bundle"
-            return 1
+            retain_xr=1
+        fi
+    done
+    # Keep the installed XR module together rather than mixing old/new peers.
+    for xrbin in xr-workspace xrctl xr-game xr-glasses-hotplugd; do
+        if (( retain_xr )); then
+            [[ " ${installed[*]} " == *" /usr/local/bin/$xrbin "* ]] || continue
+            if [[ ! -x "/usr/local/bin/$xrbin" ]] ||
+                ! smplos_app_is_elf "/usr/local/bin/$xrbin" ||
+                ! smplos_app_linkage_valid "/usr/local/bin/$xrbin"; then
+                warn "smpl-apps: cannot safely retain optional binary $xrbin omitted by $remote_ver"
+                return 1
+            fi
+            for receipt in "$STATE_DIR/smpl-apps.sha256" "$STATE_DIR/smpl-apps-retained.sha256"; do
+                if [[ -f "$receipt" ]] &&
+                    grep -qFx "/usr/local/bin/$xrbin" <(cut -c67- "$receipt") &&
+                    ! grep -qxF "$(sha256sum "/usr/local/bin/$xrbin")" "$receipt"; then
+                    warn "smpl-apps: optional binary $xrbin differs from its checksum receipt and cannot be repaired by $remote_ver"
+                    return 1
+                fi
+            done
+            retained+=("/usr/local/bin/$xrbin")
+            warn "smpl-apps: $remote_ver omits part of the installed optional XR module; retaining verified $xrbin (not upgraded)"
+            continue
         fi
         [[ ! -f "$tmpdir/$xrbin" ]] || smplos_app_linkage_valid "$tmpdir/$xrbin" || return 1
     done
@@ -324,6 +359,7 @@ update_smpl_apps() {
     for app in "${SMPLOS_APP_BINS[@]}"; do installed+=("/usr/local/bin/$app"); done
     local xr_installed=0
     for xrbin in xr-workspace xrctl xr-game xr-glasses-hotplugd; do
+        (( retain_xr == 0 )) || break
         [[ -f "$tmpdir/$xrbin" ]] || continue
         smplos_install_app_binary "$tmpdir/$xrbin" "/usr/local/bin/$xrbin" || return 1
         installed+=("/usr/local/bin/$xrbin")
@@ -341,6 +377,7 @@ update_smpl_apps() {
         log "XR module: log out/in to load changed background binaries; the current session was not stopped."
     fi
 
+    record_component_files smpl-apps-retained "${retained[@]}" || return 1
     record_component_files smpl-apps "${installed[@]}" || return 1
     echo "$remote_ver" > "$STATE_DIR/smpl-apps"
     ok "smpl-apps: updated to $remote_ver"

@@ -113,6 +113,9 @@ class InstalledStateTests(unittest.TestCase):
         self.brave_lookup_failed = False
         self.brave_runtime_version = "Brave Browser 141.1.83.112\n"
         self.yay_alpm_failed = False
+        self.sudo_error = ""
+        self.critical_file_error = ""
+        self.kernel_releases = {"linux-lts": "6.12-test"}
         self.write(self.repo / "src/shared/bin/example", "#!/bin/bash\ntrue\n")
         self.write(self.repo / "src/shared/lib/example.sh", "helper() { :; }\n")
         self.write(self.repo / "src/shared/eww/quick-settings.yuck", "(box)\n")
@@ -191,7 +194,7 @@ class InstalledStateTests(unittest.TestCase):
             out = "\n".join(self.library_packages) + "\n"
         elif args[:2] == ("pacman", "-Qql"):
             out = ("/usr/bin/brave\n/opt/brave-bin/brave\n" if args[2] == "brave-bin"
-                   else "/usr/lib/modules/6.12-test/pkgbase\n")
+                   else f"/usr/lib/modules/{self.kernel_releases[args[2]]}/pkgbase\n")
         elif args == ("yay", "-Si", "--aur", "brave-bin"):
             out, status = self.brave_metadata, int(self.brave_lookup_failed)
         elif len(args) == 2 and args[0].endswith("/brave") and args[1] == "--version":
@@ -210,7 +213,16 @@ class InstalledStateTests(unittest.TestCase):
             out = {"filename": "/usr/lib/modules/6.12-test/updates/dkms/nvidia.ko.zst",
                    "version": self.nvidia_version, "vermagic": self.nvidia_vermagic}[args[4]]
         elif args[0] == "sudo":
-            out = self.initramfs
+            if self.sudo_error:
+                status, err = 1, self.sudo_error
+            elif args[2:4] == ("pacman", "-Qk"):
+                status, err = int(bool(self.critical_file_error)), self.critical_file_error
+            elif args[2] in ("stat", "sha256sum"):
+                return subprocess.run(args[2:], capture_output=True, text=True, timeout=5)
+            elif args[2:4] == ("lsinitcpio", "-l"):
+                out = self.initramfs
+            else:
+                raise AssertionError(f"Unexpected elevated command: {args}")
         elif args[0] == "vercmp":
             left, right = (tuple(int(part) for part in re.findall(r"\d+", value)) for value in args[1:])
             out = str((left > right) - (left < right)) + "\n"
@@ -228,7 +240,7 @@ class InstalledStateTests(unittest.TestCase):
         self.assertEqual(report["errors"], [])
         self.assertEqual(report["app_versions"]["smpl-apps"], "v0.8.28")
         self.assertIn(("pacman", "-Dk"), self.calls)
-        critical = next(args for args in self.calls if args[:2] == ("pacman", "-Qk"))
+        critical = next(args for args in self.calls if args[:4] == ("sudo", "-n", "pacman", "-Qk"))
         self.assertIn("glibc", critical)
         self.assertIn("hyprland", critical)
         self.assertIn("linux-lts", critical)
@@ -240,9 +252,42 @@ class InstalledStateTests(unittest.TestCase):
         self.assertIn("quick-settings.scss", errors)
         self.assertIn("example.sh", errors)
 
+    def test_theme_audit_checks_matching_overrides_and_obsolete_files_but_not_custom_only_themes(self):
+        override = self.home / ".config/smplos/themes/test/colors.toml"
+        custom = self.home / ".config/smplos/themes/custom-only/colors.toml"
+        self.write(override, "old personal override\n")
+        self.write(custom, "independent personal theme\n")
+        self.assertIn(str(override), "\n".join(self.audit()["errors"]))
+        source = self.repo / "src/shared/themes/test/colors.toml"
+        self.write(override, source.read_text())
+        stale = override.parent / "obsolete.css"
+        self.write(stale, "stale override\n")
+        self.assertIn(f"Obsolete managed theme entry: {stale}", "\n".join(self.audit()["errors"]))
+        stale.unlink()
+        self.assertEqual(self.audit()["errors"], [])
+        self.assertEqual(custom.read_text(), "independent personal theme\n")
+
     def test_native_receipt_detects_old_but_valid_elf_not_just_missing_binaries(self):
         self.write(self.root / "usr/local/bin/settings", b"\x7fELFold-settings")
         self.assertIn("differs from its release receipt", "\n".join(self.audit()["errors"]))
+
+    def test_retained_optional_app_is_verified_and_never_reported_as_upgraded(self):
+        optional = self.root / "usr/local/bin/xrctl"
+        self.write(optional, b"\x7fELFprevious-XR")
+        state = self.home / ".local/state/smplos/app-versions"
+        retained = f"{CHECK.digest(optional)}  {optional}\n"
+        self.write(state / "smpl-apps-retained.sha256", retained)
+        report = self.audit()
+        self.assertEqual(report["errors"], [])
+        self.assertEqual(report["native_files"][str(optional)]["delivery"], "retained-not-upgraded")
+        self.assertTrue(any("retained from an earlier release" in text for text in report["warnings"]))
+        (state / "smpl-apps-retained.sha256").unlink()
+        self.assertIn("checksum receipt is incomplete", "\n".join(self.audit()["errors"]))
+        self.write(state / "smpl-apps-retained.sha256", f"{'0' * 64}  {optional}\n")
+        self.assertIn("differs from its retained checksum receipt", "\n".join(self.audit()["errors"]))
+        self.write(state / "smpl-apps-retained.sha256", retained)
+        self.write(optional, b"\x7fELFchanged-XR")
+        self.assertIn("differs from its retained checksum receipt", "\n".join(self.audit()["errors"]))
 
     def test_shared_library_abi_failure_is_explicit(self):
         self.ldd_error = "Hyprland"
@@ -256,8 +301,51 @@ class InstalledStateTests(unittest.TestCase):
         (self.root / "boot/vmlinuz-linux-lts").unlink()
         self.initramfs = "usr/lib/modules/old-kernel/kernel/test.ko\n"
         errors = "\n".join(self.audit()["errors"])
-        self.assertIn("Missing/empty boot artifact", errors)
+        self.assertIn("Cannot inspect boot artifact", errors)
         self.assertIn("Initramfs does not contain", errors)
+
+    def test_private_boot_is_never_inspected_through_unprivileged_path_methods(self):
+        original = Path.stat
+
+        def private_stat(path, *args, **kwargs):
+            if path.parent == self.root / "boot":
+                raise AssertionError(f"Unprivileged boot inspection: {path}")
+            return original(path, *args, **kwargs)
+
+        with mock.patch.object(Path, "stat", private_stat):
+            self.assertEqual(self.audit()["errors"], [])
+        self.assertTrue(any(args[:3] == ("sudo", "-n", "sha256sum") for args in self.calls))
+
+    def test_lost_authorization_is_reported_as_access_failure_not_missing_files(self):
+        self.sudo_error = "sudo: a password is required\n"
+        report = self.audit()
+        errors = "\n".join(report["errors"])
+        self.assertIn("a password is required", errors)
+        self.assertNotIn("Missing/empty boot artifact", errors)
+        self.assertNotIn("does not match installed", errors)
+        self.assertIn(self.sudo_error, report["critical_package_files"])
+
+    def test_empty_boot_image_and_mismatched_kernel_are_still_failures(self):
+        self.write(self.root / "boot/initramfs-linux-lts.img", "")
+        self.write(self.root / "boot/vmlinuz-linux-lts", "wrong kernel\n")
+        errors = "\n".join(self.audit()["errors"])
+        self.assertIn("Missing/empty boot artifact", errors)
+        self.assertIn("does not match installed linux-lts", errors)
+
+    def test_surface_kernel_is_verified_independently_of_the_lts_kernel(self):
+        self.packages["linux-surface"] = "6.19.8-1"
+        self.kernel_releases["linux-surface"] = "6.19.8-surface"
+        for path, content in (
+            ("boot/vmlinuz-linux-surface", "surface\n"),
+            ("boot/initramfs-linux-surface.img", "surface initramfs\n"),
+            ("usr/lib/modules/6.19.8-surface/vmlinuz", "surface\n"),
+            ("usr/lib/modules/6.19.8-surface/pkgbase", "linux-surface\n"),
+        ):
+            self.write(self.root / path, content)
+        self.initramfs += "usr/lib/modules/6.19.8-surface/kernel/test.ko\n"
+        self.assertEqual(self.audit()["errors"], [])
+        self.write(self.root / "boot/vmlinuz-linux-surface", "wrong surface\n")
+        self.assertIn("does not match installed linux-surface", "\n".join(self.audit()["errors"]))
 
     def test_nvidia_module_must_exist_for_the_installed_kernel_not_just_running_kernel(self):
         self.packages["nvidia-open-dkms"] = "590-1"
@@ -454,7 +542,7 @@ class InstalledStateTests(unittest.TestCase):
         self.assertIn("libhyprutils.so.99", "\n".join(report["errors"]))
         self.assertIn("extra-runtime-lib", report["critical_packages"])
         self.assertEqual(report["runtime_library_packages"]["extra-runtime-lib"], "3.1-1")
-        checked = next(call for call in self.calls if call[:2] == ("pacman", "-Qk"))
+        checked = next(call for call in self.calls if call[:4] == ("sudo", "-n", "pacman", "-Qk"))
         self.assertIn("pacman", checked)
         self.assertIn("extra-runtime-lib", checked)
 

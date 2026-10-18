@@ -309,6 +309,27 @@ subsequent theme changes. `theme-set` rejects that elevated invocation.
    test desktop. Commit both sources and generated outputs.
 
 Users get the updated theme automatically on next update.
+Both stock trees in `~/.local/share/smplos/themes/` and existing matching
+overrides in `~/.config/smplos/themes/` are replaced with the exact current
+bundled contents, including removal of obsolete files. Each changed tree is
+copied and byte-verified in `${XDG_STATE_HOME:-$HOME/.local/state}/smplos/theme-backups/`
+before publication; its `path` file identifies the original location.
+Custom-only theme names are preserved. Publication shares the theme-switch
+lock and restores the old tree if the final rename fails. Protected old files
+that cannot be cleaned are retained with an explicit warning, not discarded.
+
+Grafium is the bundled notes app. Migration
+`20261017-180000-replace-logseq-with-grafium.sh` retires installed Logseq package
+variants, user/system Flatpaks and the OS-bundled AppImage. It never uses
+recursive dependency removal, Flatpak `--delete-data` or `--unused`, and never
+touches notes, graphs, `~/.logseq`, plugins or Flatpak application data.
+Managed AppImage/Flatpak launcher overrides receive verified backups before
+retirement; custom launchers remain untouched. The old first-boot Flatpak list
+is backed up and atomically filtered so another login cannot reinstall Logseq.
+`theme-set` no longer configures Logseq,
+so preserved old preferences/EDN cannot fail an otherwise successful update.
+New builds remove all three Logseq formats, prune their cached package/repo
+records, and stage only selected AppImages/Flatpaks rather than stale cache lists.
 
 ### Background-only transparency delivery
 
@@ -330,7 +351,7 @@ alpha, which fades text and images too; stock active/inactive values are equal.
    `self-managed-alpha*` tag and neutral global settings are insufficient.
    `app_background_opacity` is explicit in all 17 stock palettes; it generates
    `$theme-app-background-opacity` for native readers. `sync_themes()` copies
-   stock data, preserves user overrides, and `post_deploy()` reapplies the active
+   stock data and matching overrides after verified backups, and `post_deploy()` reapplies the active
    theme as the desktop user. No one-time migration is required.
 2. Publish compatible **nemo-smpl** and **smpl-apps** binary releases from their
    own repositories. Nemo CSS gates root alpha and transparent descendants with
@@ -402,8 +423,16 @@ from the calendar binary, and `hints-overlay` is owned by `smpl-hintsd`.
 A matching version marker does not bypass missing-binary checks, either in
 the download cache or installed bundle. Optional XR binaries remain optional.
 When included in the installed bundle, they receive the same linkage preflight
-and checksum receipt as the required apps. A replacement release missing an
-already-installed optional binary is rejected before replacing the suite.
+and checksum receipt as the required apps. If a new release omits any installed
+optional XR binary, the installed XR module is retained together rather than
+mixing old/new peers or blocking the 11 required apps. Retained executables
+must be executable ELF files, pass runtime linkage and match prior checksums
+when recorded. Missing/broken/tampered retained files still fail explicitly.
+Only delivered binaries enter `smpl-apps.sha256`; `smpl-apps-retained.sha256`
+separately covers bytes **not upgraded** by the new suite release. Both are
+required to cover every present/previously recorded optional executable. The
+audit reports `delivery: retained-not-upgraded` and a warning, not a false
+claim of new XR delivery. A subsequent complete XR release clears that record.
 
 Nemo downloads validate `.PKGINFO`, the application and document/archive
 worker paths before installation/cache publication. When the same release
@@ -848,7 +877,8 @@ The final report covers the whole upgrade, not just the bar:
   `--version` output are also checked against the installed package version,
   so a new package record with an old browser binary does not pass.
 - **Managed files:** scripts, shared helpers, desktop fragments, stock themes
-  and installed-compositor configuration are compared with the fetched source.
+  and matching personal theme overrides, and installed-compositor configuration
+  are compared with fetched source. Obsolete managed theme entries fail verification.
   Package database/dependency consistency and remaining repo upgrades are
   checked separately.
 
@@ -865,6 +895,11 @@ Full updates also compare stock boot kernel images with installed
 module trees, inspect initramfs contents for that kernel version, and verify
 NVIDIA modules for installed kernels, including DKMS. A running old kernel
 alone is not proof of a failed update.
+Critical `pacman -Qk` checks, boot metadata/digests and initramfs reads use cached
+`sudo -n` authorization. A private `/boot` remains private; neither its mode
+nor the audit's desktop-user/report ownership changes. Lost authorization and
+read errors are reported explicitly, never interpreted as missing boot files.
+Both installed Linux Surface and stock kernel layouts are checked.
 Retained trees from `kernel-modules-hook` are excluded using the installed
 kernel package's file list. NVIDIA module version and kernel vermagic must
 match the installed driver/kernel, not merely be present on disk.

@@ -146,6 +146,110 @@ class PrivilegedHandoffTests(unittest.TestCase):
         if not self.uid:
             self.skipTest("Run via sudo as a non-root desktop/test user")
 
+    def test_private_root_owned_boot_is_verified_without_root_owned_user_reports(self):
+        name = handoff.pwd.getpwuid(self.uid).pw_name
+        permitted = subprocess.run(["runuser", "-u", name, "--", "sudo", "-n", "true"],
+                                   capture_output=True, timeout=10)
+        if permitted.returncode:
+            self.skipTest("Requires the CI runner's existing noninteractive sudo permission")
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            base.chmod(0o755)
+            home = base / "home"
+            home.mkdir()
+            os.chown(home, self.uid, -1)
+            root = base / "system"
+            boot = root / "boot"
+            boot.mkdir(parents=True, mode=0o700)
+            kernel = boot / "vmlinuz-linux-lts"
+            kernel.write_text("installed kernel\n")
+            (boot / "initramfs-linux-lts.img").write_text("installed initramfs\n")
+            modules = root / "usr/lib/modules/fixture-kernel"
+            modules.mkdir(parents=True)
+            (modules / "pkgbase").write_text("linux-lts\n")
+            (modules / "vmlinuz").write_bytes(kernel.read_bytes())
+            (base / "audit.py").write_text((BIN / "smplos-update-check").read_text())
+            driver = base / "driver.py"
+            driver.write_text("""
+import json, subprocess, sys
+from pathlib import Path
+import audit
+root, home = map(Path, sys.argv[1:])
+try:
+    (root / "boot/vmlinuz-linux-lts").read_bytes()
+except PermissionError:
+    pass
+else:
+    raise AssertionError("The desktop user can unexpectedly read the private boot mount")
+def runner(*args):
+    if args[:4] == ("sudo", "-n", "pacman", "-Qk"):
+        return subprocess.CompletedProcess(args, 0, "", "")
+    if args[:4] == ("sudo", "-n", "lsinitcpio", "-l"):
+        return subprocess.CompletedProcess(args, 0, "usr/lib/modules/fixture-kernel/kernel/test.ko\\n", "")
+    if args[0] == "pacman":
+        output = ""
+        if args[1] == "-Sl":
+            output = "core linux-lts 1-1\\ncore intel-ucode 1-1\\n"
+        elif args[1] == "-Qql":
+            output = "/usr/lib/modules/fixture-kernel/pkgbase\\n"
+        return subprocess.CompletedProcess(args, int(args[1] == "-Qu"), output, "")
+    return audit.run(*args)
+check = audit.Audit(home, home / "repo", root, runner)
+check.library_packages = set()
+check.report["packages"] = {"linux-lts": "1-1", "intel-ucode": "1-1"}
+check.system()
+audit.save_report(home / "audit.json", check.report)
+print(json.dumps(check.report))
+""")
+            command = ["runuser", "-u", name, "--", "env", "PYTHONDONTWRITEBYTECODE=1",
+                       sys.executable, str(driver), str(root), str(home)]
+            result = subprocess.run(command, capture_output=True, text=True, timeout=30)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertEqual(json.loads(result.stdout)["errors"], [])
+            self.assertEqual((home / "audit.json").stat().st_uid, self.uid)
+            self.assertEqual(boot.stat().st_mode & 0o777, 0o700)
+            kernel.write_text("wrong boot kernel\n")
+            result = subprocess.run(command, capture_output=True, text=True, timeout=30)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertTrue(any("does not match installed" in error
+                                for error in json.loads(result.stdout)["errors"]))
+
+    def test_readable_root_owned_stock_theme_is_replaced_without_deleting_its_backup(self):
+        name = handoff.pwd.getpwuid(self.uid).pw_name
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            base.chmod(0o755)
+            home = base / "home"
+            stock = home / ".local/share/smplos/themes/test"
+            stock.mkdir(parents=True)
+            (stock / "colors.toml").write_text("personal old theme\n")
+            for path in (home, *home.rglob("*")):
+                os.chown(path, self.uid, -1)
+            os.chown(stock, 0, 0)
+            os.chown(stock / "colors.toml", 0, 0)
+            repo = base / "repo"
+            source = repo / "src/shared/themes/test"
+            source.mkdir(parents=True)
+            (source / "colors.toml").write_text("latest stock theme\n")
+            script = "\n".join(function(BIN / "smplos-os-update", method)
+                               for method in ("replace_theme_tree", "sync_themes"))
+            script += """
+die() { echo "$*" >&2; exit 1; }
+header() { :; }; ok() { echo "$*"; }; warn() { echo "$*" >&2; }
+sync_themes
+"""
+            result = subprocess.run(
+                ["runuser", "-u", name, "--", "env", f"HOME={home}", f"SMPLOS_REPO={repo}",
+                 f"XDG_STATE_HOME={home / '.local/state'}", "bash", "-c", script],
+                capture_output=True, text=True, timeout=20)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertEqual((stock / "colors.toml").read_text(), "latest stock theme\n")
+            self.assertEqual(stock.stat().st_uid, self.uid)
+            backups = home / ".local/state/smplos/theme-backups"
+            original = next(backups.glob("*/original/colors.toml"))
+            self.assertEqual(original.read_text(), "personal old theme\n")
+            self.assertIn("protected old files retained", result.stderr)
+
     def test_restrictive_recovery_umask_does_not_make_root_installed_libraries_unreadable(self):
         name = handoff.pwd.getpwuid(self.uid).pw_name
         with tempfile.TemporaryDirectory() as directory:

@@ -2,9 +2,6 @@
 # These are bundled into the ISO as .flatpak bundles for offline install
 # Format: Flathub application ID (one per line)
 
-# Knowledge management
-com.logseq.Logseq
-
 # Security / Password managers
 org.keepassxc.KeePassXC
 

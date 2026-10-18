@@ -93,7 +93,7 @@ smplOS ISO Builder
 Usage: build-iso.sh [EDITIONS...] [OPTIONS]
 
 Editions (stackable):
-    -p, --productivity      Office & workflow (Logseq, LibreOffice, etc.)
+    -p, --productivity      Office & workflow (Grafium, LibreOffice, etc.)
     -c, --creators          Design & media (OBS, Kdenlive, GIMP)
     -m, --communication     Chat & calls (Discord, Signal, Slack, etc.)
     -d, --development       Developer tools (VSCode, LazyVim, lazygit)
