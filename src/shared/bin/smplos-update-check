@@ -145,10 +145,18 @@ class Audit:
         else:
             self.report["source_commit"] = commit.stdout.strip()
         versions = self.home / ".local/state/smplos/app-versions"
-        self.report["app_versions"] = {
-            path.name: path.read_text().strip()
-            for path in versions.glob("*") if path.is_file() and not path.name.endswith(".sha256")
-        }
+        self.report["app_versions"] = {}
+        for path in versions.glob("*"):
+            if not path.is_file() or path.name.endswith(".sha256"):
+                continue
+            try:
+                self.report["app_versions"][path.name] = path.read_text().strip()
+            except OSError as error:
+                message = f"Cannot read installed app version marker {path}: {error}"
+                if path.name in RELEASE_COMPONENTS - {"grafium"}:
+                    self.error(message)
+                else:
+                    self.report["warnings"].append(message)
         return self.report
 
     def compare(self, source, destination, executable=False):

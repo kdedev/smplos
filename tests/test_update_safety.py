@@ -582,6 +582,24 @@ class InstalledStateTests(unittest.TestCase):
         (self.root / "usr/local/bin/settings").unlink()
         self.assertIn("Missing application", "\n".join(self.audit()["errors"]))
 
+    def test_unreadable_optional_version_cache_does_not_block_preupdate_inventory(self):
+        marker = self.home / ".local/state/smplos/app-versions/grafium"
+        self.write(marker, "v1.0\n")
+        read_text = Path.read_text
+
+        def read(path, *args, **kwargs):
+            if path == marker:
+                raise PermissionError("private old app cache")
+            return read_text(path, *args, **kwargs)
+
+        audit = CHECK.Audit(self.home, self.repo, self.root, self.runner)
+        with mock.patch.object(Path, "read_text", read):
+            report = audit.snapshot()
+        self.assertEqual(report["errors"], [])
+        self.assertEqual(report["optional_failures"], [])
+        self.assertIn("private old app cache", "\n".join(report["warnings"]))
+        self.assertEqual(report["app_versions"]["smpl-apps"], "v0.8.28")
+
     def test_optional_private_library_owners_never_become_required_package_checks(self):
         self.packages["grafium-bin"] = "1.0-1"
 
