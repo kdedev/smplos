@@ -24,8 +24,8 @@ for arg in "$@"; do
 done
 
 # Clean and recreate
-rm -rf "${SHARE:?}"/{eww,bin,lib,hypr,themes,configs,icons,st,notif-center,settings,webapp-center,app-center,start-menu,applications}
-mkdir -p "$SHARE"/{eww,bin,lib,hypr,themes,configs,icons,st,notif-center,settings,webapp-center,app-center,start-menu,applications}
+rm -rf "${SHARE:?}"/{eww,bin,lib,hypr,plugins,themes,configs,icons,st,notif-center,settings,webapp-center,app-center,start-menu,applications}
+mkdir -p "$SHARE"/{eww,bin,lib,hypr,plugins,themes,configs,icons,st,notif-center,settings,webapp-center,app-center,start-menu,applications}
 
 # EWW
 cp -r "$SRC_DIR/shared/eww/"* "$SHARE/eww/"
@@ -68,6 +68,11 @@ log "Hypr: $(find "$SHARE/hypr" -type f | wc -l) files"
 # Themes
 cp -r "$SRC_DIR/shared/themes/"* "$SHARE/themes/"
 log "Themes: $(find "$SHARE/themes" -type f | wc -l) files"
+
+# Hyprland plugins: sources only, the VM compiles them against its own Hyprland
+cp -r "$SRC_DIR/compositors/hyprland/plugins/." "$SHARE/plugins/"
+find "$SHARE/plugins" -type d -name build -prune -exec rm -rf {} +
+log "Plugins: $(find "$SHARE/plugins" -type f | wc -l) files"
 
 # ── Rust apps + st-wl (use container-built binaries from build-apps.sh) ──
 BIN_DIR="$(dirname "$SCRIPT_DIR")/.cache/app-binaries"

@@ -1062,6 +1062,55 @@ install_keypad_packaging() {
 }
 
 ###############################################################################
+# Build the Hyprland compositor plugins (smpl-hud, ...)
+#
+# A Hyprland plugin only loads into the exact Hyprland build it was compiled
+# against, so it is compiled here against the very hyprland package this ISO
+# installs and stored under that build's ABI key in
+# /usr/local/lib/smplos/plugins, where both the live session and the installed
+# system load it from. The build and key logic is smplos-plugins' own, so the
+# ISO and Update OS (which rebuilds after a Hyprland update) cannot drift.
+#
+# The plugin only adds the HUD window frames, so a failure warns instead of
+# failing the ISO build; windows then keep their stock borders.
+###############################################################################
+
+# Newest package file for $1 in the offline mirror (empty when there is none).
+mirror_package_file() {
+    find "$OFFLINE_MIRROR_DIR" -maxdepth 1 -name "$1-[0-9]*.pkg.tar.*" ! -name '*.sig' 2>/dev/null \
+        | sort -V | tail -n1
+}
+
+build_hyprland_plugins() {
+    local src="$SRC_DIR/compositors/hyprland/plugins"
+    [[ "$COMPOSITOR" == "hyprland" && -d "$src" ]] || return 0
+    log_step "Building Hyprland plugins"
+
+    local plugin_dir="$PROFILE_DIR/airootfs/usr/local/lib/smplos/plugins" package
+    package=$(mirror_package_file hyprland)
+    if [[ -z "$package" ]]; then
+        log_warn "Hyprland plugins skipped: no hyprland package in the offline mirror"
+        return 0
+    fi
+
+    # The headers must come from the package the ISO ships, not from whatever
+    # version the repositories carry today.
+    if ! retry pacman --noconfirm -Sy || ! retry pacman --noconfirm -U --needed "$package"; then
+        log_warn "Hyprland plugins skipped: could not install $(basename "$package") to compile against"
+        return 0
+    fi
+
+    mkdir -p "$plugin_dir"
+    if SMPLOS_PLUGIN_DIR="$plugin_dir" bash "$SRC_DIR/shared/bin/smplos-plugins" sync --src "$src" \
+        && compgen -G "$plugin_dir/*.so" >/dev/null; then
+        log_info "Hyprland plugins built for $(basename "$package")"
+    else
+        rm -rf "$plugin_dir"
+        log_warn "Hyprland plugins skipped: the build failed (see above); windows keep their stock borders"
+    fi
+}
+
+###############################################################################
 # Configure Airootfs
 ###############################################################################
 
@@ -2273,6 +2322,7 @@ main() {
     update_profiledef
     setup_airootfs
     install_prebuilt_apps
+    build_hyprland_plugins
     setup_boot
     build_iso
     

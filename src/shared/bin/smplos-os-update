@@ -611,13 +611,9 @@ sync_apps() {
         fi
     fi
 
-    # NOTE: compositor plugins (*.so) are intentionally NOT installed here.
-    # They are ABI-locked to the exact hyprland version, which is frozen by the
-    # critical-package hold and only moves via a critical bundle. Installing
-    # the latest plugin build here — while hyprland stays pinned to an older
-    # version — would break the plugin (ABI mismatch). Any future compositor
-    # plugin is therefore installed by smplos-update right after the critical
-    # bundle sets hyprland to its pinned version.
+    # NOTE: compositor plugins (*.so) are intentionally NOT downloaded here.
+    # They are ABI-locked to the exact hyprland build, so sync_plugins compiles
+    # them locally against the Hyprland that is installed on this machine.
 
     if [[ $n_bin -gt 0 ]]; then
         ok "$n_bin app binary/binaries updated"
@@ -626,6 +622,47 @@ sync_apps() {
     else
         ok "smpl-os apps already current"
     fi
+}
+
+# ── Sync compositor plugins ───────────────────────────────────────────────────
+# A Hyprland plugin only loads into the exact Hyprland build it was compiled
+# against. It is therefore compiled HERE against the Hyprland installed right
+# now rather than downloaded: a binary built elsewhere could never be
+# guaranteed to match this machine's hyprland package. smplos-plugins keeps
+# the build for the running compositor until it restarts; if a build fails,
+# windows simply keep their stock borders until the next successful update.
+sync_plugins() {
+    local src="$SMPLOS_REPO/src/compositors/hyprland/plugins"
+    local tool="$SMPLOS_REPO/src/shared/bin/smplos-plugins"
+    [[ -d "$src" && -f "$tool" ]] || return 0
+    command -v hyprctl >/dev/null 2>&1 || return 0
+
+    header ""
+    header "── Syncing compositor plugins ──"
+
+    local run=(bash "$tool" sync --src "$src")
+    if [[ $EUID -ne 0 ]]; then
+        # Swap a rebuilt plugin into the running compositor, reaching the
+        # desktop session even from a bare tty. An elevated legacy run has no
+        # session of its own; post_deploy loads the plugin for it instead.
+        run+=(--reload)
+        if smplos_have_hyprland; then
+            run=(smplos_run_as_user "${run[@]}")
+        fi
+    fi
+
+    local status=0
+    if [[ $QUIET -eq 1 ]]; then
+        "${run[@]}" >/dev/null || status=$?
+    else
+        "${run[@]}" || status=$?
+    fi
+    if [[ $status -eq 0 ]]; then
+        ok "Compositor plugins are current"
+    else
+        warn "Compositor plugins could not be built; windows keep their stock borders. Run Update OS again to retry."
+    fi
+    return 0
 }
 
 # ── Run migrations ────────────────────────────────────────────────────────────
@@ -953,6 +990,18 @@ post_deploy() {
         log "Reloading Hyprland config..."
         smplos_run_as_user hyprctl reload || failed=1
     fi
+
+    # Plugins normally load from the session's autostart. A session that began
+    # before the plugin existed gets it now (a no-op when it is already loaded).
+    # A missing plugin only costs the HUD frames, so this never fails the update.
+    local plugins_tool="$SMPLOS_REPO/src/shared/bin/smplos-plugins"
+    if [[ -f "$plugins_tool" ]]; then
+        if hyprctl version &>/dev/null; then
+            bash "$plugins_tool" load || warn "Compositor plugin did not load; see: smplos-plugins status"
+        elif smplos_have_hyprland; then
+            smplos_run_as_user bash "$plugins_tool" load || warn "Compositor plugin did not load; see: smplos-plugins status"
+        fi
+    fi
     return "$failed"
 }
 
@@ -1050,6 +1099,7 @@ if [[ $SCRIPTS_ONLY -eq 0 ]]; then
         sync_apps
     fi
     sync_hypr_configs
+    sync_plugins
     migrations_failed=0
     migration_phase=all
     [[ ${CORE_ONLY:-0} -ne 1 ]] || migration_phase=core

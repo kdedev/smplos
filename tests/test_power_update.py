@@ -359,7 +359,7 @@ SELF_UPDATED=1; SELF_CANONICAL="$HOME/not-installed"
 pull_updates() { return 1; }
 sync_scripts() { :; }; sync_configs() { :; }; sync_themes() { :; }
 sync_apps() { :; }; sync_user_units() { :; }; run_migrations() { :; }; cleanup_shadow_bins() { :; }
-sync_keypad_support() { :; }
+sync_keypad_support() { :; }; sync_plugins() { :; }
 post_deploy() { :; }; rebuild-app-cache() { :; }
 """
         script = self.sync_script() + stubs + main
@@ -394,7 +394,7 @@ SELF_UPDATED=1; SELF_CANONICAL="$HOME/not-installed"
 pull_updates() {{ return 1; }}
 sync_scripts() {{ :; }}; sync_configs() {{ :; }}; sync_themes() {{ :; }}
 sync_apps() {{ :; }}; sync_user_units() {{ :; }}; cleanup_shadow_bins() {{ :; }}
-sync_keypad_support() {{ :; }}
+sync_keypad_support() {{ :; }}; sync_plugins() {{ :; }}
 post_deploy() {{ :; }}; rebuild-app-cache() {{ :; }}
 run_migrations() {{ bash "{BIN / 'smplos-migrate'}"; }}
 """

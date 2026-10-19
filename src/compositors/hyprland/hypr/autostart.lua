@@ -34,6 +34,10 @@ hl.on("hyprland.start", function()
     -- Window guard — snap floating windows that end up off-screen back into view
     hl.exec_cmd("window-guard")
 
+    -- HUD borders: load the compositor plugin (draws nothing unless the active
+    -- theme sets hud_frame = true; a silent no-op if no build matches this Hyprland)
+    hl.exec_cmd("smplos-plugins load")
+
     -- Restore workspace-group monitor assignments
     hl.exec_cmd("bash -c 'sleep 1 && workspace-session-init'")
 

@@ -9,14 +9,21 @@ on:
       - 'src/test-nemo-css.py'
       - 'src/shared/themes/**'
       - 'src/shared/bin/theme-set*'
+      - 'src/shared/bin/smplos-plugins'
+      - 'src/shared/bin/smplos-os-update'
       - 'src/shared/bin/bar-ctl'
       - 'src/shared/eww/**'
+      - 'src/shared/installer/automated_script.sh'
       - 'release/dev-local.sh'
+      - 'release/dev-push.sh'
+      - 'release/dev-apply.sh'
       - 'tests/test_keypad_glass.py'
       - 'tests/test_bar_ctl.py'
       - 'tests/test_dev_local.py'
+      - 'tests/test_smplos_plugins.py'
       - 'src/builder/build.sh'
       - 'src/compositors/hyprland/hypr/**'
+      - 'src/compositors/hyprland/plugins/**'
       - 'tests/test_theme*.py'
       - '.github/workflows/themes.yml'
   pull_request:
@@ -26,14 +33,21 @@ on:
       - 'src/test-nemo-css.py'
       - 'src/shared/themes/**'
       - 'src/shared/bin/theme-set*'
+      - 'src/shared/bin/smplos-plugins'
+      - 'src/shared/bin/smplos-os-update'
       - 'src/shared/bin/bar-ctl'
       - 'src/shared/eww/**'
+      - 'src/shared/installer/automated_script.sh'
       - 'release/dev-local.sh'
+      - 'release/dev-push.sh'
+      - 'release/dev-apply.sh'
       - 'tests/test_keypad_glass.py'
       - 'tests/test_bar_ctl.py'
       - 'tests/test_dev_local.py'
+      - 'tests/test_smplos_plugins.py'
       - 'src/builder/build.sh'
       - 'src/compositors/hyprland/hypr/**'
+      - 'src/compositors/hyprland/plugins/**'
       - 'tests/test_theme*.py'
       - '.github/workflows/themes.yml'
 
@@ -47,17 +61,32 @@ jobs:
       - uses: actions/checkout@v5
       - name: Check shell syntax
         run: |
-          bash -n src/regen-all-themes.sh
-          bash -n src/generate-theme-configs.sh
-          bash -n src/shared/bin/theme-set
-          bash -n src/shared/bin/bar-ctl release/dev-local.sh
-          bash -n src/builder/build.sh
+          # bash -n reads only its first operand; check every script on its own.
+          for script in \
+            src/regen-all-themes.sh \
+            src/generate-theme-configs.sh \
+            src/shared/bin/theme-set \
+            src/shared/bin/bar-ctl \
+            release/dev-local.sh \
+            src/builder/build.sh \
+            src/shared/bin/smplos-plugins \
+            src/shared/bin/smplos-os-update \
+            src/shared/installer/automated_script.sh \
+            release/dev-push.sh \
+            release/dev-apply.sh
+          do
+            bash -n "$script"
+          done
       - name: Check generated themes without rewriting files
         run: bash src/regen-all-themes.sh --check
       - name: Exercise isolated theme fixtures
         run: python3 -m unittest discover -s tests -p 'test_theme*.py' -v
-      - name: Check glass opt-in and local deployment lifecycle
-        run: PYTHONPATH=tests python3 -m unittest test_keypad_glass test_bar_ctl test_dev_local -v
+      - name: Unit-test the Hyprland plugins without a compositor
+        run: |
+          make -C src/compositors/hyprland/plugins/smpl-hud test
+          make -C src/compositors/hyprland/plugins/smpl-scroll test
+      - name: Check glass opt-in, local deployment lifecycle and plugin delivery
+        run: PYTHONPATH=tests python3 -m unittest test_keypad_glass test_bar_ctl test_dev_local test_smplos_plugins -v
       - name: Install GTK renderer test dependencies
         run: sudo apt-get update -qq && sudo apt-get install -y python3-gi python3-gi-cairo python3-cairo gir1.2-gtk-3.0 xvfb xauth
       - name: Render native controls and background ownership

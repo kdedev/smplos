@@ -239,6 +239,15 @@ EOF
     chmod 644 /mnt/usr/local/lib/smplos/*.sh 2>/dev/null || true
   fi
 
+  # Compositor plugins (smpl-hud, ...) built for this ISO's Hyprland. Each file
+  # is named after the Hyprland build it fits; smplos-plugins loads the one
+  # matching the running compositor and Update OS rebuilds after a Hyprland update.
+  if compgen -G '/usr/local/lib/smplos/plugins/*.so' >/dev/null; then
+    mkdir -p /mnt/usr/local/lib/smplos/plugins
+    cp /usr/local/lib/smplos/plugins/* /mnt/usr/local/lib/smplos/plugins/ 2>/dev/null || true
+    chmod 755 /mnt/usr/local/lib/smplos/plugins/*.so 2>/dev/null || true
+  fi
+
   # Copy AppImages to installed system
   if ls /opt/appimages/*.AppImage &>/dev/null; then
     mkdir -p /mnt/opt/appimages

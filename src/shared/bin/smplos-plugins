@@ -1,0 +1,346 @@
+#!/bin/bash
+# smplos-plugins -- load, inspect and (re)build the Hyprland compositor plugins
+#
+# smpl-hud (the HUD window frames), smpl-scroll (scrolling-layout columns wider
+# than the monitor) and any future plugin are native Hyprland
+# plugins. A plugin is ABI-locked to the exact Hyprland build it was compiled
+# against, so every binary is stored under that build's ABI key:
+#
+#     /usr/local/lib/smplos/plugins/<name>.<abi-key>.so
+#
+# and only the file matching the RUNNING compositor is ever loaded. A Hyprland
+# update therefore never loads a stale binary: `sync` (run by Update OS) builds
+# the one for the newly installed Hyprland, and until it exists windows simply
+# keep their stock borders. Should a plugin ever crash the compositor,
+# start-hyprland relaunches Hyprland in safe mode, which skips the user config
+# (and with it this loader), so a bad plugin cannot lock anyone out.
+#
+# Usage:
+#   smplos-plugins abi [--installed|--running]  print the Hyprland ABI key
+#   smplos-plugins status                       plugin files, ABI keys, load state
+#   smplos-plugins load   [name...]             load plugins built for this Hyprland
+#   smplos-plugins unload [name...]
+#   smplos-plugins reload [name...]
+#   smplos-plugins sync [--src DIR] [--rebuild] [--reload]
+#                                               build plugins for the installed Hyprland
+#
+# `load` is idempotent and a silent no-op outside a Hyprland session.
+# `sync` compiles every <DIR>/<name>/ that has a Makefile producing <name>.so
+# (out of tree, so DIR may be read-only), installs it under the installed
+# Hyprland's ABI key, and prunes keys that are neither installed nor running.
+# It needs the hyprland headers plus base-devel and exits non-zero on failure.
+#
+# Environment (tests and dev): SMPLOS_PLUGIN_DIR, SMPLOS_HYPRLAND_VERSION_H.
+
+set -uo pipefail
+
+PLUGIN_DIR="${SMPLOS_PLUGIN_DIR:-/usr/local/lib/smplos/plugins}"
+VERSION_H="${SMPLOS_HYPRLAND_VERSION_H:-/usr/include/hyprland/src/version.h}"
+DEFAULT_SRC="${SMPLOS_PATH:-$HOME/.local/share/smplos}/repo/src/compositors/hyprland/plugins"
+STAMP_EXT=".src-sha256"
+
+log()  { echo "smplos-plugins: $*"; }
+warn() { echo "smplos-plugins: $*" >&2; }
+die()  { warn "$*"; exit 1; }
+
+usage() { sed -n '2,/^$/p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; }
+
+# hyprctl with a hard timeout: a wedged compositor must never hang the caller.
+hypr() { timeout -s KILL 5 hyprctl "$@"; }
+
+have_session() { hypr version >/dev/null 2>&1; }
+
+valid_name() { [[ "$1" =~ ^[A-Za-z0-9_-]+$ ]]; }
+
+# ── ABI keys ──────────────────────────────────────────────────────────────────
+running_abi() {
+    hypr -j version 2>/dev/null |
+        sed -n 's/.*"abiHash"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -n1
+}
+
+header_define() {
+    sed -n "s/^#define[[:space:]]\{1,\}$1[[:space:]]\{1,\}\"\([^\"]*\)\".*/\1/p" "$VERSION_H" | head -n1
+}
+
+strip_patch() { [[ "$1" == *.* ]] && echo "${1%.*}" || echo "$1"; }
+
+# The key Hyprland's own headers define for the INSTALLED package; mirrors
+# __hyprland_api_get_client_hash() in hyprland/src/plugins/PluginAPI.hpp.
+installed_abi() {
+    [[ -r "$VERSION_H" ]] || return 1
+    local hash aq hu hg hc hlg
+    hash=$(header_define GIT_COMMIT_HASH)
+    aq=$(header_define AQUAMARINE_VERSION)
+    hu=$(header_define HYPRUTILS_VERSION)
+    hg=$(header_define HYPRGRAPHICS_VERSION)
+    hc=$(header_define HYPRCURSOR_VERSION)
+    hlg=$(header_define HYPRLANG_VERSION)
+    [[ "$hash" =~ ^[0-9a-f]{40}$ && -n "$aq" && -n "$hu" && -n "$hg" && -n "$hc" && -n "$hlg" ]] || return 1
+    printf '%s_aq_%s_hu_%s_hg_%s_hc_%s_hlg_%s\n' "$hash" "$(strip_patch "$aq")" \
+        "$(strip_patch "$hu")" "$(strip_patch "$hg")" "$(strip_patch "$hc")" "$(strip_patch "$hlg")"
+}
+
+# ── Installed plugin files ───────────────────────────────────────────────────
+# Prints "<name> <abi-key> <path>" per binary; the name never contains a dot.
+plugin_files() {
+    local file base name key
+    for file in "$PLUGIN_DIR"/*.so; do
+        [[ -f "$file" ]] || continue
+        base="${file##*/}"
+        base="${base%.so}"
+        name="${base%%.*}"
+        key="${base#*.}"
+        [[ "$name" != "$base" ]] && valid_name "$name" && [[ -n "$key" ]] || continue
+        printf '%s %s %s\n' "$name" "$key" "$file"
+    done
+}
+
+plugin_names() { plugin_files | cut -d' ' -f1 | sort -u; }
+
+has_plugin_files() { plugin_files | grep -q "^$1 "; }
+
+# Matches the first line of each `hyprctl plugin list` entry: "Plugin <name> by <author>:".
+is_loaded() { hypr plugin list 2>/dev/null | grep -q "^Plugin $1 by "; }
+
+# Leaves the requested names (all installed plugins when none) in $NAMES.
+resolve_names() {
+    local name
+    NAMES=("$@")
+    if [[ ${#NAMES[@]} -eq 0 ]]; then
+        mapfile -t NAMES < <(plugin_names)
+    fi
+    for name in "${NAMES[@]}"; do
+        valid_name "$name" || die "invalid plugin name: $name"
+    done
+}
+
+# ── load / unload ────────────────────────────────────────────────────────────
+note_stale() {
+    local name="$1" abi="$2" state
+    has_plugin_files "$name" || return 0
+    state="${XDG_STATE_HOME:-$HOME/.local/state}/smplos/plugin-$name.stale"
+    [[ "$(cat "$state" 2>/dev/null)" == "$abi" ]] && return 0
+    mkdir -p "${state%/*}" && printf '%s\n' "$abi" > "$state"
+    warn "$name was built for another Hyprland version; run Update OS (or 'smplos-plugins sync') to rebuild it"
+    if command -v notify-send >/dev/null 2>&1; then
+        notify-send -a smplOS -u low "Compositor plugin out of date" \
+            "$name needs a rebuild for this Hyprland version. Run Update OS." || true
+    fi
+}
+
+cmd_load() {
+    have_session || return 0
+    local abi name path reply rc=0
+    abi=$(running_abi)
+    [[ -n "$abi" ]] || { warn "cannot read the compositor ABI; not loading plugins"; return 1; }
+    resolve_names "$@"
+    for name in "${NAMES[@]}"; do
+        is_loaded "$name" && continue
+        path="$PLUGIN_DIR/$name.$abi.so"
+        if [[ ! -f "$path" ]]; then
+            note_stale "$name" "$abi"
+            continue
+        fi
+        reply=$(hypr plugin load "$path" 2>&1)
+        if is_loaded "$name"; then
+            log "loaded $name"
+        else
+            warn "failed to load $name: ${reply:-no reply from hyprctl}"
+            rc=1
+        fi
+    done
+    return $rc
+}
+
+cmd_unload() {
+    have_session || return 0
+    local name key file n rc=0
+    resolve_names "$@"
+    for name in "${NAMES[@]}"; do
+        is_loaded "$name" || continue
+        # hyprctl identifies a loaded plugin by the exact path it was loaded from.
+        while read -r n key file; do
+            [[ "$n" == "$name" ]] || continue
+            hypr plugin unload "$file" >/dev/null 2>&1
+            is_loaded "$name" || break
+        done < <(plugin_files)
+        if is_loaded "$name"; then
+            warn "could not unload $name"
+            rc=1
+        else
+            log "unloaded $name"
+        fi
+    done
+    return $rc
+}
+
+cmd_reload() {
+    cmd_unload "$@"
+    cmd_load "$@"
+}
+
+# ── status / abi ─────────────────────────────────────────────────────────────
+cmd_abi() {
+    local key=""
+    case "${1:-}" in
+        --installed) key=$(installed_abi) ;;
+        --running)   key=$(running_abi) ;;
+        "")          key=$(running_abi); [[ -n "$key" ]] || key=$(installed_abi) ;;
+        *)           die "abi: unknown option $1" ;;
+    esac
+    [[ -n "$key" ]] || return 1
+    echo "$key"
+}
+
+cmd_status() {
+    local running installed name key file tags
+    running=$(running_abi)
+    installed=$(installed_abi)
+    echo "plugin dir     $PLUGIN_DIR"
+    echo "running ABI    ${running:-none (no compositor session)}"
+    echo "installed ABI  ${installed:-unknown (Hyprland headers not found)}"
+    while read -r name key file; do
+        tags=()
+        [[ -n "$running" && "$key" == "$running" ]] && tags+=(running)
+        [[ -n "$installed" && "$key" == "$installed" ]] && tags+=(installed)
+        [[ -n "$running" && "$key" == "$running" ]] && is_loaded "$name" && tags+=(loaded)
+        printf '%-10s %s  %s\n' "$name" "$key" "${tags[*]:-stale}"
+    done < <(plugin_files)
+}
+
+# ── sync: build + install ────────────────────────────────────────────────────
+# Run a command that writes below $PLUGIN_DIR: directly when we may write there
+# (root, or a user-owned test dir), otherwise through sudo.
+as_admin() {
+    if [[ $EUID -eq 0 || -w "$PLUGIN_DIR" ]]; then "$@"; else sudo "$@"; fi
+}
+
+# Compile as the desktop user, never as root, when Update OS elevated us.
+as_builder() {
+    if [[ $EUID -eq 0 && -n "${SMPLOS_INVOKER_USER:-}" ]]; then
+        runuser -u "$SMPLOS_INVOKER_USER" -- "$@"
+    else
+        "$@"
+    fi
+}
+
+check_toolchain() {
+    local tool missing=()
+    for tool in make pkg-config "${CXX:-g++}"; do
+        command -v "${tool%% *}" >/dev/null 2>&1 || missing+=("${tool%% *}")
+    done
+    [[ ${#missing[@]} -eq 0 ]] && return 0
+    warn "cannot build plugins: missing ${missing[*]} (install base-devel)"
+    return 1
+}
+
+# Content hash of what a plugin binary is built from, kept beside the binary so
+# a changed source tree rebuilds it even though the ABI key is unchanged.
+source_hash() {
+    find "$1" -maxdepth 1 -type f \( -name '*.cpp' -o -name '*.hpp' -o -name Makefile \) -print0 |
+        LC_ALL=C sort -z | xargs -r0 cat | sha256sum | cut -d' ' -f1
+}
+
+# Replace-by-rename so a compositor that has the old binary mapped never sees
+# it change underneath it.
+install_atomic() {
+    local source="$1" destination="$2" mode="$3" temporary
+    as_admin install -d -m755 -- "${destination%/*}" || return 1
+    temporary=$(as_admin mktemp "$destination.XXXXXX") || return 1
+    if as_admin install -m"$mode" -- "$source" "$temporary" &&
+        as_admin mv -f -- "$temporary" "$destination"; then
+        return 0
+    fi
+    as_admin rm -f -- "$temporary"
+    return 1
+}
+
+# Builds <dir> for ABI key $3 unless an up-to-date binary exists. Appends to
+# RELOAD when a binary for the RUNNING compositor was replaced.
+build_plugin() {
+    local name="$1" dir="$2" key="$3" force="$4" running="$5" hash out tmp
+    out="$PLUGIN_DIR/$name.$key.so"
+    hash=$(source_hash "$dir")
+    if [[ $force -eq 0 && -f "$out" && "$(cat "$out$STAMP_EXT" 2>/dev/null)" == "$hash" ]]; then
+        log "$name: up to date for Hyprland ${key:0:10}"
+        return 0
+    fi
+    check_toolchain || return 1
+    log "$name: building for Hyprland ${key:0:10}..."
+    tmp=$(as_builder mktemp -d "${TMPDIR:-/tmp}/smplos-plugin.XXXXXX") || { warn "$name: no temporary directory"; return 1; }
+    if ! as_builder make -C "$dir" BUILD="$tmp" all >"$tmp/build.log" 2>&1 || [[ ! -s "$tmp/$name.so" ]]; then
+        warn "$name: build failed; end of the build log:"
+        tail -n 25 "$tmp/build.log" >&2
+        as_builder rm -rf -- "$tmp"
+        return 1
+    fi
+    printf '%s\n' "$hash" > "$tmp/stamp"
+    if install_atomic "$tmp/$name.so" "$out" 755 && install_atomic "$tmp/stamp" "$out$STAMP_EXT" 644; then
+        as_builder rm -rf -- "$tmp"
+        log "$name: installed $out"
+        [[ "$key" == "$running" ]] && RELOAD+=("$name")
+        return 0
+    fi
+    warn "$name: could not install into $PLUGIN_DIR"
+    as_builder rm -rf -- "$tmp"
+    return 1
+}
+
+# Drops binaries built for Hyprland versions that are neither installed nor
+# running; the running one stays until the compositor restarts.
+prune_plugin() {
+    local name="$1" installed="$2" running="$3" n key file
+    while read -r n key file; do
+        [[ "$n" == "$name" && "$key" != "$installed" && "$key" != "$running" ]] || continue
+        as_admin rm -f -- "$file" "$file$STAMP_EXT" && log "$name: removed build for old Hyprland ${key:0:10}"
+    done < <(plugin_files)
+}
+
+cmd_sync() {
+    local src="$DEFAULT_SRC" force=0 reload=0 key running dir name rc=0
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --src)     [[ $# -ge 2 ]] || die "sync: --src needs a directory"; src="$2"; shift ;;
+            --rebuild) force=1 ;;
+            --reload)  reload=1 ;;
+            *)         die "sync: unknown option $1" ;;
+        esac
+        shift
+    done
+    [[ -d "$src" ]] || die "sync: no plugin sources at $src"
+    key=$(installed_abi) || die "sync: Hyprland headers not found ($VERSION_H); is the hyprland package installed?"
+    running=$(running_abi)
+    RELOAD=()
+    for dir in "$src"/*/; do
+        [[ -f "${dir}Makefile" ]] || continue
+        name=$(basename "$dir")
+        valid_name "$name" || { warn "sync: skipping $name (plugin names use letters, digits, - and _)"; continue; }
+        if build_plugin "$name" "${dir%/}" "$key" "$force" "$running"; then
+            prune_plugin "$name" "$key" "$running"
+        else
+            rc=1
+        fi
+    done
+    if [[ $reload -eq 1 ]]; then
+        [[ ${#RELOAD[@]} -eq 0 ]] || cmd_unload "${RELOAD[@]}" || rc=1
+        cmd_load || rc=1
+    fi
+    return $rc
+}
+
+main() {
+    local cmd="${1:-}"
+    [[ $# -eq 0 ]] || shift
+    case "$cmd" in
+        abi)    cmd_abi "$@" ;;
+        status) cmd_status ;;
+        load)   cmd_load "$@" ;;
+        unload) cmd_unload "$@" ;;
+        reload) cmd_reload "$@" ;;
+        sync)   cmd_sync "$@" ;;
+        ""|-h|--help|help) usage ;;
+        *)      usage >&2; return 2 ;;
+    esac
+}
+
+main "$@"
