@@ -471,10 +471,12 @@ and on demand:
   their next update, and adds `Hyprland --verify-config` for every bind. The Monday run is the early
   warning that a new Hyprland changed the Lua API under the loader.
 
-To make a failure block a release, mark both jobs of that workflow as required status checks in the
-branch protection rules for `main`; the workflow has no path filter, so a required check never sits
-pending. A release workflow can also gate on it with `uses: ./.github/workflows/keybindings.yml`.
-The lab is the one check left to run by hand before a release.
+`auto-release.yml` calls this workflow and its version bump `needs` it, so every automatic release
+waits for both jobs and a failing shortcut stops the release. Fix it and push, or re-run the failed
+jobs if it was a mirror hiccup (`gh run rerun <id> --failed`); the release goes out once they pass.
+Marking both jobs as required status checks in the branch protection rules for `main` would also
+keep a failing pull request from merging; the workflow has no path filter, so a required check
+never sits pending. The lab is the one check left to run by hand before a release.
 
 ---
 

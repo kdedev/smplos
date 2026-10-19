@@ -11,8 +11,9 @@ name: Keybindings
 #           release that changes the Lua API under us fails here before it reaches anyone.
 #
 # The lab, which presses every chord in a headless Hyprland, needs a GPU render node and runs
-# locally: tools/keybind-check lab. DEVELOPMENT.md explains all of it. To gate a release on these
-# checks, call this workflow from the release one: `uses: ./.github/workflows/keybindings.yml`.
+# locally: tools/keybind-check lab. DEVELOPMENT.md explains all of it. auto-release.yml calls this
+# workflow (`uses: ./.github/workflows/keybindings.yml`) and its version bump needs it, so a
+# failure here stops the release.
 on:
   push:
     branches: [main]
