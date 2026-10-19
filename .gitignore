@@ -75,3 +75,6 @@ Screenshot_*.png
 research/scroll-study/hyprscroller/
 research/scroll-study/scroll/
 tools/smplos-scrolling-debug-*.log
+
+# ── Python bytecode (the keybind checker and the tests) ─────
+__pycache__/

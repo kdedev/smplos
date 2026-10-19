@@ -1,0 +1,80 @@
+name: Keybindings
+
+# Checks every keyboard shortcut on every push to main and every pull request. There is no path
+# filter on purpose: it lets both jobs be required status checks (a required check that a path
+# filter skipped waits forever) and catches a shortcut broken by a change somewhere unexpected,
+# such as a script a bind runs or a package list.
+#
+#   static  bindings_loader.lua parity and the static rules, with only Lua. Fast and exact.
+#   native  the same, plus `Hyprland --verify-config` on every bind, on the newest Arch Hyprland,
+#           which is what users get with their next update. It also runs weekly, so a Hyprland
+#           release that changes the Lua API under us fails here before it reaches anyone.
+#
+# The lab, which presses every chord in a headless Hyprland, needs a GPU render node and runs
+# locally: tools/keybind-check lab. DEVELOPMENT.md explains all of it. To gate a release on these
+# checks, call this workflow from the release one: `uses: ./.github/workflows/keybindings.yml`.
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    - cron: "17 4 * * 1"
+  workflow_call:
+  workflow_dispatch:
+    inputs:
+      filter:
+        description: "Only tests whose name contains this (unittest -k), e.g. SUPER_TAB or workspaces"
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  static:
+    name: static (rules and loader parity)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      KEYBIND_CHECK_REQUIRE: lua,xkbcommon
+      PYTHONDONTWRITEBYTECODE: "1"
+      FILTER: ${{ inputs.filter }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install Lua and libxkbcommon
+        run: sudo apt-get update -qq && sudo apt-get install -y --no-install-recommends lua5.4 libxkbcommon0
+      - name: Show the tools under test
+        run: python3 --version && tools/keybind-check doctor
+      - name: Check every bind
+        run: |
+          args=()
+          if [ -n "$FILTER" ]; then args=(-k "$FILTER"); fi
+          PYTHONPATH=tests python3 -m unittest test_keybindings -v "${args[@]}"
+
+  native:
+    name: native (Hyprland --verify-config)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    container: archlinux:latest
+    env:
+      KEYBIND_CHECK_REQUIRE: lua,xkbcommon,hyprland
+      PYTHONDONTWRITEBYTECODE: "1"
+      FILTER: ${{ inputs.filter }}
+    steps:
+      - name: Install Hyprland, Lua and Python
+        run: pacman -Syu --noconfirm --needed hyprland python lua libxkbcommon git
+      - uses: actions/checkout@v5
+      - name: Show the tools under test
+        run: python3 --version && tools/keybind-check doctor
+      - name: Check every bind
+        run: |
+          args=()
+          if [ -n "$FILTER" ]; then args=(-k "$FILTER"); fi
+          PYTHONPATH=tests python3 -m unittest test_keybindings -v "${args[@]}"

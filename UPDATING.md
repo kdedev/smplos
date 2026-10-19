@@ -265,6 +265,14 @@ bootstrapped; symlinks (including dangling links) are not treated as missing.
 Other application configs are not automatically refreshed unless an updater
 step or migration explicitly owns them.
 
+Because `bindings.conf` is protected, a fix to a stock bind reaches existing
+installs only as a [migration](#5-writing-a-migration); fresh installs get the
+new file. `tests/fixtures/keybindings.snapshot.txt` pins what every stock bind
+does, so changing one fails `test_keybindings` until the snapshot is updated,
+which is the cue to write that migration. `tools/keybind-check check --live` and
+`diff --live` audit what a machine really loads (see
+[Testing Keybindings](DEVELOPMENT.md#testing-keybindings)).
+
 ### Option A: Non-breaking change (additive)
 For an OS-owned config, commit the change and normal updates deliver it.
 For a user-owned config, users who explicitly want the new defaults can run:

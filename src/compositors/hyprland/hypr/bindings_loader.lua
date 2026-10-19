@@ -110,10 +110,12 @@ end
 -- explicit native mapping below; unknown ones bind to a logged no-op.
 local DIR = { l = "left", r = "right", u = "up", d = "down" }
 
--- Workspace selector: numeric → number; otherwise pass the hyprland selector
--- string verbatim (e+1, e-1, previous, special:scratchpad, …).
+-- Workspace selector: plain digits → absolute number; otherwise pass the
+-- hyprland selector string verbatim (+1, -1, e+1, previous, special:scratchpad…).
+-- tonumber() would turn "+1" into 1, i.e. "next workspace" into "workspace 1".
 local function ws_arg(arg)
-    return tonumber(arg) or arg
+    if arg:match("^%d+$") then return tonumber(arg) end
+    return arg
 end
 
 local function make_dispatcher(dispatcher, arg)
@@ -135,7 +137,9 @@ local function make_dispatcher(dispatcher, arg)
         return hl.dsp.window.pin()
 
     elseif dispatcher == "fullscreen" then
-        return hl.dsp.window.fullscreen(tonumber(arg) or 0)
+        -- hyprlang mode 1 is maximize, 0 is fullscreen. hl.dsp.window.fullscreen
+        -- reads only a table: a bare number is ignored and means fullscreen.
+        return hl.dsp.window.fullscreen({ mode = tonumber(arg) == 1 and "maximized" or "fullscreen" })
 
     elseif dispatcher == "fullscreenstate" then
         -- arg: "<internal> <client>" (e.g. "0 2")
@@ -188,7 +192,8 @@ local function make_dispatcher(dispatcher, arg)
         if stable_workspaces and arg:match("^[1-9]%d*$") then
             return hl.dsp.exec_cmd("workspace-ctl send " .. arg .. " --silent")
         end
-        return hl.dsp.window.move({ workspace = ws_arg(arg), silent = true })
+        -- follow = false is how hl.dsp.window.move spells "silent"; it has no `silent` key.
+        return hl.dsp.window.move({ workspace = ws_arg(arg), follow = false })
 
     elseif dispatcher == "movecurrentworkspacetomonitor" then
         if stable_workspaces and DIR[arg] then

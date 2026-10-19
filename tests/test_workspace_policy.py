@@ -416,7 +416,7 @@ class WorkspacePolicyTests(unittest.TestCase):
         self.enable()
         self.policy.move("right")
         self.assertEqual(self.backend.actions, [
-            'hl.dsp.window.move({window="address:0x12", workspace=1, silent=true})',
+            'hl.dsp.window.move({window="address:0x12", workspace=1, follow=false})',
             'hl.dsp.focus({window="address:0x12"})',
         ])
 
@@ -430,7 +430,7 @@ class WorkspacePolicyTests(unittest.TestCase):
         self.enable()
         self.policy.send("1", silent=True)
         self.assertEqual(self.backend.actions[-1],
-                         'hl.dsp.window.move({window="address:0x12", workspace=1, silent=true})')
+                         'hl.dsp.window.move({window="address:0x12", workspace=1, follow=false})')
         self.policy.focus_window("0x12")
         self.assertEqual(self.backend.actions[-1], 'hl.dsp.focus({window="address:0x12"})')
 

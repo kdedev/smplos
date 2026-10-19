@@ -10,6 +10,7 @@ How to extend, modify, and contribute to smplOS.
 - [How the Build Works](#how-the-build-works)
 - [Development Iteration](#development-iteration)
 - [VM Testing](#vm-testing)
+- [Testing Keybindings](#testing-keybindings)
 - [Adding a Settings Entry](#adding-a-settings-entry)
 
 ---
@@ -367,6 +368,107 @@ Use `--reset` to wipe the VM disk and start fresh:
 ```
 
 > **VirtualBox is not supported.** Hyprland requires a working DRM/KMS device with OpenGL support. VirtualBox's virtual GPU (`VBoxVGA` / `VMSVGA`) does not provide this -- Hyprland will crash immediately on startup. Use QEMU with KVM (`test-iso.sh`) or VMware with 3D acceleration instead.
+
+---
+
+## Testing Keybindings
+
+A shortcut that raises a Lua error or does nothing is easy to ship and hard to notice, so every
+stock bind is checked automatically. `tools/keybind-check` runs the checks, and
+`tests/test_keybindings.py` runs the same ones as one named test per bind. Run them whenever you
+change `bindings.conf`, `messengers.conf`, `bindings_loader.lua`, `popup_watchers.lua`, or a
+script or package that a bind relies on.
+
+```bash
+tools/keybind-check check                                   # everything, in a couple of seconds
+PYTHONPATH=tests python3 -m unittest test_keybindings -v    # the same, as tests
+tools/keybind-check doctor                                  # which checks can run on this machine
+```
+
+Python 3 and Lua are required. `libxkbcommon` makes chord matching exact, and Hyprland adds the
+native pass; without them those parts are skipped (`KEYBIND_CHECK_REQUIRE=lua,xkbcommon,hyprland`
+makes a missing tool a failure instead). For every stock bind, with the workspace policy both off
+and on, `check` covers:
+
+- **Static rules.** The chord has modifiers and a key that exist. No chord is bound twice, counting
+  the messenger, XR and emergency binds and `popup_watchers.lua`. Each dispatcher gets arguments it
+  accepts, including the `layoutmsg` verbs the scrolling layout knows. An `exec` command is a
+  script in `src/shared/bin`, a packaged program or a shell builtin. This is what finds
+  `layoutmsg orientationnext`, which scrolling does not have and which raised
+  `no such layoutmsg for scrolling` on Super+J.
+- **Loader parity.** `bindings_loader.lua` runs under plain Lua against a recording `hl`, so what
+  each line becomes is compared with what the line says it should do.
+- **Native.** Each bind is loaded alone, through the real loader, by `Hyprland --verify-config`, so
+  Hyprland's own parser judges the key, the modifiers and the dispatcher, and a failure names the
+  one bind. Run as root, as CI containers are, it passes Hyprland's root override, which is safe
+  because verifying a config never starts a session.
+- **Snapshot.** `tests/fixtures/keybindings.snapshot.txt` records what every stock bind does.
+  Changing a bind, or how the loader translates one, fails the test until you read the difference
+  and run `tools/keybind-check snapshot --update`, so a shortcut never changes unnoticed.
+
+### One bind, or a group
+
+```bash
+tools/keybind-check check --only SUPER+TAB                  # one chord
+tools/keybind-check check --only "window management"        # a group, or words from a description
+tools/keybind-check list --only workspaces                  # what the binds do, without checking
+PYTHONPATH=tests python3 -m unittest test_keybindings -v -k SUPER_TAB          # one bind
+PYTHONPATH=tests python3 -m unittest test_keybindings -v -k window_management   # one group
+PYTHONPATH=tests python3 -m unittest test_keybindings -v -k NativeBindTests     # one kind of check
+```
+
+Per-bind tests are named `test_<group>__<chord>`, for example `test_workspaces__SUPER_TAB`, and
+`-k` matches any part of the name (case-sensitively). The groups are `application`,
+`window_management`, `workspaces`, `utilities`, `media_keys`, `exit`, `xr` and `emergency`. To run
+one in GitHub Actions, start the **Keybindings** workflow by hand and type the same text into its
+`filter` box.
+
+### A machine that misbehaves
+
+`bindings.conf` is protected from Update OS, so an installed copy can be older than the stock one,
+which is how a shortcut fixed long ago can still raise an error on one machine. To audit it:
+
+```bash
+tools/keybind-check check --live      # the binds this user's session loads, judged as Hyprland sees them
+tools/keybind-check diff --live       # how that file differs from stock: missing, changed, extra
+tools/keybind-check check --bindings /path/to/bindings.conf    # a file someone sent you
+```
+
+### The lab
+
+The lab starts a throwaway headless Hyprland and types every chord through a virtual keyboard. It
+therefore also finds a chord that another bind shadows, a bind that fires twice, and a dispatcher
+that fails or does the wrong thing when it runs, none of which a parser can see.
+
+```bash
+tools/keybind-check lab                         # every bind, about 35 seconds
+tools/keybind-check lab --only SUPER+TAB        # one chord
+tools/keybind-check lab --policy on             # with the workspace policy on (workspace-ctl is stubbed)
+tools/keybind-check lab --keep                  # keep its logs and print where they are
+KEYBIND_LAB=1 PYTHONPATH=tests python3 -m unittest test_keybindings -v -k LabTests   # the same, as tests
+```
+
+It cannot reach your session: it has its own runtime directory and `HOME`, `/dev/input` is hidden,
+and only stub programs are on `PATH`. It does need a DRM render node and PyGObject with GTK 3, so it
+runs on a developer machine and not on GitHub's runners, and not as root. Pointer binds and
+**Exit Hyprland**, which would end the lab's own compositor, are not pressed; the lab lists every
+skip with its reason. Run it before a release, and after changing `bindings.conf`, the loader or
+the Hyprland version.
+
+### CI and releases
+
+`.github/workflows/keybindings.yml` runs on every push to `main`, every pull request, every Monday,
+and on demand:
+
+- `static` has only Lua and libxkbcommon: the static rules and loader parity.
+- `native` runs in the newest Arch container with its current Hyprland, which is what users get with
+  their next update, and adds `Hyprland --verify-config` for every bind. The Monday run is the early
+  warning that a new Hyprland changed the Lua API under the loader.
+
+To make a failure block a release, mark both jobs of that workflow as required status checks in the
+branch protection rules for `main`; the workflow has no path filter, so a required check never sits
+pending. A release workflow can also gate on it with `uses: ./.github/workflows/keybindings.yml`.
+The lab is the one check left to run by hand before a release.
 
 ---
 

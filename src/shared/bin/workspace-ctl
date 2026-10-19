@@ -549,7 +549,7 @@ class Policy:
                 profile["homes"][value] = self.new_home(profile, monitors, value, preferred=current)
                 self.save(profile)
             self.sync()
-        self.backend.dispatch("hl.dsp.window.move({window=%s, workspace=%d, silent=true})" % (
+        self.backend.dispatch("hl.dsp.window.move({window=%s, workspace=%d, follow=false})" % (
             json.dumps("address:" + address), int(value)))
         if not silent:
             self.backend.dispatch("hl.dsp.focus({window=%s})" % json.dumps("address:" + address))
@@ -577,7 +577,7 @@ class Policy:
                 return
             if not re.fullmatch(r"0x[0-9a-fA-F]+", address):
                 raise ValueError("Invalid focused window address")
-            self.backend.dispatch("hl.dsp.window.move({window=%s, workspace=%d, silent=true})" % (
+            self.backend.dispatch("hl.dsp.window.move({window=%s, workspace=%d, follow=false})" % (
                 json.dumps("address:" + address), destination["active_workspace"]))
             self.backend.dispatch("hl.dsp.focus({window=%s})" % json.dumps("address:" + address))
 
