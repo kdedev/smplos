@@ -165,8 +165,9 @@ Most themes never need overrides. Use `term_N` only when a terminal slot should 
 
 ### Decoration, Layout, and App Selectors
 
-- **Decoration**: `rounding`, `blur_size`, `blur_passes`, `opacity_active`, `opacity_inactive`, `app_background_opacity`, `term_opacity_active`, `term_opacity_inactive`, `popup_opacity`, `messenger_opacity`, `browser_opacity`
+- **Decoration**: `rounding`, `app_rounding` (optional), `blur_size`, `blur_passes`, `opacity_active`, `opacity_inactive`, `app_background_opacity`, `term_opacity_active`, `term_opacity_inactive`, `popup_opacity`, `messenger_opacity`, `browser_opacity`
 - **Layout**: `gaps_in`, `gaps_out`, `border_size`, `border_active` (optional), `border_inactive` (optional)
+- **Effects** (optional, Hyprland only): `rounding_power`, `shadow_range`, `shadow_render_power`, `shadow_color`, `shadow_color_inactive`, `glow`, `glow_range`, `glow_render_power`, `glow_color`, `glow_color_inactive`, `border_animation`, `hud_frame`, `hud_style`, `hud_gap`, `hud_chamfer`, `hud_line_width`, `hud_float_glow_range`, `hud_sweep`, `hud_sweep_speed`, `hud_sweep_length`
 - **App selectors**: `app_theme_nvim`, `app_theme_vscode`
 
 Example:
@@ -175,6 +176,104 @@ Example:
 app_theme_nvim = "tokyo-night"
 app_theme_vscode = "tokyo-night"
 ```
+
+### Glow, Shadow and Animated Borders (optional, Hyprland only)
+
+All keys are optional. Absent keys reproduce the classic look (a small dark
+shadow, no glow, static borders), so a theme that does not use them is
+unchanged. niri and other compositors ignore them.
+
+| Key | Default | Notes |
+|-----|---------|-------|
+| `rounding_power` | `"2.0"` | Number from 1 to 10 shaping the corners `rounding` sets. `2` is circular; `1` makes straight 45° cuts with legs of `rounding` / 2 − 1 px (rounded down: `rounding = "42"` cuts 20 px), so windows become octagons |
+| `shadow_range`, `shadow_render_power` | `"2"`, `"3"` | Size and falloff sharpness of the drop shadow |
+| `shadow_color`, `shadow_color_inactive` | `"rgba(1a1a1aee)"`, same as active | A single color; Hyprland rejects gradients here |
+| `glow` | `"false"` | `"true"` or `"false"` only |
+| `glow_range`, `glow_render_power` | `"10"`, `"3"` | Depth and falloff sharpness of the inner glow |
+| `glow_color`, `glow_color_inactive` | accent at 69% alpha, same as active | Single color or gradient |
+| `border_animation` | `"false"` | `"true"` or `"false"` only |
+| `hud_frame` | `"false"` | `"true"` or `"false"` only; turns on the HUD frames the `smpl-hud` Hyprland plugin draws around windows |
+| `hud_style` | `"scifi"` | Name of the HUD look: `scifi` (outline, halos, corner brackets, edge tabs), `minimal` (outline and halos only) or `panel` (notched outline with a step, a ghost line and a cut corner, circuit traces ending in beads, and dots that run along the lines). Lowercase letters, digits, `-` and `_`; an unknown name shows a notification and draws nothing |
+| `hud_gap`, `hud_chamfer` | `"5"`, `"10"` | Non-negative integers: outline distance from the window and corner-cut size, in px. The notches of a `panel` are 9 px deep with a `hud_gap` of 13 or more and shrink below that |
+| `hud_line_width` | `"3"` | Number from 1 to 9.99: outline thickness in px; corner brackets and edge tabs follow it |
+| `hud_float_glow_range` | `"0"` | Non-negative integer. Floating windows glow brighter than tiled ones and their halo reaches at least this many px; `"0"` keeps the style's own reach (14 px for `scifi`) |
+| `hud_sweep` | `"false"` | `"true"` or `"false"` only; a soft glow drifts slowly along the focused window's outline, in the outline's own colors, and fades in and out as focus moves. In the `panel` style it also sets the dots running along the lines |
+| `hud_sweep_speed`, `hud_sweep_length` | `"80"`, `"180"` | Integers: speed in px per second (10 to 400; the dots of a `panel` run 1.6 times as fast) and length along the line in px (40 to 600). Keep the speed low: it reads as light moving along the frame, not as a spinner (Neon: `"70"`, a lap takes tens of seconds) |
+
+Gradients use the same syntax as `border_active`: one or more `rgba(rrggbbaa)`
+stops and an optional angle, e.g. `"rgba(00f0ffb0) rgba(2f7bff80) 45deg"`.
+
+- The glow is painted inside the window edge, over its content. Keep it short
+  and translucent (Neon: 12 px on tiled windows, 24 px on floating ones, at most
+  69% alpha) so text near the edge stays readable.
+- Hyprland has one global glow range. To give floating windows a deeper glow
+  than tiled ones, set `hud_float_glow_range` above the style's reach; the
+  `smpl-hud` plugin then draws the deeper, brighter halo on floating windows.
+  Without the plugin, floating windows keep `glow_range`.
+- `border_animation = "true"` rotates the border gradient, and the glow
+  gradient on Hyprland 0.56+, continuously, which redraws every frame. Hyprland
+  alone starts the loop when a window opens, on every window, so windows that
+  are already open keep the static gradient until they are reopened. With
+  `smpl-hud` (`hud_frame = "true"`) only the focused window turns, whenever it
+  gets focus; a window that loses focus finishes the lap it is on and rests, and
+  a fullscreen window does not turn. The cost is that of one window, however many
+  are open.
+- Frame and glow are separate color roles. The border and the plugin's
+  outline, brackets and tabs use `border_active` / `border_inactive`; the
+  shadow, the inner glow and the halos around the outline use `shadow_color`
+  and `glow_color`. Pick a related but different hue for the glow (Neon: a
+  cyan-to-azure frame, a violet glow) so the two do not blend into one color.
+- `hud_frame = "true"` turns on `smpl-hud` (see "HUD frames" in the README
+  and the plugin's own README): an outline with a gradient glow, corner
+  brackets and edge tabs. It is a compositor-side window decoration, so it
+  follows its window with no lag. It reads these keys from the generated
+  `~/.config/hypr/theme.conf` and applies a change on the next Hyprland config
+  reload (`theme-set` triggers one). Neighbouring tiled outlines sit
+  `2 * (gaps_in + border_size) - 2 * hud_gap` apart. Keep that larger than
+  `hud_line_width` or their lines touch, and at least `hud_line_width + 13` if
+  their halos (about 6 px beyond each line are clearly visible) should stay
+  separate; widen `gaps_in` to get there (Neon: `gaps_in = "18"` leaves 28 px).
+- `hud_sweep = "true"` adds a soft glow that drifts along the focused window's
+  outline, in the outline's own colors, fading in over half a second when a
+  window gets focus and out when it loses it. It is one small sprite, rebuilt
+  about 20 times a second only while it moves and repainted only where it
+  moves, so it costs about one percent of one CPU core however many windows are
+  open, and next to no GPU time; it pauses while the focused window is hidden
+  or fullscreen. Keep `hud_sweep_speed` low (Neon: 70 px/s). It needs
+  `hud_frame = "true"`, and the outline's corner shape is the window's
+  (`rounding_power`: 1 chamfered, 2 circular, 4 and up squircle).
+- With `rounding_power = "1"` the windows themselves are octagons and the
+  outline follows them at a constant distance, so `hud_chamfer` only sets a
+  minimum cut; a larger one crosses the window's own corner cut. With square
+  windows (`rounding = "0"`) keep `hud_chamfer` at or below roughly
+  `2 * hud_gap - hud_line_width`, or the window's square corner pokes through
+  the outline's cut.
+- `app_rounding` (a non-negative integer, default `rounding`) is the circular
+  corner radius used where Hyprland does not clip: the rofi launcher and
+  dialogs, the Nemo quick preview and niri. Those cannot cut 45 degrees, so an
+  octagonal theme sets a tiny value (Neon: `app_rounding = "2"`) and keeps
+  their corners nearly square.
+- `neon/colors.toml` is a complete example: octagonal windows (`rounding = "42"`
+  for 20 px cuts, `rounding_power = "1.0"`, `app_rounding = "2"`), wide gaps
+  (`gaps_in = "18"`, `gaps_out = "24"`) so the glows stay separate, a
+  cyan-to-azure gradient frame, a violet shadow and gradient glow, and the HUD
+  frames in the `scifi` style.
+- The `panel` style draws a fixed polyline outline instead of rings: chamfered
+  corners, a notch and a step on the top edge, a raised line and a fading ghost
+  line along the bottom, a bigger cut at the bottom left and three circuit traces
+  ending in beads. While a window has focus (and `hud_sweep = "true"`), dots run
+  along its lines. The window itself stays a chamfered rectangle (`rounding`,
+  `rounding_power`); the shape lives in the lines around it, and the bottom-left
+  cut can only be as deep as the window's own corner cut, so raise `rounding` (and
+  `hud_gap`) for a bigger one. It needs room: keep `hud_gap` at 13 or more for
+  full notches (under 7 there are none), and know that a frame smaller than
+  480 × 160 logical px gets a plain chamfered outline with two dots. Keep
+  `border_animation = "false"` in a panel theme: a turning gradient recolours
+  every line, so the whole outline would be repainted at each step.
+  `amber-hud/colors.toml` is a complete example: Amber's text and accent colors on
+  warm near-black backgrounds at 0.85 opacity, `rounding = "42"` with
+  `rounding_power = "1.0"`, `gaps_in = "24"`, `hud_gap = "15"` (outlines 22 px
+  apart), `hud_line_width = "2"`, an amber gradient frame, and an orange glow.
 
 ## 4) Generate theme files
 
@@ -373,7 +472,7 @@ ARGB surfaces and undecorated windows in the native app repos.
 
 ### Stock palette audit
 
-All 18 themes set ordinary active/inactive, browser and messenger multipliers
+All 20 themes set ordinary active/inactive, browser and messenger multipliers
 equal to the native background intensity below. Native surfaces still receive
 compositor **1.0**, not this multiplier. Popup and terminal values are unchanged.
 
@@ -383,7 +482,7 @@ compositor **1.0**, not this multiplier. Popup and terminal values are unchanged
 | Frosted | 0.35 |
 | Tokyo Night | 0.70 |
 | Ethereal | 0.75 |
-| Everforest, Gruvbox, Hackerman, Kanagawa, Matte Black, Nord, Osaka Jade, Ristretto, Rose Pine | 0.85 |
+| Amber HUD, Everforest, Gruvbox, Hackerman, Kanagawa, Matte Black, Neon, Nord, Osaka Jade, Ristretto, Rose Pine | 0.85 |
 | Catppuccin Latte, Flexoki Light | 0.90 |
 | Amber, Grafium, Matrix | 1.0 (intentionally opaque) |
 

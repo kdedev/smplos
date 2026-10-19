@@ -119,6 +119,8 @@ build_notif_center    → compile notif-center (Rust+Slint)
 build_kb_center       → compile kb-center (Rust+Slint)
 build_disp_center     → compile disp-center (Rust+Slint)
 build_app_center      → compile app-center (Rust+Slint)
+build_hyprland_plugins → compile the Hyprland plugins (smpl-hud, smpl-scroll)
+                        against the hyprland package the ISO ships
 setup_boot            → write systemd-boot + GRUB loopback + Syslinux configs
 build_iso             → run mkarchiso → xorriso → .iso
 ```
@@ -144,6 +146,31 @@ the host. Each follows the same pattern:
 
 The `/var/cache/smplos/binaries/` path inside the container is bind-mounted from
 `.cache/binaries/` on the host, so the cache persists across builds.
+
+---
+
+### Hyprland Plugin Compilation (inside the container)
+
+The Hyprland plugins are native C++ (`src/compositors/hyprland/plugins/<name>`, see
+each README): `smpl-hud` draws the HUD window frames and `smpl-scroll` lets
+scrolling-layout columns grow wider than the monitor. A Hyprland plugin
+only loads into the exact Hyprland build it was compiled against, so it is never
+shipped as a prebuilt binary:
+
+1. `build_hyprland_plugins` installs the `hyprland` package **from the offline
+   mirror** (the very file the ISO ships) into the container, so the headers match
+   what the installed system will run.
+2. `smplos-plugins sync` compiles every `plugins/<name>/` out of tree (the
+   read-only `/build/src` mount is never written) and stores
+   `<name>.<abi-key>.so` under `usr/local/lib/smplos/plugins` in the image. The live
+   session loads it from there and the installer copies the directory to the target.
+3. A failure only warns: the ISO still builds, windows keep Hyprland's stock
+   borders, and Update OS compiles the plugin on the installed system.
+
+After a Hyprland update the ABI key changes: Update OS (`sync_plugins` in
+`smplos-os-update`) rebuilds for the installed Hyprland and swaps the new binary
+into the running session, and `smplos-plugins load`, run from `autostart`, only
+ever loads the binary that matches the running compositor.
 
 ---
 
@@ -290,6 +317,19 @@ is printed only after those steps succeed. Bar startup, reload and geometry
 redraws share a config-scoped lock; daemon/listener children do not inherit it.
 An already-running older `bar-ctl watch` must be restarted or replaced at next
 login to use the new serialized redraw entrypoint.
+
+Compositor plugins (`src/compositors/hyprland/plugins/`, the HUD frames) are
+native code that only loads into the exact Hyprland build it was compiled
+against, so both workflows compile them on the target machine instead of
+copying a binary: `dev-push.sh` stages the sources, `dev-apply.sh` builds them in
+the VM, and `sudo ./dev-local.sh plugins` builds them as your user and installs
+them into `/usr/local/lib/smplos/plugins`. A rebuilt plugin is reloaded in the
+running session; an unchanged one is only loaded if it is not already. The build
+needs the Hyprland headers (part of the `hyprland` package) and `base-devel`;
+`dev-local.sh` skips the component with a warning when the headers are missing
+and stops with an error if a build fails. `smplos-plugins status` shows what is
+installed and loaded. The plugins' compositor-free unit tests run anywhere with
+`make -C src/compositors/hyprland/plugins/<name> test`.
 
 ## VM Testing
 
