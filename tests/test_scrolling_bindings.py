@@ -11,6 +11,7 @@ ROOT = Path(__file__).resolve().parents[1]
 BINDINGS = ROOT / "src/shared/configs/smplos/bindings.conf"
 LOADER = ROOT / "src/compositors/hyprland/hypr/bindings_loader.lua"
 MIGRATION = ROOT / "migrations/20261018-054000-scrolling-shortcut-conflicts.sh"
+PAN_MIGRATION = ROOT / "migrations/20261019-100000-scrolling-pan-binds.sh"
 GENERATOR = ROOT / "src/shared/bin/generate-messenger-bindings"
 LEGACY = (
     "bindd = SUPER SHIFT, LEFT, Move column left, layoutmsg, movewindow l\n"
@@ -253,6 +254,136 @@ class ScrollingMigrationTests(unittest.TestCase):
             self.primary.parent.chmod(0o700)
         self.assertNotEqual(result.returncode, 0)
         self.assertEqual(self.primary.read_text(), LEGACY)
+        self.assertEqual(list(self.primary.parent.glob("*.tmp.*")), [])
+
+
+class PanBindingsMigrationTests(unittest.TestCase):
+    PAN = ("bindde = SUPER SHIFT, bracketright, Pan view right, layoutmsg, move -400",
+           "bindde = SUPER SHIFT, bracketleft, Pan view left, layoutmsg, move +400")
+
+    @classmethod
+    def stock_before_pan_binds(cls):
+        """The stock file as it shipped before the pan binds were added."""
+        text = BINDINGS.read_text()
+        kept = [line for line in text.splitlines(keepends=True)
+                if line not in tuple(pan + "\n" for pan in cls.PAN)
+                and not line.startswith(("# Pan the view", "# that is wider than the monitor"))]
+        return "".join(kept)
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.home = Path(self.tmp.name) / "home with spaces"
+        self.primary = self.home / ".config/smplos/bindings.conf"
+        self.fallback = self.home / ".config/hypr/bindings.conf"
+        self.home.mkdir()
+        self.env = {**os.environ, "HOME": str(self.home)}
+
+    def migrate(self, *files, check=True):
+        for path in files:
+            path.parent.mkdir(parents=True, exist_ok=True)
+        return subprocess.run(["bash", str(PAN_MIGRATION)], env=self.env, check=check,
+                              capture_output=True, text=True, timeout=10)
+
+    def backups(self):
+        return list(self.home.rglob("*.pre-pan-binds.*"))
+
+    def test_old_stock_becomes_the_current_stock_file_with_a_verified_backup(self):
+        old = self.stock_before_pan_binds()
+        self.assertNotEqual(old, BINDINGS.read_text())
+        for path in (self.primary, self.fallback):
+            path.parent.mkdir(parents=True)
+            path.write_text(old)
+            path.chmod(0o640)
+        self.migrate()
+        for path in (self.primary, self.fallback):
+            self.assertEqual(path.read_text(), BINDINGS.read_text())
+            self.assertEqual(path.stat().st_mode & 0o777, 0o640)
+            backups = list(path.parent.glob("bindings.conf.pre-pan-binds.*"))
+            self.assertEqual([backup.read_text() for backup in backups], [old])
+        before = self.primary.read_bytes()
+        self.migrate()
+        self.assertEqual(self.primary.read_bytes(), before)
+        self.assertEqual(len(self.backups()), 2)
+
+    def test_current_stock_and_missing_files_need_no_change(self):
+        result = self.migrate(self.primary)
+        self.assertIn("nothing to do", result.stdout)
+        self.primary.write_bytes(BINDINGS.read_bytes())
+        self.migrate()
+        self.assertEqual(self.primary.read_bytes(), BINDINGS.read_bytes())
+        self.assertEqual(self.backups(), [])
+
+    def test_customized_chord_is_kept_and_only_the_free_bind_is_added(self):
+        custom = "bind = shift super, BRACKETRIGHT, exec, personal-command\n"
+        self.primary.parent.mkdir(parents=True)
+        self.primary.write_text(self.stock_before_pan_binds() + custom)
+        result = self.migrate()
+        updated = self.primary.read_text()
+        self.assertIn("WARNING", result.stdout)
+        self.assertIn(custom, updated)
+        self.assertIn(self.PAN[1], updated)
+        self.assertNotIn(self.PAN[0], updated)
+        chords = [chord for chord, _ in entries(updated)]
+        self.assertEqual(len(chords), len(set(chords)))
+
+    def test_a_users_own_pixel_pan_bind_or_a_non_scrolling_config_is_respected(self):
+        self.primary.parent.mkdir(parents=True)
+        for original in (
+            self.stock_before_pan_binds() + "bind = SUPER ALT, RIGHT, layoutmsg, move -200\n",
+            "bindd = SUPER, T, Terminal, exec, st\nbind = SUPER, bracketright, workspace, +1\n",
+        ):
+            with self.subTest(original=original[-40:]):
+                self.primary.write_text(original)
+                self.migrate()
+                self.assertEqual(self.primary.read_text(), original)
+                self.assertEqual(self.backups(), [])
+
+    def test_submap_binds_do_not_count_as_global_and_the_scope_is_kept(self):
+        self.primary.parent.mkdir(parents=True)
+        submap = "submap = custom\nbind = SUPER SHIFT, bracketright, exec, in-submap\nsubmap = reset\n"
+        self.primary.write_text(self.stock_before_pan_binds() + submap)
+        self.migrate()
+        updated = self.primary.read_text()
+        self.assertTrue(updated.endswith(submap))
+        scoped = {chord: fields for chord, fields in entries(updated)}
+        self.assertEqual(scoped[("reset", ("SHIFT", "SUPER"), "BRACKETRIGHT", False, False)][2:],
+                         ("Pan view right", "layoutmsg", "move -400"))
+
+    def test_crlf_and_a_missing_final_newline_are_preserved(self):
+        old = self.stock_before_pan_binds().rstrip("\n")
+        self.primary.parent.mkdir(parents=True)
+        self.primary.write_bytes(old.replace("\n", "\r\n").encode())
+        self.migrate()
+        updated = self.primary.read_bytes()
+        self.assertEqual(updated.replace(b"\r\n", b"").count(b"\n"), 0)
+        self.assertIn(b"Pan view left, layoutmsg, move +400\r\n", updated)
+        self.assertTrue(updated.endswith(old.splitlines()[-1].encode()))
+
+    def test_symlinked_bindings_are_left_alone_without_failing_the_update(self):
+        target = self.home / "dotfiles.conf"
+        old = self.stock_before_pan_binds()
+        target.write_text(old)
+        self.primary.parent.mkdir(parents=True)
+        self.primary.symlink_to(target)
+        result = self.migrate()
+        self.assertIn("symlink", result.stdout)
+        self.assertTrue(self.primary.is_symlink())
+        self.assertEqual(target.read_text(), old)
+        self.assertEqual(self.backups(), [])
+
+    @unittest.skipIf(os.geteuid() == 0, "root bypasses fixture directory permissions")
+    def test_backup_failure_keeps_the_original_config(self):
+        old = self.stock_before_pan_binds()
+        self.primary.parent.mkdir(parents=True)
+        self.primary.write_text(old)
+        self.primary.parent.chmod(0o500)
+        try:
+            result = self.migrate(check=False)
+        finally:
+            self.primary.parent.chmod(0o700)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(self.primary.read_text(), old)
         self.assertEqual(list(self.primary.parent.glob("*.tmp.*")), [])
 
 
