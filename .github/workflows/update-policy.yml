@@ -15,6 +15,7 @@ on:
       - "src/compositors/hyprland/hypr/bindings_loader.lua"
       - "tests/test_scrolling_bindings.py"
       - "tests/test_keybind_help.py"
+      - "tests/test_keybinding_migrations.py"
       - "src/shared/bin/generate-messenger-bindings"
       - "src/shared/lib/smplos-update-entry.sh"
       - "src/shared/lib/smplos-session-env.sh"
@@ -64,6 +65,7 @@ on:
       - "src/compositors/hyprland/hypr/bindings_loader.lua"
       - "tests/test_scrolling_bindings.py"
       - "tests/test_keybind_help.py"
+      - "tests/test_keybinding_migrations.py"
       - "src/shared/bin/generate-messenger-bindings"
       - "src/shared/lib/smplos-update-entry.sh"
       - "src/shared/lib/smplos-session-env.sh"
@@ -143,7 +145,7 @@ jobs:
           python3 -m unittest discover -s tests -p 'test_eww_delivery.py' -v
           python3 -m unittest discover -s tests -p 'test_dropped_packages.py' -v
           PYTHONPATH=tests python3 -m unittest test_logseq_retirement test_theme_switching -v
-          PYTHONPATH=tests python3 -m unittest test_scrolling_bindings test_keybind_help -v
+          PYTHONPATH=tests python3 -m unittest test_scrolling_bindings test_keybind_help test_keybinding_migrations -v
       - name: Check the real root-to-user handoff without running updates
         run: |
           sudo -n env PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=tests \

@@ -434,6 +434,12 @@ tools/keybind-check diff --live       # how that file differs from stock: missin
 tools/keybind-check check --bindings /path/to/bindings.conf    # a file someone sent you
 ```
 
+A stale copy is repaired by a migration the next time that user runs Update OS, for example
+`20261018-054000-scrolling-shortcut-conflicts.sh` and
+`20261019-153100-remove-duplicate-popup-click-bind.sh`, so run Update OS first and audit again. A
+change to a stock bind needs such a migration too; see
+[Writing a Migration](UPDATING.md#5-writing-a-migration).
+
 ### The lab
 
 The lab starts a throwaway headless Hyprland and types every chord through a virtual keyboard. It

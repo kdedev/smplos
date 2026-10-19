@@ -269,7 +269,8 @@ Because `bindings.conf` is protected, a fix to a stock bind reaches existing
 installs only as a [migration](#5-writing-a-migration); fresh installs get the
 new file. `tests/fixtures/keybindings.snapshot.txt` pins what every stock bind
 does, so changing one fails `test_keybindings` until the snapshot is updated,
-which is the cue to write that migration. `tools/keybind-check check --live` and
+which is the cue to write that migration (`migrations/20261019-153100-remove-duplicate-popup-click-bind.sh`
+is a worked example). `tools/keybind-check check --live` and
 `diff --live` audit what a machine really loads (see
 [Testing Keybindings](DEVELOPMENT.md#testing-keybindings)).
 
@@ -759,6 +760,16 @@ user doesn't update their local config. Examples:
   app work may declare `# SMPLOS_UPDATE_PRIORITY=optional` in its first 12 lines;
   kernel/driver/runtime/desktop compatibility work must not be demoted. Invalid
   or duplicate priority declarations are errors.
+- **Package changes wait for the system upgrade** — installing or removing a
+  package before the full upgrade has succeeded can leave a partial upgrade, so
+  exit `75` until `SMPLOS_SYSTEM_UPGRADED=1` (Update OS sets it once the upgrade
+  worked), then use `pacman -S --needed` and never `-Sy`. See
+  `migrations/20261019-153000-install-hyprpicker.sh`.
+- **Edit user-owned configs conservatively** — change only a line that is still
+  exactly what the OS shipped, keep a verified backup, and leave customized
+  lines and symlinks alone. See
+  `migrations/20261019-153100-remove-duplicate-popup-click-bind.sh`, with its
+  tests in `tests/test_keybinding_migrations.py`.
 
 ### Checking migration status
 
