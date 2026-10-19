@@ -24,6 +24,8 @@ hl.config({
 
     decoration = {
         rounding = n(theme.themeRounding),
+        -- 2.0 = circular corners; 1.0 = straight 45 degree cuts (legs = rounding / 2 - 1).
+        rounding_power = n(theme.themeRoundingPower),
 
         -- Opacity is controlled entirely via windowrules in windows.lua.
         -- Decoration opacity must be 1.0 (neutral) to avoid double-multiplication
@@ -33,10 +35,20 @@ hl.config({
         fullscreen_opacity = 1.0,
 
         shadow = {
-            enabled      = true,
-            range        = 2,
-            render_power = 3,
-            color        = "rgba(1a1a1aee)",
+            enabled        = true,
+            range          = n(theme.themeShadowRange),
+            render_power   = n(theme.themeShadowRenderPower),
+            color          = theme.color(theme.themeShadowColor),
+            color_inactive = theme.color(theme.themeShadowColorInactive),
+        },
+
+        -- Inner glow (Hyprland 0.55+). Off unless the theme sets glow = "true".
+        glow = {
+            enabled        = theme.themeGlow == "1",
+            range          = n(theme.themeGlowRange),
+            render_power   = n(theme.themeGlowRenderPower),
+            color          = theme.color(theme.themeGlowColor),
+            color_inactive = theme.color(theme.themeGlowColorInactive),
         },
 
         blur = {
@@ -175,6 +187,31 @@ local animations = {
 for _, a in ipairs(animations) do
     a.enabled = true
     hl.animation(a)
+end
+
+-- Looping gradient angle for the border and inner glow. Off unless a theme
+-- sets border_animation = "true"; the state is always written explicitly so a
+-- theme switch never leaves a stale loop behind. Loops start when a window
+-- maps: windows opened before a theme switch keep the static gradient. With
+-- the smpl-hud plugin loaded only the focused window's loop keeps running.
+-- glowangle exists on Hyprland 0.56+ only, and an unknown leaf is reported as
+-- a config error (pcall cannot hide it), so gate it on the version.
+local function has_glowangle()
+    local ok, v = pcall(hl.version)
+    local major, minor = tostring(ok and v or ""):match("^(%d+)%.(%d+)")
+    return major ~= nil and (tonumber(major) > 0 or tonumber(minor) >= 56)
+end
+
+local angle_leaves = { "borderangle" }
+if has_glowangle() then angle_leaves[#angle_leaves + 1] = "glowangle" end
+for _, leaf in ipairs(angle_leaves) do
+    hl.animation({
+        leaf    = leaf,
+        enabled = theme.themeBorderAnimation == "1",
+        speed   = 80,
+        bezier  = "linear",
+        style   = "loop",
+    })
 end
 
 -- Style Gum confirm prompts to match terminal theme

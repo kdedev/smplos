@@ -77,12 +77,12 @@ layout {
 
 // Rounded corners for all windows (Vista frosted-glass look)
 window-rule {
-    geometry-corner-radius {{ rounding }}
+    geometry-corner-radius {{ app_rounding }}
     clip-to-geometry true
 }
 
 // EWW layers also rounded
 layer-rule {
     match namespace="eww-.*"
-    geometry-corner-radius {{ rounding }}
+    geometry-corner-radius {{ app_rounding }}
 }

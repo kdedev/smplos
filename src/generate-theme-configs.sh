@@ -80,6 +80,73 @@ generate_theme() {
   pairs[glass_accent]="${pairs[glass_accent]:-${pairs[accent]}}"
   pairs[glass_outline]="${pairs[glass_outline]:-${pairs[background]}}"
 
+  # Optional Hyprland window effects (shadow tint, inner glow, animated gradient
+  # angle). Every default reproduces the classic look, so a theme that sets none
+  # of these renders exactly as before. Flags become 0/1 for hyprlang and Lua.
+  for flag in glow border_animation hud_frame hud_sweep; do
+    pairs[$flag]="${pairs[$flag]-false}"
+    if [[ "${pairs[$flag]}" != true && "${pairs[$flag]}" != false ]]; then
+      echo "ERROR: $name: $flag must be true or false" >&2
+      return 1
+    fi
+    pairs[${flag}_flag]=$([[ "${pairs[$flag]}" == true ]] && echo 1 || echo 0)
+  done
+  # Window corner shape. rounding_power 2 is a circle (Hyprland's default);
+  # 1 turns "rounding" into straight 45 degree cuts with legs of rounding / 2 - 1.
+  pairs[rounding_power]="${pairs[rounding_power]-2.0}"
+  if [[ ! "${pairs[rounding_power]}" =~ ^(10(\.0+)?|[1-9](\.[0-9]+)?)$ ]]; then
+    echo "ERROR: $name: rounding_power must be a number from 1 to 10" >&2
+    return 1
+  fi
+  # Corners drawn by rofi, the Nemo quick preview and niri are circular only, so
+  # a theme with 45 degree cuts sets this to 0 and leaves the shape to Hyprland.
+  pairs[app_rounding]="${pairs[app_rounding]-${pairs[rounding]:-10}}"
+  if [[ ! "${pairs[app_rounding]}" =~ ^[0-9]+$ ]]; then
+    echo "ERROR: $name: app_rounding must be a non-negative integer" >&2
+    return 1
+  fi
+  # HUD frames (smpl-hud Hyprland plugin): pixel distances and the style name,
+  # validated here so the plugin can trust the generated variables.
+  for hud_pair in hud_gap:5 hud_chamfer:10 hud_float_glow_range:0; do
+    pairs[${hud_pair%%:*}]="${pairs[${hud_pair%%:*}]-${hud_pair#*:}}"
+    if [[ ! "${pairs[${hud_pair%%:*}]}" =~ ^[0-9]+$ ]]; then
+      echo "ERROR: $name: ${hud_pair%%:*} must be a non-negative integer" >&2
+      return 1
+    fi
+  done
+  pairs[hud_line_width]="${pairs[hud_line_width]-3}"
+  if [[ ! "${pairs[hud_line_width]}" =~ ^[1-9](\.[0-9]+)?$ ]]; then
+    echo "ERROR: $name: hud_line_width must be a number from 1 to 9.99" >&2
+    return 1
+  fi
+  pairs[hud_style]="${pairs[hud_style]-scifi}"
+  if [[ ! "${pairs[hud_style]}" =~ ^[a-z0-9_-]+$ ]]; then
+    echo "ERROR: $name: hud_style must be a style name (lowercase letters, digits, - and _)" >&2
+    return 1
+  fi
+  # The travelling glow (hud_sweep): speed in px per second and length in px,
+  # as integers inside the range the plugin accepts. Plain numbers, so a value
+  # like 010 is never read as octal.
+  for hud_range in hud_sweep_speed:80:10:400 hud_sweep_length:180:40:600; do
+    IFS=: read -r hud_key hud_default hud_min hud_max <<< "$hud_range"
+    pairs[$hud_key]="${pairs[$hud_key]-$hud_default}"
+    if [[ ! "${pairs[$hud_key]}" =~ ^[0-9]{1,4}$ ]] \
+      || (( 10#${pairs[$hud_key]} < hud_min || 10#${pairs[$hud_key]} > hud_max )); then
+      echo "ERROR: $name: $hud_key must be an integer from $hud_min to $hud_max" >&2
+      return 1
+    fi
+    pairs[$hud_key]=$((10#${pairs[$hud_key]}))
+  done
+  local accent_hex="${pairs[accent]:-}"
+  pairs[shadow_range]="${pairs[shadow_range]:-2}"
+  pairs[shadow_render_power]="${pairs[shadow_render_power]:-3}"
+  pairs[shadow_color]="${pairs[shadow_color]:-rgba(1a1a1aee)}"
+  pairs[shadow_color_inactive]="${pairs[shadow_color_inactive]:-${pairs[shadow_color]}}"
+  pairs[glow_range]="${pairs[glow_range]:-10}"
+  pairs[glow_render_power]="${pairs[glow_render_power]:-3}"
+  pairs[glow_color]="${pairs[glow_color]:-rgba(${accent_hex#\#}b0)}"
+  pairs[glow_color_inactive]="${pairs[glow_color_inactive]:-${pairs[glow_color]}}"
+
   # --- Derive terminal palette (ANSI 0-15) from semantic names ---
   # Each slot maps to a semantic variable. Themes can override with term_N.
   local -a term_sources=(

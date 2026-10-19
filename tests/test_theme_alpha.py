@@ -42,7 +42,7 @@ class AlphaContractTests(unittest.TestCase):
 
     def test_all_stock_palettes_apply_equal_ordinary_alpha_without_focus_fade(self):
         palettes = list((SRC / "shared/themes").glob("*/colors.toml"))
-        self.assertEqual(len(palettes), 18)
+        self.assertEqual(len(palettes), 20)
         for path in palettes:
             with self.subTest(theme=path.parent.name):
                 colors = read_colors(path)
