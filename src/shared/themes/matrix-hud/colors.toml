@@ -129,6 +129,10 @@ border_animation = "false"
 # hud_glyph_color is the green of the characters and of the ellipses, a yellower,
 # more natural one than the teal outline (hue 114 degrees, like the film's code);
 # the heads are the same green lightened. none gives them the colours of the line.
+# hud_side_opacity is how visible the outline is down the left and right edges, where
+# the characters fall: 0.1 leaves it almost unseen so that they dominate there, and
+# the corners fade between that and the full line along the top and the bottom. The
+# halo beside it fades with it. 1 would bring the whole line back.
 # hud_sweep_length is how long an ellipse is at most, which decides how many fit
 # on an edge (two at most).
 # hud_gap is how far the outline stands off the window; 3 is as close as a 2 px
@@ -145,6 +149,7 @@ hud_sweep = "true"
 hud_sweep_speed = "60"
 hud_sweep_length = "180"
 hud_glyph_color = "rgb(3cff28)"
+hud_side_opacity = "0.1"
 
 # -- App Theme Selectors --
 app_theme_nvim = "matrix"

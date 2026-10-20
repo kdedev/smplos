@@ -1240,6 +1240,183 @@ void testLamps() {
             }
 }
 
+// Whether `x` is where the outline of `lay` runs down its left or its right side.
+bool onSide(const Layout& lay, double x) {
+    return std::fabs(x - lay.centre.x) < 1e-6 || std::fabs(x - (lay.centre.x + lay.centre.w)) < 1e-6;
+}
+
+// What `sideOpacity` does to the layout of a panel style, compared with the layout it would be without it:
+// the outline is fainter down the sides, the corners fade from one strength to the other and the top
+// and the bottom edge are as they were. Nothing else changes.
+void checkSideOpacity(const Style& style, const Params& p, double o) {
+    Params q      = p;
+    q.sideOpacity = o;
+    const Layout a = buildLayout(style, p), b = buildLayout(style, q);
+    CHECK(a.valid && b.valid);
+    if (!a.valid || !b.valid || a.panel.strokes.empty() || b.panel.strokes.empty())
+        return;
+
+    // The window is as clear of it and the glow is as big as they were.
+    CHECK(a.extents == b.extents && a.sampleBox == b.sampleBox);
+    CHECK(a.centre.x == b.centre.x && a.centre.y == b.centre.y && a.centre.w == b.centre.w && a.centre.h == b.centre.h);
+
+    // The traces, the dots, the lamps with the track they follow and the rain stay as they are.
+    CHECK(a.panel.strokes.size() == b.panel.strokes.size() && a.panel.beads.size() == b.panel.beads.size() && a.panel.runners.size() == b.panel.runners.size());
+    for (size_t k = 1; k < std::min(a.panel.strokes.size(), b.panel.strokes.size()); ++k) {
+        const Stroke &ta = a.panel.strokes[k], &tb = b.panel.strokes[k];
+        CHECK(ta.pts.size() == tb.pts.size() && ta.strips.size() == tb.strips.size() && ta.tiles.size() == tb.tiles.size());
+        for (size_t i = 0; i < std::min(ta.pts.size(), tb.pts.size()); ++i)
+            CHECK(ta.pts[i].x == tb.pts[i].x && ta.pts[i].y == tb.pts[i].y && ta.pts[i].alpha == tb.pts[i].alpha);
+    }
+    CHECK(a.panel.track.size() == b.panel.track.size());
+    for (size_t i = 0; i < std::min(a.panel.track.size(), b.panel.track.size()); ++i)
+        CHECK(a.panel.track[i].x == b.panel.track[i].x && a.panel.track[i].y == b.panel.track[i].y && a.panel.track[i].alpha == b.panel.track[i].alpha);
+    CHECK(a.panel.lamps.size() == b.panel.lamps.size());
+    for (size_t i = 0; i < std::min(a.panel.lamps.size(), b.panel.lamps.size()); ++i) {
+        const Lamp &la = a.panel.lamps[i], &lb = b.panel.lamps[i];
+        CHECK(la.from == lb.from && la.to == lb.to && la.length == lb.length && la.speed == lb.speed);
+        CHECK(la.offset == lb.offset && la.period == lb.period && la.phase == lb.phase && la.step == lb.step);
+        CHECK(lampPose(a.panel, i, 120, 3.5, 7) == lampPose(b.panel, i, 120, 3.5, 7));
+    }
+    CHECK(a.panel.lanes.size() == b.panel.lanes.size());
+    for (size_t i = 0; i < std::min(a.panel.lanes.size(), b.panel.lanes.size()); ++i) {
+        const RainLane &la = a.panel.lanes[i], &lb = b.panel.lanes[i];
+        CHECK(la.x == lb.x && la.y0 == lb.y0 && la.cells == lb.cells && la.streams == lb.streams && la.column == lb.column);
+    }
+    CHECK(glyphDraws(a.panel, 700, 1.0, 3) == glyphDraws(b.panel, 700, 1.0, 3));
+
+    // Every corner of the outline stands where it stood; those on the sides are as faint as asked and the others are not.
+    const Stroke &sa = a.panel.strokes[0], &sb = b.panel.strokes[0];
+    CHECK(sa.pts.size() == sb.pts.size());
+    size_t sides = 0;
+    for (size_t i = 0; i < std::min(sa.pts.size(), sb.pts.size()); ++i) {
+        const bool side = onSide(a, sa.pts[i].x);
+        sides += side;
+        CHECK(sa.pts[i].x == sb.pts[i].x && sa.pts[i].y == sb.pts[i].y);
+        CHECK(sb.pts[i].alpha == (side ? sa.pts[i].alpha * float(o) : sa.pts[i].alpha));
+    }
+    CHECK(sides >= 4);
+
+    if (o * style.lineAlpha < kInvisible) {
+        // Nothing of the line down a side is left to draw, and the rest of it is.
+        for (const StripPiece& s : sb.strips)
+            CHECK(!(s.vertical && onSide(b, s.centre)));
+        for (const TilePiece& t : sb.tiles)
+            for (const TileSeg& g : t.segs)
+                CHECK(!(onSide(b, g.a.x) && onSide(b, g.b.x)));
+        CHECK(!sb.strips.empty() || !sb.tiles.empty());
+        return;
+    }
+
+    // The same pieces in the same places: down a side they are as faint as the corners, along the top
+    // and the bottom as they were and in between, on the corners, anywhere from one to the other.
+    constexpr double kEps = 1e-6;
+    const auto       fits = [&](float was, float is, bool onASide, bool flat) {
+        CHECK(is <= was + kEps && is >= o * double(was) - kEps);
+        if (onASide)
+            CHECK_NEAR(is, o * double(was), kEps);
+        if (flat)
+            CHECK_NEAR(is, was, kEps);
+    };
+
+    CHECK(sa.strips.size() == sb.strips.size() && sa.tiles.size() == sb.tiles.size());
+    for (size_t i = 0; i < std::min(sa.strips.size(), sb.strips.size()); ++i) {
+        const StripPiece &x = sa.strips[i], &y = sb.strips[i];
+        CHECK(x.box == y.box && x.vertical == y.vertical && x.centre == y.centre);
+        const bool side = y.vertical && onSide(b, y.centre);
+        fits(x.alphaA, y.alphaA, side, !y.vertical);
+        fits(x.alphaB, y.alphaB, side, !y.vertical);
+    }
+    for (size_t i = 0; i < std::min(sa.tiles.size(), sb.tiles.size()); ++i) {
+        const TilePiece &x = sa.tiles[i], &y = sb.tiles[i];
+        CHECK(x.box == y.box && x.segs.size() == y.segs.size());
+        for (size_t j = 0; j < std::min(x.segs.size(), y.segs.size()); ++j) {
+            const TileSeg &u = x.segs[j], &v = y.segs[j];
+            CHECK(u.a.x == v.a.x && u.a.y == v.a.y && u.b.x == v.b.x && u.b.y == v.b.y);
+            const bool side = onSide(b, v.a.x) && onSide(b, v.b.x), flat = std::fabs(v.a.y - v.b.y) < kEps;
+            fits(u.alphaA, v.alphaA, side, flat);
+            fits(u.alphaB, v.alphaB, side, flat);
+        }
+    }
+}
+
+// How faint the outline of a panel style is down its sides is the theme's to say (`hud_side_opacity`), and a
+// style that is a ring has no such sides to dim. Without a word on it the look is what it was.
+void testSideOpacity() {
+    CHECK(Params{}.sideOpacity == 1.0);
+
+    for (const auto& size : kSizes)
+        for (float s : kScales)
+            for (bool floating : {false, true})
+                for (double gap : {15.0, 3.0}) { // the notched outline, and the plain one of the Matrix HUD
+                    const int before = g_failures;
+                    Params    p      = params(size[0], size[1], s, floating);
+                    p.gap            = gap;
+
+                    for (const Style& style : allStyles()) {
+                        if (style.kind == Kind::Panel) {
+                            for (double o : {0.5, 0.2, 0.05, 0.0})
+                                checkSideOpacity(style, p, o);
+                            continue;
+                        }
+
+                        Params q      = p;
+                        q.sideOpacity = 0.1;
+                        const Layout a = buildLayout(style, p), b = buildLayout(style, q);
+                        CHECK(a.valid == b.valid && a.panel.empty() && b.panel.empty());
+                        CHECK(a.extents == b.extents && a.sampleBox == b.sampleBox);
+                        CHECK(a.rings.size() == b.rings.size() && a.fills.size() == b.fills.size());
+                        for (size_t i = 0; i < std::min(a.rings.size(), b.rings.size()); ++i)
+                            CHECK(a.rings[i].inner == b.rings[i].inner && a.rings[i].thickness == b.rings[i].thickness && a.rings[i].alpha == b.rings[i].alpha);
+                        for (size_t i = 0; i < std::min(a.fills.size(), b.fills.size()); ++i)
+                            CHECK(a.fills[i].box == b.fills[i].box && a.fills[i].alpha == b.fills[i].alpha);
+                    }
+
+                    // Asked for nothing, the outline of a window is as strong on the sides as anywhere.
+                    const Layout lay = buildLayout(matrixStyle(), p);
+                    CHECK(lay.valid && !lay.panel.strokes.empty());
+                    if (!lay.panel.strokes.empty())
+                        for (const Vertex& v : lay.panel.strokes[0].pts)
+                            CHECK(!onSide(lay, v.x) || v.alpha == 1.f);
+                    if (g_failures != before)
+                        std::fprintf(stderr, "  ^ %s, gap %g\n", label(p).c_str(), gap);
+                }
+
+    // The corners on the sides are the ones that fade and the others are as they were.
+    for (double gap : {15.0, 3.0}) {
+        Params p = params(900, 560);
+        p.gap    = gap;
+        const Layout full = buildLayout(matrixStyle(), p);
+        p.sideOpacity     = 0.25;
+        const Layout lay  = buildLayout(matrixStyle(), p);
+        CHECK(lay.valid && lay.panel.strokes.size() == 1 && full.panel.strokes.size() == 1);
+        if (lay.panel.strokes.size() == 1 && full.panel.strokes.size() == 1) {
+            const auto &pts = lay.panel.strokes[0].pts, &was = full.panel.strokes[0].pts;
+            CHECK(pts.size() == was.size() && pts.size() == (gap == 3 ? 8u : 21u));
+            size_t faint = 0;
+            for (size_t i = 0; i < std::min(pts.size(), was.size()); ++i)
+                if (onSide(lay, pts[i].x)) {
+                    CHECK(was[i].alpha == 1.f && pts[i].alpha == 0.25f);
+                    ++faint;
+                } else
+                    CHECK(pts[i].alpha == was[i].alpha);
+            CHECK(faint == 4);
+        }
+
+        // More than the outline can be is all of it and less than none is none: it is the same layout.
+        const auto alphas = [&](double o) {
+            Params q      = p;
+            q.sideOpacity = o;
+            const Layout       l = buildLayout(matrixStyle(), q);
+            std::vector<float> out;
+            for (const Vertex& v : l.panel.strokes[0].pts)
+                out.push_back(v.alpha);
+            return out;
+        };
+        CHECK(alphas(7) == alphas(1) && alphas(-1) == alphas(0) && alphas(0) != alphas(1));
+    }
+}
+
 // A lamp goes to and fro between the ends of its stretch, a step at a time, and pulses. Where it is
 // depends on how far the lamps have travelled and how strongly it glows only on the time.
 void testLampPose() {
@@ -2298,6 +2475,7 @@ int main() {
     testFewerColumns();
     testMatrixFrame();
     testLamps();
+    testSideOpacity();
     testLampPose();
     testRainDraws();
     testFurtherColumns();

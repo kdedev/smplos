@@ -794,6 +794,7 @@ void CHudDecoration::draw(PHLMONITOR monitor, const float& a) {
         params.chamfer        = theme.chamfer;
         params.floatGlowRange = theme.floatGlowRange;
         params.sweepLength    = theme.sweepLength;
+        params.sideOpacity    = theme.sideOpacity;
 
         m_layout    = std::make_shared<const smplhud::Layout>(smplhud::buildLayout(*g_settings.style, params));
         m_layoutKey = key;

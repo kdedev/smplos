@@ -5,14 +5,15 @@
 // colours are a fixed amber, or a fixed green with the palette "matrix".
 //
 //   make preview
-//   build/preview [style] [width] [height] [scale] [zoom] [floating] [travelled] [clock] [palette] [intensity] [seed] [gap] > panel.ppm
+//   build/preview [style] [width] [height] [scale] [zoom] [floating] [travelled] [clock] [palette] [intensity] [seed] [gap] [side] > panel.ppm
 //   build/preview glyphs [zoom] [palette] > glyphs.ppm
 //
 // width and height are the window in physical px; `travelled` is how far the dots and the rain have run
 // and `clock` how long the lamps of a glyph style have been running, in seconds;
 // `intensity` is how far the window has faded into focus, 0 to 1; `gap` is how far the outline
-// stands off the window (`hud_gap`, 15 if not given; the Matrix HUD has 3). `glyphs` draws every
-// character of the matrix style, twelve to a row, in the order of the table.
+// stands off the window (`hud_gap`, 15 if not given; the Matrix HUD has 3); `side` is how visible
+// the outline is down its left and right sides (`hud_side_opacity`, 0 to 1, 1 if not given). `glyphs`
+// draws every character of the matrix style, twelve to a row, in the order of the table.
 
 #include "../geometry.hpp"
 #include "../glyph.hpp"
@@ -216,7 +217,7 @@ void writePpm(const Canvas& cv, int zoom) {
     }
 }
 
-Params paramsFor(int width, int height, float scale, bool floating, double gap = 15) {
+Params paramsFor(int width, int height, float scale, bool floating, double gap = 15, double sideOpacity = 1) {
     Params p;
     p.width          = width;
     p.height         = height;
@@ -228,6 +229,7 @@ Params paramsFor(int width, int height, float scale, bool floating, double gap =
     p.lineWidth      = 2;
     p.chamfer        = 10;
     p.floatGlowRange = 14;
+    p.sideOpacity    = std::clamp(sideOpacity, 0.0, 1.0);
     return p;
 }
 
@@ -279,6 +281,7 @@ int main(int argc, char** argv) {
     const double      level    = argc > 10 ? std::clamp(std::atof(argv[10]), 0.0, 1.0) : 1.0;
     const unsigned    seed     = argc > 11 ? unsigned(std::atoi(argv[11])) : 0;
     const double      gap      = argc > 12 ? std::atof(argv[12]) : 15;
+    const double      side     = argc > 13 ? std::atof(argv[13]) : 1;
 
     const Style* style = styleFor(name);
     if (!style) {
@@ -286,7 +289,7 @@ int main(int argc, char** argv) {
         return 1;
     }
 
-    const Params p = paramsFor(width, height, scale, floating, gap);
+    const Params p = paramsFor(width, height, scale, floating, gap, side);
 
     const Layout layout = buildLayout(*style, p);
     if (!layout.valid) {

@@ -393,13 +393,29 @@ void placeRain(const Style& style, const Frame& f, double halo, Panel& panel) {
     placeLanes(panel, f.right, 1.0, f.top + f.a, f.bottom - f.a, panel.lanes);
 }
 
+// A vertex of the outline that stands on the left or the right side.
+bool onSide(const Vertex& v, const Frame& f) {
+    return v.x == f.left || v.x == f.right;
+}
+
 // The track the lamps follow: the outline, dark where it runs down a side, so
 // that no glow runs where the characters fall. The corners between a side and
 // an edge fade the glow out.
 std::vector<Vertex> lampTrack(std::vector<Vertex> pts, const Frame& f) {
     for (Vertex& v : pts) {
-        if (v.x == f.left || v.x == f.right)
+        if (onSide(v, f))
             v.alpha = 0.f;
+    }
+    return pts;
+}
+
+// The outline as visible down its sides as `opacity` says, the glow beside the line
+// with it, so that whatever runs down them stands out. The corners between a side
+// and an edge fade from one to the other.
+std::vector<Vertex> dimSides(std::vector<Vertex> pts, const Frame& f, double opacity) {
+    for (Vertex& v : pts) {
+        if (onSide(v, f))
+            v.alpha *= float(std::clamp(opacity, 0.0, 1.0));
     }
     return pts;
 }
@@ -462,7 +478,7 @@ void buildPanel(const Style& style, const Params& p, Layout& out) {
     Panel& panel = out.panel;
     panel        = {};
     std::vector<Vertex> outline = f.fancy ? fancyOutline(f, cuts) : plainOutline(f);
-    panel.strokes.push_back(stroke(outline, true, style.lineAlpha, reach, halo));
+    panel.strokes.push_back(stroke(dimSides(outline, f, p.sideOpacity), true, style.lineAlpha, reach, halo));
 
     // Beads sit at the ends of the traces; dots travel along the outline and the traces.
     Bead bead;

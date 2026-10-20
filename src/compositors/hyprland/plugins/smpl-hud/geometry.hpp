@@ -136,6 +136,7 @@ struct Params {
     double chamfer        = 10;
     double floatGlowRange = 14;
     double sweepLength    = 180; // logical px: how long a lamp is at most, which decides how many fit on an edge
+    double sideOpacity    = 1;   // 0..1: how visible the outline of a panel style is down its left and right sides (1: as everywhere else); the corners fade between a side and an edge
 };
 
 // The rounded rectangle through the middle of the line: the track the sweep

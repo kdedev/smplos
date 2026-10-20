@@ -56,6 +56,7 @@ Hyprland config reload, which `theme-set` triggers. Values are clamped.
 | `$themeHudSweepSpeed` | `hud_sweep_speed` | `80` | 10 to 400 px per second (the dots of a `panel` run 1.6 times as fast, the characters of a `matrix` fall 0.6 times as fast) |
 | `$themeHudSweepLength` | `hud_sweep_length` | `180` | 40 to 600 px along the line; for a `matrix`, the longest a lamp gets, which also decides how many fit on an edge |
 | `$themeHudGlyphColor` | `hud_glyph_color` | `none` | `rgb(rrggbb)` or `none`; the colour of the characters of a glyph style such as `matrix` and of its lamps (the heads are it lightened, the glow of the characters it too); `none` leaves them the colours of the line. Anything else is ignored |
+| `$themeHudSideOpacity` | `hud_side_opacity` | `1` | 0 to 1; how visible the outline of a `panel` or `matrix` is down its left and right sides, its halo beside it with it, and the corners fade between that and the full line of the top and the bottom. A theme whose characters fall there dims it so that they stand out: `0.1` leaves it almost unseen, `0` none at all, `1` as strong as the rest. The ring styles ignore it; not a number, it is ignored |
 
 Frame and glow colours are not keys of their own: the plugin paints with each
 window's own border gradient (`border_active` / `border_inactive`) and glow gradient
@@ -322,6 +323,19 @@ edges (`placeLamps()`, `Panel::track` and `Panel::lamps`).
   box, a fifth of each at the default `hud_gap` of 3, is hidden by it, or shows
   through as faintly as the window is see-through. For fewer columns, set
   `glyphColumns` to 1 or 2.
+- **Dark sides.** What a `matrix` shows down its sides is the characters, so the
+  theme can let the line there almost vanish (`hud_side_opacity`, which is 0.1 in
+  `matrix-hud`; `Params::sideOpacity`). `dimSides()` scales the alpha of the
+  outline's vertices that stand on the two sides by it; a vertex's alpha scales the
+  line and its halo alike and fades smoothly along the cut corners, from the full
+  line of the top and the bottom edge to the faint one of the sides. At 0 the
+  straight runs of the sides are not drawn at all and the
+  corners' diagonals fade out to nothing. Nothing else moves or changes colour: the
+  characters' own colours do not depend on it, the lamps' track is dark there already
+  and the layout, the columns and the damage boxes are the same. It dims the
+  outline of every window, focused or not, and an unfocused window has no
+  characters, so it shows its top and bottom lines and the corners only. The default
+  of 1 changes nothing.
 - **Rain.** `glyphDraws()` is a pure function of how far the columns have fallen,
   how far the window has focus (`intensity`, 0 to 1) and a per-window seed, so the
   tests and `make preview` can ask for any moment. Each column has one to three
@@ -381,7 +395,8 @@ edges (`placeLamps()`, `Panel::track` and `Panel::lamps`).
   dims the line it stands on; `matrix` has none, so that the line shows through the
   characters of its first column, which stand on it.) The colours are those of the line where the
   character stands and of the glow, or, with `hud_glyph_color`, that colour for
-  the character (at the opacity the line has there), the same for its glow, and
+  the character (at the opacity the line's gradient has there, which `hud_side_opacity`
+  does not dim), the same for its glow, and
   that colour lightened by the style's `brightWhiten` for what is overdrawn in the
   Bright colour. A lamp is the travelling glow's sprite, with a cache of its own
   and its own length and strength. The characters a head has left stay where they
@@ -407,12 +422,13 @@ edges (`placeLamps()`, `Panel::track` and `Panel::lamps`).
   why the third column, which is only a haze, has at most four falls
   (`kLaneMaxStreams`), and why `glyphColumns` is the way to make a style cheaper.
   The windows that are not focused stand still and cost nothing per step.
-- **Preview.** `build/preview matrix 900 560 1 1 0 700 3.0 matrix 1 3 3 > matrix.ppm`
+- **Preview.** `build/preview matrix 900 560 1 1 0 700 3.0 matrix 1 3 3 0.1 > matrix.ppm`
   draws a focused frame with the rain 700 px of travel into its fall (the seventh
   argument, which alone decides where the characters are), the lamps three
-  seconds into their run (the eighth) and the outline 3 px off the window like
-  `matrix-hud`'s (the last; without it the gap is 15 and the notches are back), and
-  `build/preview glyphs 4 matrix > glyphs.ppm` every character.
+  seconds into their run (the eighth), the outline 3 px off the window (the
+  twelfth; without it the gap is 15 and the notches are back) and a tenth as
+  visible down its sides (the last; without it the whole line shows), like
+  `matrix-hud`'s, and `build/preview glyphs 4 matrix > glyphs.ppm` every character.
 
 ### Adding a style
 
