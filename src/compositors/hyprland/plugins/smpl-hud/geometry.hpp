@@ -63,6 +63,9 @@ enum class Kind {
     Panel, // a notched outline with traces and beads, drawn from small baked images (panel.hpp)
 };
 
+// How many columns of characters a glyph style can have beside each straight side of the outline.
+constexpr int kGlyphColumns = 3;
+
 // A look. New HUDs are new entries in the registry in geometry.cpp.
 struct Style {
     const char* name;
@@ -112,7 +115,7 @@ struct Style {
     float glyphFall    = 0; // how fast they fall, relative to the travelling glow
     float glyphGlow    = 0; // how far the glow round a character reaches past its strokes, in character heights
     float glyphKnock   = 0; // how dark a plate behind a character is, 0..1: it dims the line it stands on
-    int   glyphColumns = 1; // 1, or 2 for a smaller, dimmer, slower column beyond the first, which looks further away
+    int   glyphColumns = 1; // 1 to kGlyphColumns: each column beyond the first is smaller, dimmer, softer and slower than the one before, which looks further away
 
     // Glow lamps: slow glows that pulse and go to and fro along the top and the
     // bottom edge, a few on each edge, in place of the one glow round the outline.
@@ -228,6 +231,7 @@ struct GlyphFace {
     double fall      = 0; // how fast a column falls, in the units of `travelled` (see glyphDraws)
     float  knock     = 0; // opacity of the dark plate behind a character, 0..1
     float  dim       = 1; // how bright its characters are at most, 0..1 of what they would be
+    double soft      = 0; // how much softer than a pixel the edge of a stroke is, px; the columns further away are out of focus
 
     bool on() const { return height > 0; }
 };
@@ -240,7 +244,7 @@ struct RainLane {
     int y0      = 0; // whole px, the middle of the first (topmost) cell; the rest are the face's pitch apart
     int cells   = 0; // how many cells the column has
     int streams = 1; // how many falls it has at once
-    int column  = 0; // 0 for the column next to the line, which has Panel::glyphs; 1 for the one beyond it, which has Panel::farGlyphs
+    int column  = 0; // 0 for the column next to the line, 1 for the one beyond it, 2 for the one beyond that: see Panel::face
 };
 
 // A glow that goes slowly to and fro along an edge of the outline and pulses
@@ -271,11 +275,17 @@ struct Panel {
 
     // A glyph style lets characters fall in columns along the straight sides:
     // `glyphs` are those of the column next to the line, `farGlyphs` those of the
-    // second column, beyond it, if the style has one (a smaller, dimmer and slower
-    // face).
+    // second column, beyond it, and `deepGlyphs` those of the third, beyond that,
+    // as far as the style has them (each a smaller, dimmer, softer and slower face
+    // than the one before).
     GlyphFace             glyphs;
     GlyphFace             farGlyphs;
+    GlyphFace             deepGlyphs;
     std::vector<RainLane> lanes; // top to bottom of the left side's columns, then of the right side's
+
+    // The face of column `column` of the lanes, 0 to kGlyphColumns - 1 (anything else
+    // is clamped). A column the panel has none of has a face that is not on.
+    const GlyphFace& face(int column) const { return column <= 0 ? glyphs : column == 1 ? farGlyphs : deepGlyphs; }
 
     // A lamp style has glows on the top and the bottom edge. They follow `track`,
     // the outline with its sides masked out (alpha 0), so that no glow runs where

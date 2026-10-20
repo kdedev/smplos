@@ -61,25 +61,37 @@ constexpr double kGlyphStroke = 0.05; // half the thickness of a stroke
 constexpr double kGlyphMin    = 6;    // px; no character is smaller
 constexpr double kGlyphHalo   = 1.25; // their glow is this much brighter than the line's
 
-// The second column of characters, in terms of the first: it looks further away,
-// being smaller and dimmer, and it is slower in px, though its characters fall
-// as many rows a second.
-constexpr double kFarScale = 0.5;
-constexpr double kFarDim   = 2.0 / 3.0;
+// The columns of characters beyond the first, in terms of the first: each looks
+// further away than the one before it, being smaller, dimmer and more out of focus,
+// and it is slower in px, though its characters fall as many rows a second. Every
+// column but the last is a little see-through, so that the one behind it shows
+// through where the two overlap; the last is only a faint haze.
+constexpr double kNearDim = 0.8;
+
+struct Further {
+    double scale; // of the first column's characters
+    double dim;   // how bright they are at most
+    double soft;  // px of softness of a stroke's edge, at scale 1
+};
+
+constexpr Further kFurther[kGlyphColumns - 1] = {{0.5, 0.55, 0.6}, {0.34, 0.38, 0.9}};
 
 // The columns the characters fall in, all outside the line: the first keeps
-// kGlyphGap px from the line, the second kColumnGap px from the first. A column
-// starts and ends a pitch short of the ends of the straight run, clear of the
-// corners. One with fewer than kLaneMinCells characters is not worth having, and
-// neither is a second column where there is no first. A column has one fall for
-// every kLaneCells characters, but no more than kLaneMaxStreams for characters as
-// tall as the first column's: a column of smaller ones may have more.
-constexpr double kGlyphGap       = 1.5;
-constexpr double kColumnGap      = 1.0;
-constexpr double kLaneInset      = 1.0; // in pitches
-constexpr int    kLaneMinCells   = 3;
-constexpr double kLaneCells      = 20;
-constexpr int    kLaneMaxStreams = 3;
+// kGlyphGap px from the line. Each of the others lies partly under the one before
+// it: only kColumnPeek of the width of one of its characters is beyond that column's
+// outer edge. A column starts and ends a pitch short of the ends of the straight
+// run, clear of the corners. One with fewer than kLaneMinCells characters is not
+// worth having, and neither is a column where there is none before it. A column
+// has one fall for every kLaneCells characters, but no more than kLaneMaxStreams
+// of its own: the second column's smaller characters get twice as many as the
+// first's, and the third's, a faint haze, only one more, since every character
+// is a draw that the compositor has to make.
+constexpr double kGlyphGap                      = 1.5;
+constexpr double kColumnPeek                    = 0.4;
+constexpr double kLaneInset                     = 1.0; // in pitches
+constexpr int    kLaneMinCells                  = 3;
+constexpr double kLaneCells                     = 20;
+constexpr int    kLaneMaxStreams[kGlyphColumns] = {3, 6, 4};
 
 // The lamps on the top and the bottom edge. An edge has room for one for every
 // kLampRoom lamp lengths, but never more than the style asks for, and none if it
@@ -288,8 +300,8 @@ double minClearance(const Frame& f) {
     return best;
 }
 
-// The characters' sizes: those of the first column, and those of the second,
-// which is smaller, dimmer and slower in px, but has as many rows a second go by.
+// The characters' sizes: those of the first column, and those of each one beyond it,
+// which is smaller, dimmer, softer and slower in px, but has as many rows a second go by.
 void placeFace(const Style& style, const Frame& f, double halo, Panel& panel) {
     GlyphFace& face = panel.glyphs;
     face.height     = std::max(kGlyphMin, std::round(style.glyphHeight * f.s));
@@ -299,18 +311,25 @@ void placeFace(const Style& style, const Frame& f, double halo, Panel& panel) {
     face.pitch      = std::max(face.height * 0.5, std::round(style.glyphPitch * f.s));
     face.fall       = style.glyphFall;
     face.knock      = style.glyphKnock;
-    face.dim        = 1.f;
+    face.dim        = float(kNearDim);
+    face.soft       = 0;
 
-    panel.farGlyphs = {};
-    if (style.glyphColumns >= 2) {
-        GlyphFace& far = panel.farGlyphs;
-        far            = face;
-        far.height *= kFarScale;
-        far.halfWidth *= kFarScale;
-        far.reach *= kFarScale;
-        far.pitch *= kFarScale;
-        far.fall *= kFarScale;
-        far.dim = float(kFarDim);
+    GlyphFace* const further[kGlyphColumns - 1] = {&panel.farGlyphs, &panel.deepGlyphs};
+    for (int c = 1; c < kGlyphColumns; ++c) {
+        GlyphFace& out = *further[c - 1];
+        out            = {};
+        if (style.glyphColumns <= c)
+            continue;
+
+        const Further& look = kFurther[c - 1];
+        out                 = face;
+        out.height *= look.scale;
+        out.halfWidth *= look.scale;
+        out.reach *= look.scale;
+        out.pitch *= look.scale;
+        out.fall *= look.scale;
+        out.dim  = float(look.dim);
+        out.soft = look.soft * f.s;
     }
 }
 
@@ -320,27 +339,26 @@ double halfWidthOf(const GlyphFace& face) {
 
 // Where the columns of characters beside one straight side of the outline are.
 // The line is at x = `line` and `away` (1 or -1) points from the window to the
-// columns, which are all outside the line: the first is next to it, the second
-// next to the first. They depend on the style and the scale, never on how big
-// the window is.
+// columns, which are all outside the line: the first is next to it, each of the
+// others partly under the one before. They depend on the style and the scale,
+// never on how big the window is.
 struct Columns {
-    int n    = 0;
-    int x[2] = {0, 0}; // the middle of the characters of each
+    int n                = 0;
+    int x[kGlyphColumns] = {}; // the middle of the characters of each
 };
 
 Columns columnsOf(const Panel& panel, const Frame& f, double line, double away) {
     Columns out;
-    double  edge = line + away * f.hw; // how far the line, then each column, reaches
-    double  gap  = kGlyphGap;
-    for (const GlyphFace* face : {&panel.glyphs, &panel.farGlyphs}) {
-        if (!face->on())
+    double  edge = line + away * f.hw; // how far the line, then the last column, reaches
+    for (int c = 0; c < kGlyphColumns; ++c) {
+        const GlyphFace& face = panel.face(c);
+        if (!face.on())
             break;
-        const double half = halfWidthOf(*face);
-        const double at   = edge + away * (gap + half);
-        const double x    = away > 0 ? std::ceil(at) : std::floor(at); // whole px, never nearer than the gap
+        const double half = halfWidthOf(face);
+        const double at   = out.n == 0 ? edge + away * (kGlyphGap + half) : edge + away * (2 * kColumnPeek - 1) * half;
+        const double x    = away > 0 ? std::ceil(at) : std::floor(at); // whole px, never nearer than asked
         out.x[out.n++]    = int(x);
         edge              = x + away * half;
-        gap               = kColumnGap;
     }
     return out;
 }
@@ -349,15 +367,14 @@ Columns columnsOf(const Panel& panel, const Frame& f, double line, double away) 
 void placeLanes(const Panel& panel, const Frame& f, double line, double away, double top, double bottom, std::vector<RainLane>& out) {
     const Columns cols = columnsOf(panel, f, line, away);
     for (int c = 0; c < cols.n; ++c) {
-        const GlyphFace& face  = c == 0 ? panel.glyphs : panel.farGlyphs;
+        const GlyphFace& face  = panel.face(c);
         const double     inset = kLaneInset * face.pitch;
         const int        y0    = int(std::lround(top + inset));
         const int        cells = int(std::floor((bottom - inset - y0) / face.pitch + 1e-9)) + 1;
         if (cells < kLaneMinCells)
             break; // and no column beyond one that is not there
 
-        const int most = std::max(kLaneMaxStreams, int(std::lround(kLaneMaxStreams * panel.glyphs.pitch / face.pitch)));
-        out.push_back({cols.x[c], y0, cells, std::clamp(int(std::lround(cells / kLaneCells)), 1, most), c});
+        out.push_back({cols.x[c], y0, cells, std::clamp(int(std::lround(cells / kLaneCells)), 1, kLaneMaxStreams[c]), c});
     }
 }
 
@@ -509,7 +526,7 @@ void buildPanel(const Style& style, const Params& p, Layout& out) {
     if (panel.glyphs.on()) {
         const Columns cols = columnsOf(panel, f, f.left, -1.0);
         for (int c = 0; c < cols.n; ++c)
-            columns = std::max(columns, glyphSize(c == 0 ? panel.glyphs : panel.farGlyphs).w / 2.0 + 1 - cols.x[c]); // 0 is the window's edge
+            columns = std::max(columns, glyphSize(panel.face(c)).w / 2.0 + 1 - cols.x[c]); // 0 is the window's edge
     }
 
     const int side = logical(std::ceil(f.c) + room);
@@ -845,7 +862,7 @@ std::vector<GlyphDraw> glyphDraws(const Panel& panel, double travelled, double i
     uint32_t          next = 0; // the number of the next fall, which its head's ids come from
     for (size_t l = 0; l < panel.lanes.size(); ++l) {
         const RainLane&  lane = panel.lanes[l];
-        const GlyphFace& face = lane.column > 0 ? panel.farGlyphs : panel.glyphs;
+        const GlyphFace& face = panel.face(lane.column);
         if (lane.cells <= 0 || !face.on() || face.pitch <= 0)
             continue;
         const double fallen = std::max(travelled, 0.0) * face.fall / face.pitch; // rows
@@ -925,6 +942,16 @@ std::vector<GlyphDraw> glyphDraws(const Panel& panel, double travelled, double i
     }
 
     out.insert(out.end(), heads.begin(), heads.end());
+    return out;
+}
+
+std::vector<size_t> glyphOrder(std::span<const GlyphDraw> draws) {
+    std::vector<size_t> out;
+    out.reserve(draws.size());
+    for (int column = kGlyphColumns - 1; column >= 0; --column)
+        for (size_t i = 0; i < draws.size(); ++i)
+            if (std::clamp(draws[i].column, 0, kGlyphColumns - 1) == column)
+                out.push_back(i);
     return out;
 }
 

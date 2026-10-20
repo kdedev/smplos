@@ -91,7 +91,7 @@ struct GlyphDraw {
     int alpha  = 0; // 1..kGlyphAlphaSteps
     int heat   = 0; // 0..kGlyphHeatSteps: how far it is overdrawn in the bright colour
     int size   = 0; // 0..kGlyphSizes - 1: which of the sizes of glyphFaceOf it has
-    int column = 0; // 0 for a character of Panel::glyphs, 1 for one of Panel::farGlyphs
+    int column = 0; // 0 for a character of Panel::glyphs, 1 for one of Panel::farGlyphs, 2 for one of Panel::deepGlyphs (see Panel::face)
 
     bool operator==(const GlyphDraw&) const = default;
 };
@@ -109,7 +109,7 @@ constexpr int kGlyphHeadId = 1 << 24;
 // The face of the characters of size `size` (0..kGlyphSizes - 1, anything else
 // is clamped): `face` itself, which is the largest, or a little smaller. The
 // sizes differ by little: enough to vary the rain, not enough to look like
-// different fonts. `face` is a column's own: Panel::glyphs or Panel::farGlyphs.
+// different fonts. `face` is a column's own: one of Panel::face().
 GlyphFace glyphFaceOf(const GlyphFace& face, int size);
 
 // The characters of a glyph style that are lit when the columns have fallen
@@ -131,6 +131,11 @@ GlyphFace glyphFaceOf(const GlyphFace& face, int size);
 // `dim`. At intensity 0 nothing is lit, and nothing is if the panel has no
 // characters (see GlyphFace::on).
 std::vector<GlyphDraw> glyphDraws(const Panel& panel, double travelled, double intensity, unsigned seed);
+
+// The order to draw the characters of `draws` in, as places in the list: those of the columns
+// further away come first, so that those of the nearer ones lie over them (the third column, then
+// the second, then the first). Within a column the order is that of the list.
+std::vector<size_t> glyphOrder(std::span<const GlyphDraw> draws);
 
 // What to redraw to get from one list of `glyphDraws` to the next: every
 // character that was added, removed or changed, as it is in the list it is in.

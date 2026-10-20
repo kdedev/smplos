@@ -344,7 +344,7 @@ class StockThemeEffectTests(unittest.TestCase):
         self.assertEqual(variables["themeShadowRange"], "0")  # a range of 1 still draws a thin ring
         # The outline hugs the window: 3 px off it is as close as a 2 px line gets.
         self.assertEqual(int(variables["themeHudGap"]), 3)
-        # The two columns of falling characters stand outside the outline and, with its
+        # The three columns of falling characters stand outside the outline and, with its
         # offset, reach about 24 px from the window's edge (at scale 1). Without Hyprland's
         # border the windows are 2 * gaps_in apart, and the columns of two neighbours must
         # stay clear of each other, as must the columns and the screen's edge.

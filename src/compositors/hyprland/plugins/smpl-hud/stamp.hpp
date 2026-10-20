@@ -63,6 +63,10 @@ struct Look {
     int reach16     = 0;  // how far the halo reaches past the line's edge
     int lineAlpha   = 255;
     int haloAlpha   = 0;  // the halo's opacity at the line's edge
+    int soft16      = 0;  // how much softer than a px the line's edge is, in 1/16 px; 0 is as sharp as a px can be
+
+    // How far the image reaches past the line's edge: the halo, or the soft edge if that goes further.
+    int spread16() const { return reach16 > soft16 ? reach16 : soft16; }
 
     bool operator==(const Look&) const = default;
 };

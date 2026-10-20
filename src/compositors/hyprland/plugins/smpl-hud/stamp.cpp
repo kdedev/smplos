@@ -308,11 +308,13 @@ void addStrips(Stroke& stroke, const Vertex& a, const Vertex& b, int reach, cons
 }
 
 // The line across itself at distance `d` from its centre: how much of the pixel
-// the line covers, and how bright the halo is (before the opacities).
+// the line covers, and how bright the halo is (before the opacities). The edge of the
+// line goes from opaque to clear over a px, or over a wider band if the look is soft.
 void profile(const Look& look, double d, float& core, float& halo) {
     const double hw = look.halfWidth16 / 16.0, reach = look.reach16 / 16.0;
-    core           = float(std::clamp(hw - d + 0.5, 0.0, 1.0));
-    const double e = d - hw;
+    const double ramp = 2 * (0.5 + look.soft16 / 16.0); // 1 px unless soft
+    const double e    = d - hw;
+    core              = float(std::clamp(-e / ramp + 0.5, 0.0, 1.0));
     if (e <= 0) {
         halo = 1;
     } else if (reach <= 0 || e >= reach) {
@@ -343,7 +345,7 @@ class Key {
         m_s.append(reinterpret_cast<const char*>(&v), sizeof v);
         return *this;
     }
-    Key& add(const Look& look) { return add(look.halfWidth16).add(look.reach16).add(look.lineAlpha).add(look.haloAlpha); }
+    Key& add(const Look& look) { return add(look.halfWidth16).add(look.reach16).add(look.lineAlpha).add(look.haloAlpha).add(look.soft16); }
     Key& add(const Tone& tone) {
         for (uint8_t v : tone.line)
             add(v);
@@ -501,7 +503,7 @@ Image bakeTile(const TileSpec& spec) {
     // The nearest segment of every pixel, and the line's opacity at that point
     std::vector<float> nearest(size_t(img.w) * size_t(img.h), std::numeric_limits<float>::infinity());
     std::vector<float> fade(nearest.size(), 0.f);
-    const double       pad = (spec.look.halfWidth16 + spec.look.reach16) / 16.0 + 1;
+    const double       pad = (spec.look.halfWidth16 + spec.look.spread16()) / 16.0 + 1;
     for (const TileSegSpec& s : spec.segs) {
         const double ax = s.ax / 16.0, ay = s.ay / 16.0, dx = s.bx / 16.0 - ax, dy = s.by / 16.0 - ay;
         const double len2 = dx * dx + dy * dy;
@@ -541,7 +543,7 @@ std::string keyOf(const TileSpec& spec) {
 }
 
 int beadSize(const Look& look) {
-    return 2 * int(std::ceil((look.halfWidth16 + look.reach16) / 16.0 + 1));
+    return 2 * int(std::ceil((look.halfWidth16 + look.spread16()) / 16.0 + 1));
 }
 
 Image bakeBead(const BeadSpec& spec) {
@@ -567,13 +569,13 @@ std::string keyOf(const BeadSpec& spec) {
 GlyphSize glyphSize(int height16, const Look& look) {
     if (height16 <= 0)
         return {};
-    const double pad = (look.halfWidth16 + look.reach16) / 16.0 + 1;
+    const double pad = (look.halfWidth16 + look.spread16()) / 16.0 + 1;
     const double w   = height16 / 16.0 * kGlyphW / kGlyphH, h = height16 / 16.0;
     return {2 * ceilI(w / 2 + pad), 2 * ceilI(h / 2 + pad)};
 }
 
 Look lookOf(const GlyphFace& face) {
-    return {round16(face.halfWidth), round16(face.reach), 255, alpha8(face.haloAlpha)};
+    return {round16(face.halfWidth), round16(face.reach), 255, alpha8(face.haloAlpha), round16(face.soft)};
 }
 
 GlyphSize glyphSize(const GlyphFace& face) {

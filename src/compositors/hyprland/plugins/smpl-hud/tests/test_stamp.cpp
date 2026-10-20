@@ -363,6 +363,21 @@ void testLooks() {
     const Look lb = lookOf(b);
     CHECK(lb.halfWidth16 == 40 && lb.reach16 == 32 && lb.lineAlpha == 255);
 
+    // Only a character can be out of focus: a line and a bead are as sharp as a px can be.
+    CHECK(l.soft16 == 0 && lb.soft16 == 0);
+
+    // How far a look reaches past the line's edge: the halo, or the soft edge if that goes further.
+    Look reaching;
+    reaching.reach16 = 100;
+    CHECK(reaching.spread16() == 100);
+    reaching.soft16 = 60;
+    CHECK(reaching.spread16() == 100);
+    reaching.soft16 = 100;
+    CHECK(reaching.spread16() == 100);
+    reaching.soft16 = 140;
+    CHECK(reaching.spread16() == 140);
+    CHECK(Look{}.spread16() == 0);
+
     CHECK(alpha8(0.f) == 0 && alpha8(1.f) == 255 && alpha8(-3.f) == 0 && alpha8(7.f) == 255);
 }
 
@@ -385,6 +400,7 @@ void testKeysTellImagesApart() {
     differs(strip, [](StripSpec& s) { s.centre2 = 20; });
     differs(strip, [](StripSpec& s) { s.look.halfWidth16 = 24; });
     differs(strip, [](StripSpec& s) { s.look.reach16 = 129; });
+    differs(strip, [](StripSpec& s) { s.look.soft16 = 8; });
     differs(strip, [](StripSpec& s) { s.look.lineAlpha = 200; });
     differs(strip, [](StripSpec& s) { s.look.haloAlpha = 100; });
     differs(strip, [](StripSpec& s) { s.a.line[0] ^= 8; });
@@ -401,6 +417,7 @@ void testKeysTellImagesApart() {
     differs(tile, [](TileSpec& s) { s.w = 31; });
     differs(tile, [](TileSpec& s) { s.h = 31; });
     differs(tile, [](TileSpec& s) { s.look.reach16 = 130; });
+    differs(tile, [](TileSpec& s) { s.look.soft16 = 8; });
     differs(tile, [](TileSpec& s) { s.tone.line[1] ^= 8; });
     differs(tile, [](TileSpec& s) { s.segs[0].bx = 481; });
     differs(tile, [](TileSpec& s) { s.segs[0].alphaB = 0; });
@@ -409,6 +426,7 @@ void testKeysTellImagesApart() {
     BeadSpec bead{{40, 32, 255, 128}, tone()};
     CHECK(keyOf(bead) == keyOf(BeadSpec(bead)));
     differs(bead, [](BeadSpec& s) { s.look.halfWidth16 = 41; });
+    differs(bead, [](BeadSpec& s) { s.look.soft16 = 8; });
     differs(bead, [](BeadSpec& s) { s.tone.glow[0] ^= 8; });
 
     // different kinds of image never share a cache entry
@@ -612,6 +630,67 @@ void testGlyphImageFitsItsGlyph() {
     }
 }
 
+// The edge of a line goes from opaque to clear over a px. A soft look makes it go over more, the way
+// something out of focus does: dimmer inside the edge, fainter and further out beyond it. A bead shows it
+// from its middle out.
+void testSoftEdge() {
+    const double hw    = 2.5;
+    const Look   sharp{40, 0, 255, 0}, soft{40, 0, 255, 0, 32}; // the soft one by 2 px: it goes from opaque to clear over 5
+    const Image  a = bakeBead({sharp, tone()}), b = bakeBead({soft, tone()});
+    CHECK(a.w == beadSize(sharp) && b.w == beadSize(soft) && b.w > a.w);
+
+    // Every px is as much covered as the edge says, and the ink ends inside the image.
+    const auto check = [&](const Image& img, double ramp) {
+        int beyond = 0; // px with ink further out than a sharp edge reaches
+        for (int j = 0; j < img.h; ++j) {
+            for (int i = 0; i < img.w; ++i) {
+                const double d = std::hypot(i + 0.5 - img.w / 2.0, j + 0.5 - img.h / 2.0);
+                CHECK_NEAR(inkAt(img, i, j), 255 * std::clamp(0.5 - (d - hw) / ramp, 0.0, 1.0), 1.0);
+                beyond += d >= hw + 0.5 && inkAt(img, i, j) > 0;
+                if (i == 0 || j == 0 || i == img.w - 1 || j == img.h - 1)
+                    CHECK(inkAt(img, i, j) == 0);
+            }
+        }
+        return beyond;
+    };
+    CHECK(check(a, 1.0) == 0);
+    CHECK(check(b, 5.0) > 20);
+
+    // Inside the edge, a soft line is not as opaque as a sharp one.
+    CHECK(inkAt(a, a.w / 2, a.h / 2) == 255);
+    CHECK(inkAt(b, b.w / 2, b.h / 2) > 0 && inkAt(b, b.w / 2, b.h / 2) < 255);
+}
+
+// A soft look still makes an image just big enough for the glyph: it is the same size as a sharp one, unless
+// the soft edge goes further out than the halo does, and the ink ends at its border. (The strokes are placed to
+// 1/16 px, so an edge that is what reaches furthest can come to the border by a hair.)
+void testSoftGlyphFitsItsImage() {
+    const int height16 = 12 * 16;
+    for (const Look look : {Look{10, 40, 255, 140, 24}, Look{10, 8, 255, 140, 40}}) {
+        const Look      sharp{look.halfWidth16, look.reach16, look.lineAlpha, look.haloAlpha};
+        const GlyphSize size = glyphSize(height16, look), plain = glyphSize(height16, sharp);
+        const bool      past = look.soft16 > look.reach16;
+        CHECK(size.w % 2 == 0 && size.h % 2 == 0);
+        CHECK(past ? size.w > plain.w && size.h > plain.h : size.w == plain.w && size.h == plain.h);
+
+        for (int g = 0; g < glyphCount(); ++g) {
+            const Image img = bakeGlyph({g, height16, look, tone()});
+            CHECK(img.w == size.w && img.h == size.h);
+
+            float total = 0, border = 0;
+            for (int j = 0; j < img.h; ++j) {
+                for (int i = 0; i < img.w; ++i) {
+                    total += inkAt(img, i, j);
+                    if (i == 0 || j == 0 || i == img.w - 1 || j == img.h - 1)
+                        border = std::max(border, inkAt(img, i, j));
+                }
+            }
+            CHECK(total > 255 * 6); // there is something to see
+            CHECK(border <= (past ? 2.f : 0.f));
+        }
+    }
+}
+
 void testGlyphsBakeDifferently() {
     std::set<std::vector<uint8_t>> seen;
     for (int g = 0; g < glyphCount(); ++g)
@@ -677,6 +756,7 @@ void testGlyphKeys() {
     differs(glyph, [](GlyphSpec& s) { s.height16 = 13 * 16; });
     differs(glyph, [](GlyphSpec& s) { s.look.halfWidth16 = 12; });
     differs(glyph, [](GlyphSpec& s) { s.look.reach16 = 41; });
+    differs(glyph, [](GlyphSpec& s) { s.look.soft16 = 10; });
     differs(glyph, [](GlyphSpec& s) { s.look.haloAlpha = 100; });
     differs(glyph, [](GlyphSpec& s) { s.tone.line[0] ^= 8; });
     differs(glyph, [](GlyphSpec& s) { s.tone.glow[1] ^= 8; });
@@ -697,6 +777,7 @@ void testGlyphFaceSpec() {
     const Look      look = lookOf(face);
     CHECK(look.halfWidth16 == 10 && look.reach16 == 54); // 0.6 and 3.4 px, in 1/16 px
     CHECK(look.lineAlpha == 255 && look.haloAlpha == alpha8(0.55f));
+    CHECK(look.soft16 == 0); // a face is sharp unless it says otherwise
 
     const Tone      colours = tone();
     const GlyphSpec spec    = glyphSpecOf(face, 7, colours);
@@ -724,6 +805,20 @@ void testGlyphFaceSpec() {
 
     CHECK(glyphSize(GlyphFace{}).w == 0 && glyphSize(GlyphFace{}).h == 0);
 
+    // How out of focus a face is belongs to its look, and so to its image. It needs no more room than
+    // the halo's reach gives, unless it goes past that.
+    GlyphFace blurred = face;
+    blurred.soft      = 0.6;
+    CHECK(lookOf(blurred).soft16 == 10); // 0.6 px, in 1/16 px
+    CHECK(keyOf(glyphSpecOf(blurred, 7, colours)) != keyOf(spec));
+    CHECK(glyphSize(blurred).w == size.w && glyphSize(blurred).h == size.h);
+
+    GlyphFace tight = face, blurry = face;
+    tight.reach     = 0.25;
+    blurry.reach    = 0.25;
+    blurry.soft     = 3.0;
+    CHECK(glyphSize(blurry).w > glyphSize(tight).w && glyphSize(blurry).h > glyphSize(tight).h);
+
     // the plate under a character is part of its image
     GlyphFace plated = face;
     CHECK(spec.knock == 0);
@@ -736,7 +831,7 @@ void testGlyphFaceSpec() {
 // The plate under a glyph: black, soft at its edge, and never past the image.
 void testGlyphPlate() {
     const int knock = 200;
-    for (const Look look : {glyphLook(), Look{5, 0, 255, 0}, Look{10, 90, 255, 200}}) {
+    for (const Look look : {glyphLook(), Look{5, 0, 255, 0}, Look{10, 90, 255, 200}, Look{10, 40, 255, 140, 24}, Look{6, 20, 255, 140, 48}}) {
         for (int g = 0; g < glyphCount(); ++g) {
             const GlyphSpec bare{g, 12 * 16, look, tone()};
             GlyphSpec       plated = bare;
@@ -808,8 +903,10 @@ int main() {
     testStripQuadPutsTheEndsOnTheTexelCentres();
     testTileKeepsItsLineInside();
     testBeadIsSymmetricAndSoft();
+    testSoftEdge();
     testToneLevels();
     testGlyphImageFitsItsGlyph();
+    testSoftGlyphFitsItsImage();
     testGlyphsBakeDifferently();
     testGlyphsAreMirrored();
     testGlyphIsCentredOnItsImage();

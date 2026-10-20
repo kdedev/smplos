@@ -83,7 +83,7 @@ const Style kStyles[] = {
     },
     {
         // The panel's outline alone, standing on the window's edge, with a rain
-        // of characters falling down both sides in two columns outside it, inside
+        // of characters falling down both sides in three columns outside it, inside
         // its glow, and glows going slowly to and fro along the top and the
         // bottom: the Matrix HUD.
         .name            = "matrix",
@@ -111,7 +111,7 @@ const Style kStyles[] = {
         .glyphPitch      = 16.f,
         .glyphFall       = 0.6f,
         .glyphGlow       = 0.45f,
-        .glyphColumns    = 2,
+        .glyphColumns    = 3,
         .lamps           = 2,
     },
 };

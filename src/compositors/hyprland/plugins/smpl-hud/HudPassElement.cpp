@@ -233,20 +233,22 @@ namespace {
         if (!panel.glyphs.on() || frame.glyphs.empty())
             return;
 
-        // The faces of the column next to the line, then of the one beyond it.
-        std::array<std::array<smplhud::GlyphFace, smplhud::kGlyphSizes>, 2> faces;
-        std::array<std::array<smplhud::GlyphSize, smplhud::kGlyphSizes>, 2> sizes;
+        // The faces of the column next to the line, then of the ones beyond it.
+        std::array<std::array<smplhud::GlyphFace, smplhud::kGlyphSizes>, smplhud::kGlyphColumns> faces;
+        std::array<std::array<smplhud::GlyphSize, smplhud::kGlyphSizes>, smplhud::kGlyphColumns> sizes;
         for (size_t column = 0; column < faces.size(); ++column) {
-            const auto& base = column > 0 && panel.farGlyphs.on() ? panel.farGlyphs : panel.glyphs;
+            const auto& base = panel.face(int(column));
             for (int i = 0; i < smplhud::kGlyphSizes; ++i) {
                 faces[column][size_t(i)] = smplhud::glyphFaceOf(base, i);
                 sizes[column][size_t(i)] = smplhud::glyphSize(faces[column][size_t(i)]);
             }
         }
 
+        // The columns further away go first, and those nearer lie over them.
         CTextureScope scope;
-        for (const auto& glyph : frame.glyphs) {
-            const auto  column = size_t(std::clamp(glyph.column, 0, 1));
+        for (const size_t at : smplhud::glyphOrder(frame.glyphs)) {
+            const auto& glyph  = frame.glyphs[at];
+            const auto  column = size_t(std::clamp(glyph.column, 0, smplhud::kGlyphColumns - 1));
             const auto  which  = size_t(std::clamp(glyph.size, 0, smplhud::kGlyphSizes - 1));
             const auto& face   = faces[column][which];
             const auto& size   = sizes[column][which];

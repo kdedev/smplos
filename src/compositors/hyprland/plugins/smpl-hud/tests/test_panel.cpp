@@ -123,9 +123,9 @@ bool overlap(const IBox& a, const IBox& b) {
     return a.x < b.x + b.w && b.x < a.x + a.w && a.y < b.y + b.h && b.y < a.y + a.h;
 }
 
-// The face of the characters of a column of a panel: the first column's, or the smaller one beyond it.
+// The face of the characters of the column a lane is in.
 const GlyphFace& faceOf(const Panel& pn, const RainLane& lane) {
-    return lane.column > 0 ? pn.farGlyphs : pn.glyphs;
+    return pn.face(lane.column);
 }
 
 // The indices of the visible segments whose centre line passes through a point.
@@ -279,11 +279,11 @@ void checkLayout(const Layout& lay, const Params& p) {
 
     // The characters of a glyph style fall in columns that stay inside the extents, whatever they
     // are doing. A style without characters has no columns, and one column of characters has no
-    // second face.
-    CHECK(lay.panel.glyphs.on() || (lay.panel.lanes.empty() && !lay.panel.farGlyphs.on()));
+    // face for the others.
+    CHECK(lay.panel.glyphs.on() || (lay.panel.lanes.empty() && !lay.panel.farGlyphs.on() && !lay.panel.deepGlyphs.on()));
     for (const RainLane& lane : lay.panel.lanes) {
         const GlyphFace& face = faceOf(lay.panel, lane);
-        CHECK(face.on() && (lane.column == 0 || lane.column == 1));
+        CHECK(face.on() && lane.column >= 0 && lane.column < kGlyphColumns);
         if (!face.on())
             continue;
         const GlyphSize gs = glyphSize(face);
@@ -309,7 +309,7 @@ void testStyle() {
     CHECK(st->glyphHeight == 0 && st->glyphPitch == 0 && st->glyphFall == 0 && st->lamps == 0 && st->glyphColumns == 1);
 
     // The matrix style is the panel's outline alone, with characters falling down its sides
-    // in two columns and glows going to and fro along its top and bottom.
+    // in three columns and glows going to and fro along its top and bottom.
     const Style* mx = styleFor("matrix");
     CHECK(mx != nullptr);
     if (!mx)
@@ -318,7 +318,7 @@ void testStyle() {
     CHECK(mx->notchDepth > 0 && mx->traceOffset == 0 && mx->beadRadius == 0);
     CHECK(mx->lineAlpha > 0 && mx->lineAlpha <= 1 && mx->haloAlpha > 0 && mx->haloAlpha <= 1);
     CHECK(mx->haloReach > 0 && mx->floatBoost >= 1);
-    CHECK(mx->glyphHeight > 0 && mx->glyphPitch >= mx->glyphHeight / 2 && mx->glyphFall > 0 && mx->glyphGlow > 0 && mx->glyphColumns == 2);
+    CHECK(mx->glyphHeight > 0 && mx->glyphPitch >= mx->glyphHeight / 2 && mx->glyphFall > 0 && mx->glyphGlow > 0 && mx->glyphColumns == 3);
     CHECK(mx->lamps > 0 && mx->sweepAlpha > 0); // a lamp is drawn the way the sweep is
     CHECK(mx->sweepWhiten > 0 && mx->sweepWhiten <= 0.3f); // a lamp is green, not white
 
@@ -330,7 +330,7 @@ void testStyle() {
         CHECK((other.glyphPitch > 0) == (name == "matrix"));
         CHECK((other.glyphFall > 0) == (name == "matrix"));
         CHECK((other.lamps > 0) == (name == "matrix"));
-        CHECK(other.glyphColumns == (name == "matrix" ? 2 : 1));
+        CHECK(other.glyphColumns == (name == "matrix" ? 3 : 1));
     }
 }
 
@@ -889,14 +889,14 @@ void testExtents() {
 
 void testGlyphFace() {
     const Layout plain = buildLayout(panelStyle(), params(900, 600));
-    CHECK(!plain.panel.glyphs.on() && !plain.panel.farGlyphs.on() && plain.panel.lanes.empty() && plain.panel.glyphs.knock == 0);
+    CHECK(!plain.panel.glyphs.on() && !plain.panel.farGlyphs.on() && !plain.panel.deepGlyphs.on() && plain.panel.lanes.empty() && plain.panel.glyphs.knock == 0);
     CHECK(glyphDraws(plain.panel, 50.0, 1.0, 1).empty());
 
     const Style& st = matrixStyle();
     for (float s : kScales) {
         const Panel docked = buildLayout(st, params(900, 600, s)).panel;
         const Panel afloat = buildLayout(st, params(900, 600, s, true)).panel;
-        const GlyphFace &first = docked.glyphs, &second = docked.farGlyphs;
+        const GlyphFace &first = docked.glyphs, &second = docked.farGlyphs, &third = docked.deepGlyphs;
         CHECK(first.on());
         CHECK_NEAR(first.height, std::max(6.0, std::round(st.glyphHeight * double(s))), 1e-9);
         CHECK_NEAR(first.pitch, std::max(first.height / 2, std::round(st.glyphPitch * double(s))), 1e-9);
@@ -904,10 +904,12 @@ void testGlyphFace() {
         CHECK(first.halfWidth > 0 && 4 * first.halfWidth < first.height && first.reach > 0);
         CHECK(first.haloAlpha > 0 && first.haloAlpha <= 1);
         CHECK_NEAR(first.knock, st.glyphKnock, 1e-9);
-        CHECK(first.dim == 1.f);
+        // The first column is a little see-through, so that the second shows through it, and as sharp as can be.
+        CHECK(first.dim >= 0.6f && first.dim < 1.f && first.soft == 0);
+        CHECK(&docked.face(0) == &first && &docked.face(1) == &second && &docked.face(2) == &third);
 
         // The second column's face is the first's at half the size, which falls as many rows a second, though
-        // they are half as far in px, and which is 2/3 as bright, so that it looks further away.
+        // they are half as far in px, and which is dimmer and a little out of focus, so that it looks further away.
         CHECK(second.on());
         CHECK_NEAR(second.height, first.height / 2, 1e-9);
         CHECK_NEAR(second.halfWidth, first.halfWidth / 2, 1e-9);
@@ -915,29 +917,56 @@ void testGlyphFace() {
         CHECK_NEAR(second.pitch, first.pitch / 2, 1e-9);
         CHECK_NEAR(second.fall, first.fall / 2, 1e-9);
         CHECK_NEAR(second.pitch / second.fall, first.pitch / first.fall, 1e-9);
-        CHECK_NEAR(second.dim, 2.0 / 3.0, 1e-6);
+        CHECK(second.dim >= 0.3f && second.dim < first.dim);
+        CHECK(second.soft > 0 && 4 * second.soft < second.height);
         CHECK(second.haloAlpha == first.haloAlpha && second.knock == first.knock);
 
+        // The third is the same again, further back: smaller than the second, though not by half, and only a faint,
+        // soft haze, whose characters can still be told apart.
+        CHECK(third.on());
+        CHECK(third.height >= first.height / 4 && third.height < second.height);
+        const double k = third.height / first.height;
+        CHECK_NEAR(third.halfWidth, first.halfWidth * k, 1e-9);
+        CHECK_NEAR(third.reach, first.reach * k, 1e-9);
+        CHECK_NEAR(third.pitch, first.pitch * k, 1e-9);
+        CHECK_NEAR(third.fall, first.fall * k, 1e-9);
+        CHECK_NEAR(third.pitch / third.fall, first.pitch / first.fall, 1e-9);
+        CHECK(third.dim >= 0.2f && third.dim < second.dim);
+        CHECK(third.soft > second.soft && 4 * third.soft < third.height);
+        CHECK(third.haloAlpha == first.haloAlpha && third.knock == first.knock);
+
         // The faces belong to the style and the scale, not to the window; floating makes the glow stronger.
-        for (const auto& [a, b] : {std::pair{&first, &afloat.glyphs}, {&second, &afloat.farGlyphs}}) {
-            CHECK(b->height == a->height && b->pitch == a->pitch && b->halfWidth == a->halfWidth && b->dim == a->dim);
+        for (const auto& [a, b] : {std::pair{&first, &afloat.glyphs}, {&second, &afloat.farGlyphs}, {&third, &afloat.deepGlyphs}}) {
+            CHECK(b->height == a->height && b->pitch == a->pitch && b->halfWidth == a->halfWidth && b->dim == a->dim && b->soft == a->soft);
             CHECK(b->haloAlpha >= a->haloAlpha && b->haloAlpha <= 1);
             CHECK(b->knock == a->knock);
         }
         for (const auto& size : kSizes) {
             const Panel other = buildLayout(st, params(size[0], size[1], s)).panel;
-            for (const auto& [a, b] : {std::pair{&first, &other.glyphs}, {&second, &other.farGlyphs}}) {
+            for (const auto& [a, b] : {std::pair{&first, &other.glyphs}, {&second, &other.farGlyphs}, {&third, &other.deepGlyphs}}) {
                 CHECK(b->height == a->height && b->pitch == a->pitch && b->reach == a->reach && b->haloAlpha == a->haloAlpha);
-                CHECK(b->knock == a->knock && b->dim == a->dim);
+                CHECK(b->knock == a->knock && b->dim == a->dim && b->soft == a->soft);
             }
         }
     }
     CHECK(buildLayout(st, params(900, 600, 2.f)).panel.glyphs.height > buildLayout(st, params(900, 600, 1.f)).panel.glyphs.height);
 
+    // How out of focus the columns beyond the first are is a length like the rest: it grows with the scale.
+    const Panel one = buildLayout(st, params(900, 600, 1.f)).panel, two = buildLayout(st, params(900, 600, 2.f)).panel;
+    CHECK_NEAR(two.farGlyphs.soft, 2 * one.farGlyphs.soft, 1e-9);
+    CHECK_NEAR(two.deepGlyphs.soft, 2 * one.deepGlyphs.soft, 1e-9);
+
+    // The face of a column is picked by its number: the first column's for the first and anything below it, and
+    // the last column's for the last and anything beyond it.
+    for (int column : {-4, 0, 1, 2, 9}) {
+        const GlyphFace& face = one.face(column);
+        CHECK(&face == (column <= 0 ? &one.glyphs : column == 1 ? &one.farGlyphs : &one.deepGlyphs));
+    }
+
     // The characters come in three sizes, the largest the face itself and none much smaller; only the size of
-    // the character differs, not how a column of them is laid out. That goes for either column.
+    // the character differs, not how a column of them is laid out. That goes for every column.
     const Panel panel = buildLayout(st, params(900, 600)).panel;
-    for (const GlyphFace& face : {panel.glyphs, panel.farGlyphs}) {
+    for (const GlyphFace& face : {panel.glyphs, panel.farGlyphs, panel.deepGlyphs}) {
         const GlyphFace big = glyphFaceOf(face, kGlyphSizes - 1);
         CHECK(big.height == face.height && big.halfWidth == face.halfWidth && big.reach == face.reach);
         double smaller = 0;
@@ -946,16 +975,17 @@ void testGlyphFace() {
             CHECK(f.height > smaller && f.height >= 0.8 * face.height && f.height <= face.height);
             CHECK(f.halfWidth <= face.halfWidth && f.reach <= face.reach);
             CHECK(f.pitch == face.pitch && f.fall == face.fall && f.haloAlpha == face.haloAlpha && f.knock == face.knock && f.dim == face.dim);
+            CHECK(f.soft == face.soft); // how out of focus a column is does not depend on the size of its characters
             smaller = f.height;
         }
         CHECK(glyphFaceOf(face, -3).height == glyphFaceOf(face, 0).height && glyphFaceOf(face, 17).height == big.height);
     }
 }
 
-// The characters fall in two columns down both sides of the window, all of them outside the line: the first
-// next to it, the second beyond the first. All of them are in the line's glow, off the line and the window,
-// and beside one straight run of the line. Where the columns are depends on the style and the scale, not on
-// how far the line stands from the window.
+// The characters fall in three columns down both sides of the window, all of them outside the line: the first
+// next to it, the others beyond it, each partly under the one before. All of them are in the line's glow, off the
+// line and the window, and beside one straight run of the line. Where the columns are depends on the style
+// and the scale, not on how far the line stands from the window.
 void testLanes() {
     const Style& st = matrixStyle();
     for (const auto& size : kSizes)
@@ -970,7 +1000,7 @@ void testLanes() {
                         const Panel&  pn     = lay.panel;
                         const Stroke& line   = pn.strokes[0];
                         const auto    lineAt = [&](const RainLane& lane) { return lane.x < p.width / 2 ? lay.centre.x : lay.centre.x + lay.centre.w; };
-                        CHECK(pn.lanes.size() <= 4);
+                        CHECK(pn.lanes.size() <= size_t(2 * kGlyphColumns));
 
                         for (size_t i = 0; i < pn.lanes.size(); ++i) {
                             const RainLane&  lane   = pn.lanes[i];
@@ -980,7 +1010,7 @@ void testLanes() {
                             const double     lineX  = lineAt(lane);
                             const double     off    = std::fabs(lane.x - lineX);
                             const long       bottom = std::lround(lane.y0 + (lane.cells - 1) * face.pitch);
-                            const int        most   = lane.column ? 6 : 3; // the smaller characters of the second column have more falls
+                            const int        most   = lane.column == 0 ? 3 : lane.column == 1 ? 6 : 4; // the second column's smaller characters get more falls, the haze of the third only one more
                             CHECK(face.on() && lane.cells >= 3 && lane.streams >= 1 && lane.streams <= most);
                             CHECK(lane.cells > 20 || lane.streams == 1);                   // a short column has one fall
                             CHECK(lane.cells < 20 * most - 10 || lane.streams == most);    // a long one has the most
@@ -1002,8 +1032,11 @@ void testLanes() {
                                         CHECK(distToWindow({lane.x + fx * halfX, y + fy * halfY}, p.width, p.height, p.cut) >= 1.5 - 1e-9);
                             }
 
-                            // The left side's columns come first; of two on one side the one next to the line does, and the other
-                            // is beyond it, clear of it, with twice as many characters, since they are half as far apart.
+                            // The left side's columns come first, those of a side from the one next to the line outwards. Each
+                            // beyond the first is partly under the one before: its middle is further out, its inner edge is under
+                            // that column and its outer edge beyond it, by less than the width of one of its characters, so that
+                            // the two are narrower than side by side. It has as many times the characters as its pitch is smaller,
+                            // since it fills the same run.
                             if (i == 0) {
                                 CHECK(lane.column == 0);
                                 continue;
@@ -1017,33 +1050,40 @@ void testLanes() {
                                 continue;
                             }
                             const double prevHalfX = prevFace.height * kGlyphW / kGlyphH / 2 + prevFace.halfWidth;
-                            CHECK(prev.column == 0 && lane.column == 1);
-                            CHECK(off - halfX - (std::fabs(prev.x - lineX) + prevHalfX) >= 1.0 - 1e-9);
-                            CHECK(lane.cells >= 2 * prev.cells && lane.cells <= 2 * prev.cells + 3);
+                            const double prevOff   = std::fabs(prev.x - lineX);
+                            const double peek      = off + halfX - (prevOff + prevHalfX); // how far this column goes beyond the one before
+                            CHECK(lane.column == prev.column + 1);
+                            CHECK(off > prevOff);
+                            CHECK(off - halfX < prevOff + prevHalfX);
+                            CHECK(peek > 0.25 * (2 * halfX) && peek < 2 * halfX);
+                            const double ratio = prevFace.pitch / face.pitch;
+                            const double more  = lane.cells + 1 - ratio * (prev.cells + 1);
+                            CHECK(more > -1.5 && more < ratio + 0.5);
                         }
                         if (g_failures != before)
                             std::fprintf(stderr, "  ^ %s, gap %g\n", label(p).c_str(), gap);
                     }
 
-    // Where there is room there are both columns on both sides, wherever the line stands: the same distance
+    // Where there is room there are all the columns on both sides, wherever the line stands: the same distance
     // from it, give or take the whole px they are rounded to.
     for (const auto& size : {std::pair{400, 300}, {900, 600}, {1920, 1080}, {3840, 2160}})
         for (float s : kScales) {
-            std::vector<std::array<double, 4>> away;
+            std::vector<std::array<double, 2 * kGlyphColumns>> away;
             for (double gap : {3.0, 6.0, 15.0, 30.0}) {
                 Params p = params(size.first, size.second, s);
                 p.gap    = gap;
                 const Layout lay = buildLayout(st, p);
                 const auto&  l   = lay.panel.lanes;
-                CHECK(l.size() == 4);
-                if (l.size() != 4)
+                CHECK(l.size() == size_t(2 * kGlyphColumns));
+                if (l.size() != size_t(2 * kGlyphColumns))
                     continue;
-                CHECK(l[0].column == 0 && l[1].column == 1 && l[2].column == 0 && l[3].column == 1);
-                CHECK(l[0].x < 0 && l[1].x < l[0].x && l[2].x > p.width && l[3].x > l[2].x);
+                for (size_t k = 0; k < l.size(); ++k)
+                    CHECK(l[k].column == int(k % kGlyphColumns));
+                CHECK(l[0].x < 0 && l[1].x < l[0].x && l[2].x < l[1].x && l[3].x > p.width && l[4].x > l[3].x && l[5].x > l[4].x);
 
                 const double right = lay.centre.x + lay.centre.w;
-                away.push_back({lay.centre.x - l[0].x, lay.centre.x - l[1].x, l[2].x - right, l[3].x - right});
-                for (size_t k = 0; k < 4; ++k)
+                away.push_back({lay.centre.x - l[0].x, lay.centre.x - l[1].x, lay.centre.x - l[2].x, l[3].x - right, l[4].x - right, l[5].x - right});
+                for (size_t k = 0; k < l.size(); ++k)
                     CHECK(std::fabs(away.back()[k] - away.front()[k]) <= 1.0 + 1e-9);
             }
         }
@@ -1053,44 +1093,51 @@ void testLanes() {
 
     // Longer columns have more falls.
     const Layout tall = buildLayout(st, params(900, 2000)), low = buildLayout(st, params(900, 200));
-    CHECK(tall.panel.lanes.size() == 4 && low.panel.lanes.size() == 4);
-    if (tall.panel.lanes.size() == 4 && low.panel.lanes.size() == 4)
-        for (size_t k = 0; k < 4; ++k) {
+    CHECK(tall.panel.lanes.size() == size_t(2 * kGlyphColumns) && low.panel.lanes.size() == size_t(2 * kGlyphColumns));
+    if (tall.panel.lanes.size() == size_t(2 * kGlyphColumns) && low.panel.lanes.size() == size_t(2 * kGlyphColumns))
+        for (size_t k = 0; k < tall.panel.lanes.size(); ++k) {
             CHECK(tall.panel.lanes[k].cells > low.panel.lanes[k].cells);
             CHECK(tall.panel.lanes[k].streams >= low.panel.lanes[k].streams);
         }
 }
 
-// With a single column there is no second face and no column beyond the first: what remains is the first column
-// where it was, and the extents are no wider than with two.
-void testSingleColumn() {
-    Style one        = matrixStyle();
-    one.glyphColumns = 1;
-    for (const auto& size : kSizes)
-        for (float s : kScales)
-            for (bool floating : {false, true}) {
-                const int    before = g_failures;
-                const Params p      = params(size[0], size[1], s, floating);
-                const Layout two = buildLayout(matrixStyle(), p), single = buildLayout(one, p);
-                CHECK(single.valid && single.panel.glyphs.on() && !single.panel.farGlyphs.on());
-                CHECK(single.panel.glyphs.height == two.panel.glyphs.height && single.panel.glyphs.pitch == two.panel.glyphs.pitch);
+// With fewer columns there are no faces for the ones left out, and no columns beyond: what remains is the columns
+// there are, where they were, and the extents are no wider than with all of them.
+void testFewerColumns() {
+    for (int columns = 1; columns < kGlyphColumns; ++columns) {
+        Style fewer        = matrixStyle();
+        fewer.glyphColumns = columns;
+        for (const auto& size : kSizes)
+            for (float s : kScales)
+                for (bool floating : {false, true}) {
+                    const int    before = g_failures;
+                    const Params p      = params(size[0], size[1], s, floating);
+                    const Layout all = buildLayout(matrixStyle(), p), some = buildLayout(fewer, p);
+                    CHECK(some.valid && some.panel.glyphs.on());
+                    for (int c = 0; c < kGlyphColumns; ++c) {
+                        const GlyphFace &a = all.panel.face(c), &b = some.panel.face(c);
+                        CHECK(b.on() == (c < columns));
+                        if (c < columns)
+                            CHECK(b.height == a.height && b.pitch == a.pitch && b.dim == a.dim && b.soft == a.soft && b.reach == a.reach);
+                    }
 
-                size_t n = 0;
-                for (const RainLane& lane : two.panel.lanes) {
-                    if (lane.column != 0)
-                        continue;
-                    CHECK(n < single.panel.lanes.size());
-                    if (n >= single.panel.lanes.size())
-                        break;
-                    const RainLane& other = single.panel.lanes[n++];
-                    CHECK(other.x == lane.x && other.y0 == lane.y0 && other.cells == lane.cells && other.streams == lane.streams && other.column == 0);
+                    size_t n = 0;
+                    for (const RainLane& lane : all.panel.lanes) {
+                        if (lane.column >= columns)
+                            continue;
+                        CHECK(n < some.panel.lanes.size());
+                        if (n >= some.panel.lanes.size())
+                            break;
+                        const RainLane& other = some.panel.lanes[n++];
+                        CHECK(other.x == lane.x && other.y0 == lane.y0 && other.cells == lane.cells && other.streams == lane.streams && other.column == lane.column);
+                    }
+                    CHECK(n == some.panel.lanes.size());
+                    CHECK(some.extents.left <= all.extents.left && some.extents.right <= all.extents.right);
+                    CHECK(some.extents.top == all.extents.top && some.extents.bottom == all.extents.bottom);
+                    if (g_failures != before)
+                        std::fprintf(stderr, "  ^ %s, %d column(s)\n", label(p).c_str(), columns);
                 }
-                CHECK(n == single.panel.lanes.size());
-                CHECK(single.extents.left <= two.extents.left && single.extents.right <= two.extents.right);
-                CHECK(single.extents.top == two.extents.top && single.extents.bottom == two.extents.bottom);
-                if (g_failures != before)
-                    std::fprintf(stderr, "  ^ %s\n", label(p).c_str());
-            }
+    }
 }
 
 // The matrix style draws the panel style's outline and nothing else of its frame: the traces, beads and
@@ -1296,11 +1343,17 @@ std::vector<size_t> fallLanes(const Panel& pn) {
     return out;
 }
 
-// A head at full strength is lit at least this much, and a cell at most this much; in the second column,
-// whose characters are 2/3 as bright at most, correspondingly less.
-constexpr int kBrightest    = 27;
-constexpr int kBrightestFar = 19;
-constexpr int kHeadFar      = (2 * kGlyphAlphaSteps + 2) / 3;
+// A head at full strength is lit at least this much, and a cell at most this much, in a column whose
+// characters are as bright as they can be; in a dimmer one, correspondingly less.
+constexpr int kBrightest = 27;
+
+int brightestCell(const GlyphFace& face) {
+    return int(std::ceil(kBrightest * double(face.dim) - 1e-9));
+}
+
+int brightestHead(const GlyphFace& face) {
+    return int(std::ceil(kGlyphAlphaSteps * double(face.dim) - 1e-9));
+}
 
 // On the real panels: what is drawn is well formed, deterministic, only a part of every column, and
 // every cell of every column is lit by some fall.
@@ -1317,12 +1370,13 @@ void testRainDraws() {
         const Panel& pn     = lay.panel;
         const auto   cells  = cellsOf(pn);
         const auto   falls  = fallLanes(pn);
-        CHECK(pn.lanes.size() == 4 && !cells.empty());
+        CHECK(pn.lanes.size() == size_t(2 * kGlyphColumns) && !cells.empty());
 
         const double      row    = pn.glyphs.pitch / pn.glyphs.fall; // the px a fall takes to go down a row
         std::vector<char> seen(cells.size(), 0);
         size_t            unseen = cells.size();
         int               n      = 0;
+        int               cellPeak[kGlyphColumns] = {}, headPeak[kGlyphColumns] = {}; // the most any character of a column was lit
         for (double t = 0; unseen > 0 && t < 5000 * row; t += row / 4, ++n) {
             const auto draws = glyphDraws(pn, t, 1.0, 12345);
 
@@ -1342,7 +1396,8 @@ void testRainDraws() {
                     const RainLane& lane = pn.lanes[falls[fall]];
                     CHECK(d.x == lane.x && d.heat == kGlyphHeatSteps && d.column == lane.column);
                     CHECK(d.y >= lane.y0 && d.y <= lane.y0 + (lane.cells - 0.5) * faceOf(pn, lane).pitch + 1);
-                    CHECK(d.alpha <= (lane.column ? kHeadFar : kGlyphAlphaSteps));
+                    CHECK(d.alpha <= brightestHead(faceOf(pn, lane)));
+                    headPeak[lane.column] = std::max(headPeak[lane.column], d.alpha);
                     ++headsIn[falls[fall]];
                     continue;
                 }
@@ -1352,7 +1407,8 @@ void testRainDraws() {
                     continue;
                 const RainCell& cell = cells[size_t(d.id)];
                 CHECK(d.x == cell.x && d.y == cell.y && d.column == pn.lanes[cell.lane].column);
-                CHECK(d.alpha <= (d.column ? kBrightestFar : kBrightest) && d.heat < kGlyphHeatSteps);
+                CHECK(d.alpha <= brightestCell(faceOf(pn, pn.lanes[cell.lane])) && d.heat < kGlyphHeatSteps);
+                cellPeak[d.column] = std::max(cellPeak[d.column], d.alpha);
                 ++litIn[cell.lane];
                 if (!seen[size_t(d.id)]) {
                     seen[size_t(d.id)] = 1;
@@ -1382,6 +1438,14 @@ void testRainDraws() {
             CHECK(glyphDraws(pn, t, 2.0, 12345) == draws); // out of range is clamped
         }
         CHECK(unseen == 0);
+
+        // Every column is lit up to its own dim, and no further: each is dimmer than the one before. A head gets right up
+        // to it; a cell, which has dimmed a little by the time it is left behind and is not always the brightest, not quite.
+        for (int col = 0; col < kGlyphColumns; ++col) {
+            const GlyphFace& face = pn.face(col);
+            CHECK(cellPeak[col] >= brightestCell(face) - 6 && headPeak[col] >= brightestHead(face) - 2);
+            CHECK(col == 0 || (cellPeak[col] < cellPeak[col - 1] && headPeak[col] < headPeak[col - 1]));
+        }
         if (g_failures != before)
             std::fprintf(stderr, "  ^ %s\n", label(p).c_str());
     }
@@ -1389,7 +1453,7 @@ void testRainDraws() {
     const Layout lay   = buildLayout(matrixStyle(), params(900, 600));
     const Panel& pn    = lay.panel;
     const auto   cells = cellsOf(pn);
-    CHECK(pn.lanes.size() == 4);
+    CHECK(pn.lanes.size() == size_t(2 * kGlyphColumns));
 
     // Windows are told apart by their seeds, and the columns of one window do not fall in step: the
     // first columns of the two sides, which have as many cells, are not alike.
@@ -1405,8 +1469,8 @@ void testRainDraws() {
             if (d.id >= kGlyphHeadId)
                 continue;
             const size_t lane = cells[size_t(d.id)].lane;
-            if (lane == 0 || lane == 2)
-                rows[lane / 2].push_back(d.id - first[lane]);
+            if (lane % kGlyphColumns == 0)
+                rows[lane / kGlyphColumns].push_back(d.id - first[lane]);
         }
         apart = apart || rows[0] != rows[1];
     }
@@ -1440,61 +1504,76 @@ Panel oneColumn(int cells, int streams = 1) {
     return pn;
 }
 
-// A second column is drawn with the face of its own: its characters are as far apart as that face's
+// The face a hand-made panel has for a column beyond the first.
+GlyphFace& furtherFace(Panel& pn, int column) {
+    return column == 1 ? pn.farGlyphs : pn.deepGlyphs;
+}
+
+// A column beyond the first is drawn with the face of its own: its characters are as far apart as that face's
 // pitch says, and dimmer by its dim, but fall the same rows in the same time as the first column's if
-// the faces fall as many rows for the same travel. A second column that has no face is not drawn.
-void testSecondColumn() {
-    Panel first = oneColumn(40, 2); // pitch 40, fall 4: a row for every 10 px of travel
-    Panel only  = first;            // the same column, as a second one, with half the pitch and the fall, and half as bright
-    only.farGlyphs = {6, 0.3, 1.7, 0.5f, 20, 2, 0, 0.5f};
-    only.lanes[0].column = 1;
+// the faces fall as many rows for the same travel. A column that has no face is not drawn, and never
+// borrows that of another.
+void testFurtherColumns() {
+    for (int column = 1; column < kGlyphColumns; ++column) {
+        Panel first = oneColumn(40, 2); // pitch 40, fall 4: a row for every 10 px of travel
+        Panel only  = first;            // the same column, as a further one, with half the pitch and the fall, and half as bright
+        furtherFace(only, column) = {6, 0.3, 1.7, 0.5f, 20, 2, 0, 0.5f};
+        only.lanes[0].column      = column;
 
-    int brightest = 0;
-    for (double t : {0.0, 150.0, 700.0, 1900.0}) {
-        const Drawn a = drawn(glyphDraws(first, t, 1.0, 9)), b = drawn(glyphDraws(only, t, 1.0, 9));
-        CHECK(!a.empty() && !b.empty());
-        for (const auto& [id, d] : b) {
-            const auto it = a.find(id);
-            CHECK(it != a.end());
-            if (it == a.end())
-                continue;
-            const GlyphDraw& n = it->second;
-            CHECK(d.column == 1 && n.column == 0);
-            CHECK(d.x == n.x && d.glyph == n.glyph && d.size == n.size && d.heat == n.heat);
-            CHECK(std::abs((d.y - 20) - (n.y - 20) / 2) <= 1);
-            CHECK(std::abs(2 * d.alpha - n.alpha) <= 2);
-            brightest = std::max(brightest, n.alpha);
+        int brightest = 0;
+        for (double t : {0.0, 150.0, 700.0, 1900.0}) {
+            const Drawn a = drawn(glyphDraws(first, t, 1.0, 9)), b = drawn(glyphDraws(only, t, 1.0, 9));
+            CHECK(!a.empty() && !b.empty());
+            for (const auto& [id, d] : b) {
+                const auto it = a.find(id);
+                CHECK(it != a.end());
+                if (it == a.end())
+                    continue;
+                const GlyphDraw& n = it->second;
+                CHECK(d.column == column && n.column == 0);
+                CHECK(d.x == n.x && d.glyph == n.glyph && d.size == n.size && d.heat == n.heat);
+                CHECK(std::abs((d.y - 20) - (n.y - 20) / 2) <= 1);
+                CHECK(std::abs(2 * d.alpha - n.alpha) <= 2);
+                brightest = std::max(brightest, n.alpha);
+            }
         }
-    }
-    CHECK(brightest >= 10); // so that the alphas above were compared where they mean something
+        CHECK(brightest >= 10); // so that the alphas above were compared where they mean something
 
-    // Both columns of a panel: the first is as if the second was not there, and what the second has is its
-    // own, and dimmer than the face's dim says at most.
-    Panel both     = first;
-    both.farGlyphs = only.farGlyphs;
-    both.lanes.push_back({140, 20, 60, 2, 1});
-    size_t farDrawn = 0;
-    for (double t : {0.0, 150.0, 700.0, 1900.0, 5200.0}) {
-        std::vector<GlyphDraw> nearColumn, farColumn;
-        for (const GlyphDraw& d : glyphDraws(both, t, 1.0, 9))
-            (d.column == 0 ? nearColumn : farColumn).push_back(d);
-        CHECK(nearColumn == glyphDraws(first, t, 1.0, 9));
-        farDrawn += farColumn.size();
-        for (const GlyphDraw& d : farColumn) {
-            const bool head = d.id >= kGlyphHeadId;
-            CHECK(d.x == 140 && d.id >= (head ? kGlyphHeadId + 4 : 40));
-            CHECK(d.y >= 20 && d.y <= 20 + 59.5 * 20 + 1);
-            CHECK(d.alpha <= (head ? kGlyphAlphaSteps / 2 : kBrightest / 2) + 1);
+        // Both columns of a panel: the first is as if the other was not there, and what the other has is its
+        // own, and dimmer than the face's dim says at most.
+        Panel both                = first;
+        furtherFace(both, column) = furtherFace(only, column);
+        both.lanes.push_back({140, 20, 60, 2, column});
+        size_t furtherDrawn = 0;
+        for (double t : {0.0, 150.0, 700.0, 1900.0, 5200.0}) {
+            std::vector<GlyphDraw> nearColumn, furtherColumn;
+            for (const GlyphDraw& d : glyphDraws(both, t, 1.0, 9))
+                (d.column == 0 ? nearColumn : furtherColumn).push_back(d);
+            CHECK(nearColumn == glyphDraws(first, t, 1.0, 9));
+            furtherDrawn += furtherColumn.size();
+            for (const GlyphDraw& d : furtherColumn) {
+                const bool head = d.id >= kGlyphHeadId;
+                CHECK(d.column == column && d.x == 140 && d.id >= (head ? kGlyphHeadId + 4 : 40));
+                CHECK(d.y >= 20 && d.y <= 20 + 59.5 * 20 + 1);
+                CHECK(d.alpha <= (head ? kGlyphAlphaSteps / 2 : kBrightest / 2) + 1);
+            }
         }
-    }
-    CHECK(farDrawn > 0);
+        CHECK(furtherDrawn > 0);
 
-    // A second column that has no face is skipped, and does not take the place of the first.
-    Panel missing = first;
-    missing.lanes.push_back({140, 20, 60, 2, 1});
-    CHECK(glyphDraws(missing, 700, 1.0, 9) == glyphDraws(first, 700, 1.0, 9));
-    missing.lanes[0].column = 1;
-    CHECK(glyphDraws(missing, 700, 1.0, 9).empty());
+        // A column that has no face is skipped, and does not take the place of the first.
+        Panel missing = first;
+        missing.lanes.push_back({140, 20, 60, 2, column});
+        CHECK(glyphDraws(missing, 700, 1.0, 9) == glyphDraws(first, 700, 1.0, 9));
+        missing.lanes[0].column = column;
+        CHECK(glyphDraws(missing, 700, 1.0, 9).empty());
+
+        // Nor does it use the face of the column before it, which the panel does have.
+        Panel borrowing = first;
+        for (int c = 1; c < column; ++c)
+            furtherFace(borrowing, c) = furtherFace(only, column);
+        borrowing.lanes[0].column = column;
+        CHECK(glyphDraws(borrowing, 700, 1.0, 9).empty());
+    }
 }
 
 // What is drawn of such a column at one moment: how lit and how hot, and which character of which size every one of
@@ -2094,6 +2173,66 @@ void testRainIsCalm() {
     CHECK(fastest <= lampRows + 0.25);
 }
 
+// The characters of the columns further from the line, which are further away, are drawn first, so that those of the
+// columns before them lie over them: each one once, and within a column in the order of the list.
+void testGlyphOrder() {
+    const auto draw = [](int id, int column) { return GlyphDraw{id, 10 * id, 20, 1, 5, 0, 0, column}; };
+    using Order     = std::vector<size_t>;
+
+    const std::vector<GlyphDraw> mixed = {draw(0, 0), draw(1, 1), draw(2, 2), draw(3, 0), draw(4, 2), draw(5, 1), draw(6, 1), draw(7, 0)};
+    CHECK(glyphOrder(mixed) == (Order{2, 4, 1, 5, 6, 0, 3, 7}));
+
+    // A list that has no column in between is as well in order: the furthest first.
+    const std::vector<GlyphDraw> gap = {draw(0, 0), draw(1, 2), draw(2, 0), draw(3, 2)};
+    CHECK(glyphOrder(gap) == (Order{1, 3, 0, 2}));
+
+    // A list of one column is in order as it is, and a list of nothing has no order.
+    const std::vector<GlyphDraw> first = {draw(0, 0), draw(1, 0), draw(2, 0)}, second = {draw(0, 1), draw(1, 1)}, third = {draw(0, 2), draw(1, 2)};
+    CHECK(glyphOrder(first) == (Order{0, 1, 2}));
+    CHECK(glyphOrder(second) == (Order{0, 1}));
+    CHECK(glyphOrder(third) == (Order{0, 1}));
+    CHECK(glyphOrder({}).empty());
+
+    // A column beyond the last is as far away as the last, and one before the first as near as the first.
+    const std::vector<GlyphDraw> odd = {draw(0, 0), draw(1, 7), draw(2, -1), draw(3, 2), draw(4, 1)};
+    CHECK(glyphOrder(odd) == (Order{1, 3, 4, 0, 2}));
+
+    // On the real panels: every character once, the furthest column's first, each column in the order of its ids.
+    int framesWithAll = 0;
+    for (const auto& size : kSizes) {
+        const Panel pn = buildLayout(matrixStyle(), params(size[0], size[1])).panel;
+        for (double t = 0; t < 3000; t += 250) {
+            const auto  draws = glyphDraws(pn, t, 1.0, 9);
+            const Order order = glyphOrder(draws);
+            CHECK(order.size() == draws.size());
+
+            std::vector<char> once(draws.size(), 0);
+            bool              seen[kGlyphColumns] = {};
+            int               lastId[kGlyphColumns];
+            std::fill(std::begin(lastId), std::end(lastId), -1);
+            int lastColumn = kGlyphColumns - 1;
+            for (const size_t at : order) {
+                CHECK(at < draws.size());
+                if (at >= draws.size())
+                    continue;
+                CHECK(!once[at]);
+                once[at]           = 1;
+                const GlyphDraw& d = draws[at];
+                CHECK(d.column >= 0 && d.column < kGlyphColumns);
+                if (d.column < 0 || d.column >= kGlyphColumns)
+                    continue;
+                CHECK(d.column <= lastColumn); // a nearer column is never followed by a further one
+                CHECK(d.id > lastId[d.column]);
+                lastColumn       = d.column;
+                lastId[d.column] = d.id;
+                seen[d.column]   = true;
+            }
+            framesWithAll += std::all_of(std::begin(seen), std::end(seen), [](bool b) { return b; });
+        }
+    }
+    CHECK(framesWithAll > 0);
+}
+
 void testGlyphChanges() {
     const auto draw = [](int id, int alpha, int heat = 0, int glyph = 1, int size = 0, int y = 20) {
         return GlyphDraw{id, 10 * id, y, glyph, alpha, heat, size};
@@ -2148,12 +2287,12 @@ int main() {
     testExtents();
     testGlyphFace();
     testLanes();
-    testSingleColumn();
+    testFewerColumns();
     testMatrixFrame();
     testLamps();
     testLampPose();
     testRainDraws();
-    testSecondColumn();
+    testFurtherColumns();
     testRainHeads();
     testRainBands();
     testRainTrail();
@@ -2162,6 +2301,7 @@ int main() {
     testRainHeadsApart();
     testRainVariety();
     testRainIsCalm();
+    testGlyphOrder();
     testGlyphChanges();
     return finish("test_panel");
 }

@@ -330,9 +330,11 @@ namespace {
     // Adds to `region` the boxes, in global logical px, of the characters
     // `glyphs` of `panel`. `origin` is the window's box.
     void addGlyphBoxes(CRegion& region, const smplhud::Panel& panel, std::span<const smplhud::GlyphDraw> glyphs, const CBox& origin, double scale) {
-        const auto sizes = std::array{smplhud::glyphSize(panel.glyphs), smplhud::glyphSize(panel.farGlyphs.on() ? panel.farGlyphs : panel.glyphs)};
+        std::array<smplhud::GlyphSize, smplhud::kGlyphColumns> sizes;
+        for (size_t column = 0; column < sizes.size(); ++column)
+            sizes[column] = smplhud::glyphSize(panel.face(int(column)));
         for (const auto& glyph : glyphs) {
-            const auto   size = sizes[size_t(std::clamp(glyph.column, 0, 1))];
+            const auto   size = sizes[size_t(std::clamp(glyph.column, 0, smplhud::kGlyphColumns - 1))];
             const double w    = size.w + 2;
             const double h    = size.h + 2;
             CBox         box  = {origin.x + (glyph.x - w / 2) / scale, origin.y + (glyph.y - h / 2) / scale, w / scale, h / scale};

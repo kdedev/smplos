@@ -178,10 +178,10 @@ GlyphTones glyphTonesOf(const Palette& pal) {
 // What the pass element does for a character: the character in the size it was given and the face of its column,
 // in the colours of the line and, as hot as it is, the same one over it in the bright colour.
 void drawGlyphs(Canvas& cv, const Panel& panel, const std::vector<GlyphDraw>& draws, const Palette& pal, int ox, int oy) {
-    GlyphFace faces[2][kGlyphSizes];
-    GlyphSize sizes[2][kGlyphSizes];
-    for (int column = 0; column < 2; ++column) {
-        const GlyphFace& base = column > 0 && panel.farGlyphs.on() ? panel.farGlyphs : panel.glyphs;
+    GlyphFace faces[kGlyphColumns][kGlyphSizes];
+    GlyphSize sizes[kGlyphColumns][kGlyphSizes];
+    for (int column = 0; column < kGlyphColumns; ++column) {
+        const GlyphFace& base = panel.face(column);
         for (int i = 0; i < kGlyphSizes; ++i) {
             faces[column][i] = glyphFaceOf(base, i);
             sizes[column][i] = glyphSize(faces[column][i]);
@@ -189,8 +189,9 @@ void drawGlyphs(Canvas& cv, const Panel& panel, const std::vector<GlyphDraw>& dr
     }
 
     const GlyphTones tones = glyphTonesOf(pal);
-    for (const GlyphDraw& g : draws) {
-        const int        column = std::clamp(g.column, 0, 1);
+    for (const size_t at : glyphOrder(draws)) {
+        const GlyphDraw& g      = draws[at];
+        const int        column = std::clamp(g.column, 0, kGlyphColumns - 1);
         const int        which  = std::clamp(g.size, 0, kGlyphSizes - 1);
         const GlyphFace& face   = faces[column][which];
         const double     x = ox + g.x - sizes[column][which].w / 2.0, y = oy + g.y - sizes[column][which].h / 2.0;
