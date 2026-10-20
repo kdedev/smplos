@@ -1,3 +1,4 @@
+#include "../glyph.hpp"
 #include "../panel.hpp"
 #include "../stamp.hpp"
 #include "check.hpp"
@@ -6,6 +7,7 @@
 #include <cmath>
 #include <cstdio>
 #include <limits>
+#include <map>
 #include <numbers>
 #include <string>
 #include <vector>
@@ -18,6 +20,10 @@ constexpr double kInf = std::numeric_limits<double>::infinity();
 
 const Style& panelStyle() {
     return *styleFor("panel");
+}
+
+const Style& matrixStyle() {
+    return *styleFor("matrix");
 }
 
 Params params(int w, int h, float scale = 1.f, bool floating = false, double lineWidth = 2) {
@@ -261,6 +267,39 @@ void checkLayout(const Layout& lay, const Params& p) {
         });
     }
 
+    // The characters of a glyph style stay inside the extents, on whole px and on a line,
+    // whatever they are doing. A style without characters has no places for them.
+    const GlyphFace& face = lay.panel.glyphs;
+    CHECK(face.on() || lay.panel.slots.empty());
+    if (face.on()) {
+        const GlyphSize gs = glyphSize(face);
+        CHECK(gs.w > 0 && gs.h > 0 && gs.w % 2 == 0 && gs.h % 2 == 0);
+        const auto glyphFits = [&](Vec2 at) {
+            const double x = std::round(at.x), y = std::round(at.y);
+            return inside(x - gs.w / 2.0, y - gs.h / 2.0, x + gs.w / 2.0, y + gs.h / 2.0);
+        };
+        for (const Bead& b : lay.panel.beads)
+            CHECK(glyphFits(b.pos));
+
+        // Where the line dips towards the window a character stands off it, outwards, by up to this much.
+        const double     stepOut = std::ceil(6 * s);
+        const GlyphSlot* last    = nullptr;
+        for (const GlyphSlot& slot : lay.panel.slots) {
+            CHECK(whole(slot.pos.x) && whole(slot.pos.y));
+            CHECK(glyphFits(slot.pos));
+            CHECK(slot.stroke >= 0 && size_t(slot.stroke) < lay.panel.strokes.size());
+            if (slot.stroke < 0 || size_t(slot.stroke) >= lay.panel.strokes.size())
+                continue;
+            const Stroke& line = lay.panel.strokes[size_t(slot.stroke)];
+            CHECK(slot.at >= 0 && slot.at <= strokeLength(line));
+            CHECK(slot.alpha >= 0.3f - 1e-6f && slot.alpha <= 1.f);
+            CHECK(distToStroke(line, slot.pos) <= (line.closed ? stepOut : 0.0) + 0.75);
+            if (last)
+                CHECK(slot.stroke > last->stroke || (slot.stroke == last->stroke && slot.at > last->at));
+            last = &slot;
+        }
+    }
+
     if (g_failures != before)
         std::fprintf(stderr, "  ^ %s\n", label(p).c_str());
 }
@@ -274,10 +313,30 @@ void testStyle() {
     CHECK(st->notchDepth > 0 && st->traceOffset > 0 && st->beadRadius > 0 && st->runnerSpeed > 0);
     CHECK(st->lineAlpha > 0 && st->lineAlpha <= 1 && st->haloAlpha > 0 && st->haloAlpha <= 1);
     CHECK(st->haloReach > 0 && st->floatBoost >= 1);
+    CHECK(st->glyphHeight == 0 && st->glyphPitch == 0 && st->glyphPeriod == 0);
 
-    // Only the panel style is a panel; the others stay bands.
-    for (const Style& other : allStyles())
-        CHECK((other.kind == Kind::Panel) == (std::string(other.name) == "panel"));
+    // The matrix style is a panel that draws characters where the panel style draws dots.
+    const Style* mx = styleFor("matrix");
+    CHECK(mx != nullptr);
+    if (!mx)
+        return;
+    CHECK(mx->kind == Kind::Panel);
+    CHECK(mx->notchDepth > 0 && mx->traceOffset > 0 && mx->beadRadius > 0 && mx->runnerSpeed > 0);
+    CHECK(mx->lineAlpha > 0 && mx->lineAlpha <= 1 && mx->haloAlpha > 0 && mx->haloAlpha <= 1);
+    CHECK(mx->haloReach > 0 && mx->floatBoost >= 1);
+    CHECK(mx->glyphHeight > 0 && mx->glyphPitch >= mx->glyphHeight / 2 && mx->glyphPeriod > 0);
+    CHECK(mx->sweepAlpha > 0); // the characters travel while the window sweeps
+    CHECK(mx->glyphKnock > 0 && mx->glyphKnock <= 1); // each stands on a dark plate, so the line does not strike it through
+
+    // Only the panel styles are panels, and only the matrix one draws characters; the others stay bands.
+    for (const Style& other : allStyles()) {
+        const std::string name = other.name;
+        CHECK((other.kind == Kind::Panel) == (name == "panel" || name == "matrix"));
+        CHECK((other.glyphHeight > 0) == (name == "matrix"));
+        CHECK((other.glyphPitch > 0) == (name == "matrix"));
+        CHECK((other.glyphPeriod > 0) == (name == "matrix"));
+        CHECK((other.glyphKnock > 0) == (name == "matrix"));
+    }
 }
 
 void testTooSmall() {
@@ -289,14 +348,14 @@ void testTooSmall() {
 }
 
 void testLayouts() {
-    const Style& st = panelStyle();
-    for (const auto& size : kSizes)
-        for (float s : kScales)
-            for (bool floating : {false, true})
-                for (double lineWidth : {2.0, 3.0}) {
-                    const Params p = params(size[0], size[1], s, floating, lineWidth);
-                    checkLayout(buildLayout(st, p), p);
-                }
+    for (const Style* st : {&panelStyle(), &matrixStyle()})
+        for (const auto& size : kSizes)
+            for (float s : kScales)
+                for (bool floating : {false, true})
+                    for (double lineWidth : {2.0, 3.0}) {
+                        const Params p = params(size[0], size[1], s, floating, lineWidth);
+                        checkLayout(buildLayout(*st, p), p);
+                    }
 }
 
 void testFrameKinds() {
@@ -819,22 +878,541 @@ void testDeterministic() {
 }
 
 void testExtents() {
-    const Style& st = panelStyle();
-    for (float s : kScales)
-        for (bool floating : {false, true}) {
-            const Extents e = extentsFor(st, params(1000, 700, s, floating));
-            CHECK(e.left > 0 && e.top > 0 && e.right > 0 && e.bottom > 0);
-            CHECK(e.right >= e.left); // the traces run out on the right
-            for (const auto& size : kSizes)
-                CHECK(buildLayout(st, params(size[0], size[1], s, floating)).extents == e);
+    for (const Style* st : {&panelStyle(), &matrixStyle()})
+        for (float s : kScales)
+            for (bool floating : {false, true}) {
+                const Extents e = extentsFor(*st, params(1000, 700, s, floating));
+                CHECK(e.left > 0 && e.top > 0 && e.right > 0 && e.bottom > 0);
+                CHECK(e.right >= e.left); // the traces run out on the right
+                for (const auto& size : kSizes)
+                    CHECK(buildLayout(*st, params(size[0], size[1], s, floating)).extents == e);
+            }
+}
+
+// ---------------------------------------------------------------------------
+// The characters of a glyph style.
+
+void testGlyphFace() {
+    const Layout plain = buildLayout(panelStyle(), params(900, 600));
+    CHECK(!plain.panel.glyphs.on() && plain.panel.slots.empty() && plain.panel.glyphs.knock == 0);
+    CHECK(glyphDraws(plain.panel, runnerPoses(plain.panel, 50), 3.0, 1.0, 1).empty());
+
+    const Style& st = matrixStyle();
+    for (float s : kScales) {
+        const GlyphFace docked = buildLayout(st, params(900, 600, s)).panel.glyphs;
+        const GlyphFace afloat = buildLayout(st, params(900, 600, s, true)).panel.glyphs;
+        CHECK(docked.on());
+        CHECK_NEAR(docked.height, std::max(6.0, std::round(st.glyphHeight * double(s))), 1e-9);
+        CHECK_NEAR(docked.pitch, std::max(docked.height / 2, std::round(st.glyphPitch * double(s))), 1e-9);
+        CHECK_NEAR(docked.period, st.glyphPeriod, 1e-9);
+        CHECK(docked.halfWidth > 0 && 4 * docked.halfWidth < docked.height && docked.reach > 0);
+        CHECK(docked.haloAlpha > 0 && docked.haloAlpha <= 1);
+        CHECK_NEAR(docked.knock, st.glyphKnock, 1e-9);
+
+        // The face belongs to the style and the scale, not to the window; floating makes the glow stronger.
+        CHECK(afloat.height == docked.height && afloat.pitch == docked.pitch && afloat.halfWidth == docked.halfWidth);
+        CHECK(afloat.haloAlpha >= docked.haloAlpha && afloat.haloAlpha <= 1);
+        CHECK(afloat.knock == docked.knock);
+        for (const auto& size : kSizes) {
+            const GlyphFace other = buildLayout(st, params(size[0], size[1], s)).panel.glyphs;
+            CHECK(other.height == docked.height && other.pitch == docked.pitch && other.reach == docked.reach && other.haloAlpha == docked.haloAlpha);
+            CHECK(other.knock == docked.knock);
         }
+    }
+    CHECK(buildLayout(st, params(900, 600, 2.f)).panel.glyphs.height > buildLayout(st, params(900, 600, 1.f)).panel.glyphs.height);
+}
+
+// No character touches the window, even where the line comes close to it, and
+// one that stands off the line stands outside it.
+void testGlyphsClearOfWindow() {
+    const Style& st      = matrixStyle();
+    int          stepped = 0;
+    for (const auto& size : {std::pair{100, 100}, {240, 180}, {400, 300}, {700, 400}, {900, 600}, {1920, 1080}})
+        for (float s : kScales)
+            for (bool floating : {false, true}) {
+                const int        before = g_failures;
+                const Params     p      = params(size.first, size.second, s, floating);
+                const Layout     lay    = buildLayout(st, p);
+                const Panel&     pn     = lay.panel;
+                const GlyphFace& face   = pn.glyphs;
+                CHECK(pn.slots.size() > 10);
+
+                // The strokes of a character reach this far from its middle.
+                const double hx = face.height * kGlyphW / kGlyphH / 2 + face.halfWidth, hy = face.height / 2 + face.halfWidth;
+                double       nearest = kInf;
+                int          onOutline = 0;
+                for (const GlyphSlot& slot : pn.slots) {
+                    for (int i = -4; i <= 4; ++i)
+                        for (int j = -4; j <= 4; ++j)
+                            nearest = std::min(nearest, distToWindow({slot.pos.x + hx * i / 4, slot.pos.y + hy * j / 4}, p.width, p.height, p.cut));
+
+                    const Stroke& line = pn.strokes[size_t(slot.stroke)];
+                    if (!line.closed)
+                        continue;
+                    ++onOutline;
+                    const Vec2 on = strokePointAt(line, slot.at).pos;
+                    if (std::hypot(slot.pos.x - on.x, slot.pos.y - on.y) < 1.5)
+                        continue;
+                    ++stepped;
+                    CHECK(distToWindow(slot.pos, p.width, p.height, p.cut) > distToWindow(on, p.width, p.height, p.cut));
+                }
+                CHECK(nearest >= 1.5);
+
+                // The outline keeps most of its characters; none are closer than a pitch, or
+                // nearly so, and none sit on the bead at the end of a trace.
+                CHECK(onOutline >= 0.7 * std::lround(strokeLength(pn.strokes[0]) / face.pitch));
+                const GlyphSlot* prev = nullptr;
+                for (const GlyphSlot& slot : pn.slots) {
+                    if (prev && prev->stroke == slot.stroke)
+                        CHECK(slot.at - prev->at >= 0.8 * face.pitch);
+                    prev = &slot;
+
+                    const Stroke& line = pn.strokes[size_t(slot.stroke)];
+                    if (!line.closed)
+                        for (const Vertex& end : {line.pts.front(), line.pts.back()})
+                            CHECK(std::hypot(slot.pos.x - end.x, slot.pos.y - end.y) >= 0.5 * face.pitch);
+                }
+                if (g_failures != before)
+                    std::fprintf(stderr, "  ^ %s, nearest %g\n", label(p).c_str(), nearest);
+            }
+    CHECK(stepped > 0); // where the notches dip towards the window some characters step off the line
+}
+
+// Characters are drawn over the frame the panel style draws: nothing of the
+// frame moves for them, and it only gets more room.
+void testGlyphsLeaveTheFrame() {
+    Style plain = panelStyle(), fancy = plain;
+    fancy.glyphHeight = matrixStyle().glyphHeight;
+    fancy.glyphPitch  = matrixStyle().glyphPitch;
+    fancy.glyphPeriod = matrixStyle().glyphPeriod;
+    for (const auto& size : kSizes)
+        for (float s : kScales)
+            for (bool floating : {false, true}) {
+                const Params p = params(size[0], size[1], s, floating);
+                const Layout a = buildLayout(plain, p), b = buildLayout(fancy, p);
+                CHECK(a.valid && b.valid);
+                CHECK(a.panel.strokes.size() == b.panel.strokes.size());
+                for (size_t i = 0; i < std::min(a.panel.strokes.size(), b.panel.strokes.size()); ++i)
+                    CHECK(same(a.panel.strokes[i], b.panel.strokes[i]));
+                CHECK(a.panel.beads.size() == b.panel.beads.size());
+                for (size_t i = 0; i < std::min(a.panel.beads.size(), b.panel.beads.size()); ++i)
+                    CHECK(a.panel.beads[i].pos.x == b.panel.beads[i].pos.x && a.panel.beads[i].pos.y == b.panel.beads[i].pos.y && a.panel.beads[i].radius == b.panel.beads[i].radius);
+                CHECK(a.panel.runners.size() == b.panel.runners.size());
+                for (size_t i = 0; i < std::min(a.panel.runners.size(), b.panel.runners.size()); ++i)
+                    CHECK(a.panel.runners[i].stroke == b.panel.runners[i].stroke && a.panel.runners[i].offset == b.panel.runners[i].offset && a.panel.runners[i].speed == b.panel.runners[i].speed);
+                CHECK(a.sampleBox == b.sampleBox);
+                CHECK(b.extents.left >= a.extents.left && b.extents.top >= a.extents.top && b.extents.right >= a.extents.right && b.extents.bottom >= a.extents.bottom);
+                CHECK(a.panel.slots.empty() && !b.panel.slots.empty());
+            }
+}
+
+// Where a dot is on its line, for the characters that follow it.
+void testRunnerPoseExtras() {
+    const Layout lay = buildLayout(matrixStyle(), params(900, 600));
+    const Panel& pn  = lay.panel;
+    CHECK(pn.runners.size() >= 3);
+    for (double t : {0.0, 13.0, 211.5, 1234.0, 5000.0}) {
+        const auto poses = runnerPoses(pn, t);
+        CHECK(poses.size() == pn.runners.size());
+        if (poses.size() != pn.runners.size())
+            return;
+        for (size_t i = 0; i < pn.runners.size(); ++i) {
+            const Runner&    r = pn.runners[i];
+            const Stroke&    s = pn.strokes[size_t(r.stroke)];
+            const RunnerPose a = runnerPose(pn, r, t);
+            CHECK(a.stroke == r.stroke && poses[i].stroke == r.stroke);
+            CHECK(poses[i].at == a.at && poses[i].dir == a.dir);
+            CHECK(a.at >= 0 && a.at <= strokeLength(s) + 1e-9);
+            CHECK(a.dir == (s.closed ? (r.speed > 0 ? 1 : -1) : 0));
+            const Vec2 on = strokePointAt(s, a.at).pos;
+            CHECK_NEAR(on.x, a.pos.x, 1e-6);
+            CHECK_NEAR(on.y, a.pos.y, 1e-6);
+        }
+    }
+
+    // A dot that points nowhere is nowhere.
+    Runner lost = pn.runners.front();
+    lost.stroke = 99;
+    const RunnerPose none = runnerPose(pn, lost, 5);
+    CHECK(none.stroke == -1 && none.dir == 0 && none.alpha == 0);
+}
+
+// A 400 px square outline with a trace 10 px above its top edge, a bead at each
+// end of the trace and a place for a character every 40 px (a pitch) along both
+// lines: 40 round the square, 7 along the trace.
+Panel glyphSquare() {
+    Panel pn  = square();
+    pn.glyphs = {12, 0.6, 3.4, 0.5f, 40, 4};
+    pn.strokes.push_back(lineOf({{50, -10, 1.f}, {350, -10, 1.f}}, false));
+    for (Vec2 end : {Vec2{50, -10}, Vec2{350, -10}}) {
+        Bead b;
+        b.pos = end;
+        pn.beads.push_back(b);
+    }
+    for (size_t k = 0; k < pn.strokes.size(); ++k)
+        for (double at = 20; at < strokeLength(pn.strokes[k]); at += 40)
+            pn.slots.push_back({strokePointAt(pn.strokes[k], at).pos, int(k), at, 1.f});
+    return pn;
+}
+
+// The id of the character at `at` px along a stroke, or -1.
+int slotId(const Panel& pn, int stroke, double at) {
+    for (size_t j = 0; j < pn.slots.size(); ++j)
+        if (pn.slots[j].stroke == stroke && std::fabs(pn.slots[j].at - at) < 1e-9)
+            return int(pn.beads.size() + j);
+    return -1;
+}
+
+RunnerPose poseAt(const Panel& pn, int stroke, double at, int dir, float glow = 0.f) {
+    RunnerPose pose;
+    pose.pos    = strokePointAt(pn.strokes[size_t(stroke)], at).pos;
+    pose.alpha  = 1.f;
+    pose.glow   = glow;
+    pose.stroke = stroke;
+    pose.at     = at;
+    pose.dir    = dir;
+    return pose;
+}
+
+using Drawn = std::map<int, GlyphDraw>;
+
+Drawn drawn(const std::vector<GlyphDraw>& draws) {
+    Drawn out;
+    for (const GlyphDraw& d : draws)
+        out[d.id] = d;
+    return out;
+}
+
+// How far a character is lit, in steps; 0 when it is not drawn at all.
+int litAt(const Drawn& d, int id) {
+    const auto it = d.find(id);
+    return it == d.end() ? 0 : it->second.alpha;
+}
+
+int heatAt(const Drawn& d, int id) {
+    const auto it = d.find(id);
+    return it == d.end() ? 0 : it->second.heat;
+}
+
+// A seed for which no character along the lines lights up by itself at that
+// time, so that what the dots do shows on its own.
+unsigned quietSeed(const Panel& pn, double clock) {
+    for (unsigned seed = 0; seed < 500; ++seed) {
+        bool quiet = true;
+        for (const GlyphDraw& d : glyphDraws(pn, {}, clock, 1.0, seed))
+            quiet = quiet && size_t(d.id) < pn.beads.size();
+        if (quiet)
+            return seed;
+    }
+    CHECK(!"a quiet seed");
+    return 0;
+}
+
+// On the real panels: what is drawn is well formed, deterministic, only a part
+// of all there is, and every place along the lines lights up when a dot goes by.
+void testGlyphDrawsOnPanels() {
+    struct Case {
+        int   w, h;
+        float scale;
+        bool  floating;
+    };
+    for (const Case& c : {Case{400, 300, 1.f, false}, {900, 600, 1.f, false}, {1920, 1080, 1.f, true}, {1920, 1080, 1.5f, false}, {3840, 2160, 2.f, false}}) {
+        const int    before = g_failures;
+        const Params p      = params(c.w, c.h, c.scale, c.floating);
+        const Layout lay    = buildLayout(matrixStyle(), p);
+        const Panel& pn     = lay.panel;
+        const double speed  = std::fabs(pn.runners[1].speed);
+        const double lap    = strokeLength(pn.strokes[0]) / speed;
+        const size_t places = pn.beads.size() + pn.slots.size();
+
+        std::vector<char> seen(pn.slots.size(), 0);
+        size_t            most = 0;
+        for (double t = 0; t < 2 * lap; t += 2 * pn.glyphs.pitch / speed) {
+            const auto poses = runnerPoses(pn, t);
+            for (double intensity : {0.0, 0.5, 1.0}) {
+                const double clock = t * 0.05 + intensity;
+                const auto   draws = glyphDraws(pn, poses, clock, intensity, 12345);
+                CHECK(draws == glyphDraws(pn, poses, clock, intensity, 12345));
+                most = std::max(most, draws.size());
+
+                int last = -1;
+                for (const GlyphDraw& d : draws) {
+                    CHECK(d.id > last && size_t(d.id) < places);
+                    last = d.id;
+                    if (size_t(d.id) >= places)
+                        continue;
+                    const bool isBead = size_t(d.id) < pn.beads.size();
+                    const Vec2 where  = isBead ? pn.beads[size_t(d.id)].pos : pn.slots[size_t(d.id) - pn.beads.size()].pos;
+                    CHECK(d.x == std::lround(where.x) && d.y == std::lround(where.y));
+                    CHECK(d.glyph >= 0 && d.glyph < glyphCount());
+                    CHECK(d.alpha >= 1 && d.alpha <= kGlyphAlphaSteps && d.heat >= 0 && d.heat <= kGlyphHeatSteps);
+                    if (intensity == 0.0)
+                        CHECK(isBead && d.heat == 0); // without focus nothing but the beads rest there
+                    if (!isBead && intensity == 1.0)
+                        seen[size_t(d.id) - pn.beads.size()] = 1;
+                }
+            }
+        }
+        CHECK(most <= pn.beads.size() + pn.slots.size() / 2);
+        for (size_t j = 0; j < pn.slots.size(); ++j)
+            CHECK(seen[j]);
+        if (g_failures != before)
+            std::fprintf(stderr, "  ^ %s\n", label(p).c_str());
+    }
+
+    // Windows are told apart by their seeds.
+    const Layout lay = buildLayout(matrixStyle(), params(900, 600));
+    CHECK(glyphDraws(lay.panel, {}, 5.0, 1.0, 1) != glyphDraws(lay.panel, {}, 5.0, 1.0, 2));
+
+    // Nothing to draw where there are no characters, or no places for them.
+    CHECK(glyphDraws(Panel{}, {}, 1.0, 1.0, 1).empty());
+    Panel bare = square();
+    bare.glyphs = {12, 0.6, 3.4, 0.5f, 40, 4};
+    CHECK(glyphDraws(bare, {}, 1.0, 1.0, 1).empty());
+}
+
+// A dot going round leaves a trail behind it, a short way ahead of it, and one
+// running back and forth leaves it on both sides, the same on both.
+void testGlyphTrails() {
+    const Panel    pn    = glyphSquare();
+    const double   clock = 3.0;
+    const unsigned seed  = quietSeed(pn, clock);
+    const int      beads = int(pn.beads.size());
+
+    const auto reach = [&](const Drawn& d, int stroke, double at, double step, int dir) {
+        int far = 0;
+        for (int k = 1; k <= 16; ++k)
+            if (litAt(d, slotId(pn, stroke, at + dir * step * k)) > 0)
+                far = k;
+        return far;
+    };
+
+    // Clockwise: lit under the dot, fading with the distance behind it.
+    const RunnerPose cw[]  = {poseAt(pn, 0, 820, 1)};
+    const Drawn      trail = drawn(glyphDraws(pn, cw, clock, 1.0, seed));
+    const int        head  = slotId(pn, 0, 820);
+    CHECK(head >= 0);
+    CHECK(litAt(trail, head) == kGlyphAlphaSteps && heatAt(trail, head) == kGlyphHeatSteps);
+
+    int prev = kGlyphAlphaSteps;
+    for (int k = 1; k <= 16; ++k) {
+        const int a = litAt(trail, slotId(pn, 0, 820 - 40.0 * k));
+        CHECK(a <= prev);
+        prev = a;
+    }
+    CHECK(litAt(trail, slotId(pn, 0, 780)) > litAt(trail, slotId(pn, 0, 740)));
+    CHECK(litAt(trail, slotId(pn, 0, 740)) > litAt(trail, slotId(pn, 0, 660)));
+    CHECK(heatAt(trail, slotId(pn, 0, 780)) == 0); // only the head is hot
+    const int behind = reach(trail, 0, 820, 40, -1), ahead = reach(trail, 0, 820, 40, +1);
+    CHECK(behind >= 5 && behind <= 8);
+    CHECK(ahead >= 1 && ahead <= 2);
+    CHECK(behind >= 3 * ahead);
+
+    // Nothing else is lit but the dot's own trail.
+    for (const auto& [id, d] : trail)
+        if (id >= beads)
+            CHECK(std::fabs(pn.slots[size_t(id - beads)].at - 820) <= 8 * 40 && pn.slots[size_t(id - beads)].stroke == 0);
+
+    // Counter-clockwise the same, the other way round.
+    const RunnerPose ccw[] = {poseAt(pn, 0, 820, -1)};
+    const Drawn      back  = drawn(glyphDraws(pn, ccw, clock, 1.0, seed));
+    CHECK(reach(back, 0, 820, 40, +1) == behind && reach(back, 0, 820, 40, -1) == ahead);
+    for (int k = -4; k <= 4; ++k)
+        CHECK(litAt(back, slotId(pn, 0, 820 + 40.0 * k)) == litAt(trail, slotId(pn, 0, 820 - 40.0 * k)));
+
+    // The trail goes on across the end of the line, where it closes.
+    const Drawn wrap = drawn(glyphDraws(pn, std::vector{poseAt(pn, 0, 20, 1)}, clock, 1.0, seed));
+    CHECK(litAt(wrap, slotId(pn, 0, 1580)) > litAt(wrap, slotId(pn, 0, 1540)) && litAt(wrap, slotId(pn, 0, 1540)) > 0);
+
+    // Running back and forth on the trace: lit on both sides alike, a few pitches out.
+    const RunnerPose bounce[] = {poseAt(pn, 1, 140, 0)};
+    const Drawn      both     = drawn(glyphDraws(pn, bounce, clock, 1.0, seed));
+    CHECK(litAt(both, slotId(pn, 1, 140)) == kGlyphAlphaSteps);
+    for (int k = 1; k <= 3; ++k)
+        CHECK(litAt(both, slotId(pn, 1, 140 + 40.0 * k)) == litAt(both, slotId(pn, 1, 140 - 40.0 * k)));
+    CHECK(litAt(both, slotId(pn, 1, 100)) > litAt(both, slotId(pn, 1, 60)) && litAt(both, slotId(pn, 1, 60)) > 0);
+    CHECK(litAt(both, slotId(pn, 1, 20)) == 0 && litAt(both, slotId(pn, 1, 260)) == 0);
+
+    // Where the dot glows the trail is longer and brighter.
+    const RunnerPose hot[]  = {poseAt(pn, 0, 820, 1, 1.f)};
+    const Drawn      glows  = drawn(glyphDraws(pn, hot, clock, 1.0, seed));
+    CHECK(reach(glows, 0, 820, 40, -1) > behind);
+    for (int k = 1; k <= 5; ++k)
+        CHECK(litAt(glows, slotId(pn, 0, 820 - 40.0 * k)) >= litAt(trail, slotId(pn, 0, 820 - 40.0 * k)));
+
+    // A dot that is not on a line lights nothing along it.
+    RunnerPose astray = poseAt(pn, 0, 820, 1);
+    astray.stroke     = -1;
+    CHECK(drawn(glyphDraws(pn, std::vector{astray}, clock, 1.0, seed)) == drawn(glyphDraws(pn, {}, clock, 1.0, seed)));
+
+    // Less focus, a fainter trail, none at all without.
+    const RunnerPose go[] = {poseAt(pn, 0, 820, 1)};
+    const Drawn      half = drawn(glyphDraws(pn, go, clock, 0.5, seed));
+    CHECK(litAt(half, head) > 0 && litAt(half, head) < litAt(trail, head));
+    CHECK(litAt(half, slotId(pn, 0, 780)) < litAt(trail, slotId(pn, 0, 780)));
+    for (const GlyphDraw& d : glyphDraws(pn, go, clock, 0.0, seed))
+        CHECK(d.id < beads);
+    CHECK(glyphDraws(pn, go, clock, 2.0, seed) == glyphDraws(pn, go, clock, 1.0, seed)); // out of range is clamped
+    CHECK(glyphDraws(pn, go, clock, -1.0, seed) == glyphDraws(pn, go, clock, 0.0, seed));
+}
+
+// The character at the end of a trace lights up when a dot reaches it.
+void testGlyphHits() {
+    const Panel    pn    = glyphSquare();
+    const double   clock = 3.0;
+    const unsigned seed  = 5;
+    const Drawn    rest  = drawn(glyphDraws(pn, {}, clock, 1.0, seed));
+    CHECK(rest.count(0) && rest.count(1));
+    CHECK(litAt(rest, 0) < kGlyphAlphaSteps || heatAt(rest, 0) < kGlyphHeatSteps);
+
+    // A dot right on the first bead: fully lit; the other bead, far away, does not care.
+    const RunnerPose on[] = {poseAt(pn, 1, 0, 0)};
+    const Drawn      hit  = drawn(glyphDraws(pn, on, clock, 1.0, seed));
+    CHECK(litAt(hit, 0) == kGlyphAlphaSteps && heatAt(hit, 0) == kGlyphHeatSteps);
+    CHECK(hit.at(1) == rest.at(1));
+    CHECK(hit.at(0).glyph == rest.at(0).glyph && hit.at(0).x == rest.at(0).x);
+
+    // The nearer the dot the brighter, none from two pitches and a bit off.
+    int last = kGlyphAlphaSteps;
+    for (double dist : {10.0, 25.0, 40.0, 60.0, 80.0}) {
+        const RunnerPose near[] = {poseAt(pn, 1, dist, 0)};
+        const Drawn      d      = drawn(glyphDraws(pn, near, clock, 1.0, seed));
+        CHECK(litAt(d, 0) <= last && litAt(d, 0) >= litAt(rest, 0));
+        CHECK(heatAt(d, 0) >= heatAt(rest, 0));
+        last = litAt(d, 0);
+    }
+    const RunnerPose far[] = {poseAt(pn, 1, 89, 0)};
+    CHECK(drawn(glyphDraws(pn, far, clock, 1.0, seed)).at(0) == rest.at(0));
+
+    // A dot that cannot be seen, one that is on no line, or one while nobody is looking lights nothing.
+    RunnerPose hidden = poseAt(pn, 1, 0, 0);
+    hidden.alpha      = 0.f;
+    CHECK(drawn(glyphDraws(pn, std::vector{hidden}, clock, 1.0, seed)).at(0) == rest.at(0));
+    RunnerPose astray = poseAt(pn, 1, 0, 0);
+    astray.stroke     = -1;
+    CHECK(drawn(glyphDraws(pn, std::vector{astray}, clock, 1.0, seed)).at(0) == rest.at(0));
+    CHECK(drawn(glyphDraws(pn, on, clock, 0.0, seed)).at(0) == drawn(glyphDraws(pn, {}, clock, 0.0, seed)).at(0));
+}
+
+// A character at the end of a trace breathes slowly, and changes into another
+// at the dimmest point of a breath. Without focus it rests.
+void testGlyphBreathing() {
+    const Panel    pn   = glyphSquare();
+    const unsigned seed = 3;
+
+    const std::vector<GlyphDraw> rest = glyphDraws(pn, {}, 0.0, 0.0, seed);
+    CHECK(rest.size() == pn.beads.size());
+    for (double clock = 0; clock < 30; clock += 0.37) {
+        const auto d = glyphDraws(pn, {}, clock, 0.0, seed);
+        CHECK(d.size() == rest.size());
+        for (size_t i = 0; i < std::min(d.size(), rest.size()); ++i)
+            CHECK(d[i].alpha == rest[i].alpha && d[i].heat == 0);
+    }
+
+    // It goes from dim to bright and back, a step or two at a time, and changes only when dim.
+    int    lo = kGlyphAlphaSteps, hi = 0, hottest = 0, changes = 0, step = 0, glyph = -1, alpha = -1;
+    double dimmestChange = 0;
+    for (double clock = 0; clock < 20; clock += 0.01) {
+        const Drawn d = drawn(glyphDraws(pn, {}, clock, 1.0, seed));
+        CHECK(d.count(0));
+        if (!d.count(0))
+            return;
+        const GlyphDraw& g = d.at(0);
+        lo                 = std::min(lo, g.alpha);
+        hi                 = std::max(hi, g.alpha);
+        hottest            = std::max(hottest, g.heat);
+        if (alpha >= 0)
+            step = std::max(step, std::abs(g.alpha - alpha));
+        if (glyph >= 0 && g.glyph != glyph) {
+            ++changes;
+            dimmestChange = std::max(dimmestChange, double(g.alpha));
+        }
+        glyph = g.glyph;
+        alpha = g.alpha;
+    }
+    CHECK(lo <= 6 && hi >= 28 && hottest >= 2);
+    CHECK(step <= 1);
+    CHECK(changes >= 3 && changes <= 7);
+    CHECK(dimmestChange <= 6);
+
+    // Not every window breathes together.
+    bool apart = false;
+    for (double clock = 0; clock < 20; clock += 0.5)
+        apart = apart || litAt(drawn(glyphDraws(pn, {}, clock, 1.0, 3)), 0) != litAt(drawn(glyphDraws(pn, {}, clock, 1.0, 4)), 0);
+    CHECK(apart);
+}
+
+// The head of a trail flickers through characters, the rest of it changes now
+// and then, and a few places light up on their own.
+void testGlyphRhythm() {
+    const Panel pn   = glyphSquare();
+    const int   head = slotId(pn, 0, 820), far = slotId(pn, 0, 660);
+    const RunnerPose cw[] = {poseAt(pn, 0, 820, 1)};
+
+    int flicks = 0, drifts = 0, glyph = -1, other = -1;
+    for (double clock = 3; clock < 5; clock += 0.005) {
+        const Drawn d = drawn(glyphDraws(pn, cw, clock, 1.0, 11));
+        CHECK(d.count(head) && d.count(far));
+        if (!d.count(head) || !d.count(far))
+            return;
+        if (glyph >= 0 && d.at(head).glyph != glyph)
+            ++flicks;
+        if (other >= 0 && d.at(far).glyph != other)
+            ++drifts;
+        glyph = d.at(head).glyph;
+        other = d.at(far).glyph;
+    }
+    CHECK(flicks >= 9 && flicks <= 16); // about seven a second
+    CHECK(drifts <= 1);
+
+    // On their own, a few places along the lines light up, faintly, and fade again.
+    int              lit = 0;
+    std::vector<int> places;
+    for (double clock = 0; clock < 60; clock += 0.25)
+        for (const GlyphDraw& d : glyphDraws(pn, {}, clock, 1.0, 9)) {
+            if (size_t(d.id) < pn.beads.size())
+                continue;
+            CHECK(d.heat == 0 && d.alpha <= 18);
+            ++lit;
+            if (std::find(places.begin(), places.end(), d.id) == places.end())
+                places.push_back(d.id);
+        }
+    CHECK(lit > 0);
+    CHECK(places.size() >= 2 && places.size() <= pn.slots.size() / 4);
+}
+
+void testGlyphChanges() {
+    const auto draw = [](int id, int alpha, int heat = 0, int glyph = 1) { return GlyphDraw{id, 10 * id, 20, glyph, alpha, heat}; };
+
+    const std::vector<GlyphDraw> before = {draw(0, 5), draw(2, 8), draw(3, 9, 1), draw(6, 12)};
+    const std::vector<GlyphDraw> after  = {draw(0, 5), draw(2, 9), draw(4, 7), draw(6, 12, 0, 2), draw(7, 3)};
+
+    // 2 changed, 3 went, 4 came, 6 became another character, 7 came: each as it is in the list it is in.
+    const std::vector<GlyphDraw> expect = {draw(2, 9), draw(3, 9, 1), draw(4, 7), draw(6, 12, 0, 2), draw(7, 3)};
+    CHECK(glyphChanges(before, after) == expect);
+
+    CHECK(glyphChanges(before, before).empty());
+    CHECK(glyphChanges({}, {}).empty());
+    CHECK(glyphChanges({}, after) == after);
+    CHECK(glyphChanges(before, {}) == before);
+
+    // Applying the changes to the old list gives the new one.
+    std::map<int, GlyphDraw> state = drawn(before);
+    for (const GlyphDraw& d : glyphChanges(before, after)) {
+        const bool stays = std::any_of(after.begin(), after.end(), [&](const GlyphDraw& a) { return a.id == d.id; });
+        if (stays)
+            state[d.id] = d;
+        else
+            state.erase(d.id);
+    }
+    CHECK(state == drawn(after));
 }
 
 } // namespace
 
 int main() {
-    if (!styleFor("panel")) {
-        std::fprintf(stderr, "the panel style is not registered\n");
+    if (!styleFor("panel") || !styleFor("matrix")) {
+        std::fprintf(stderr, "the panel or the matrix style is not registered\n");
         return 1;
     }
     testStyle();
@@ -851,5 +1429,15 @@ int main() {
     testFloating();
     testDeterministic();
     testExtents();
+    testGlyphFace();
+    testGlyphsClearOfWindow();
+    testGlyphsLeaveTheFrame();
+    testRunnerPoseExtras();
+    testGlyphDrawsOnPanels();
+    testGlyphTrails();
+    testGlyphHits();
+    testGlyphBreathing();
+    testGlyphRhythm();
+    testGlyphChanges();
     return finish("test_panel");
 }

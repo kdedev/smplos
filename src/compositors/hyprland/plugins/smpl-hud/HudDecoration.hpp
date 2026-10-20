@@ -5,10 +5,12 @@
 #include <cstdint>
 #include <memory>
 #include <string>
+#include <vector>
 
 #include <hyprland/src/render/decorations/IHyprWindowDecoration.hpp>
 
 #include "geometry.hpp"
+#include "panel.hpp"
 #include "sweep.hpp"
 #include "theme.hpp"
 
@@ -127,5 +129,8 @@ class CHudDecoration : public IHyprWindowDecoration {
     bool                                   m_focused    = false;
     double                                 m_sweepLevel = 0; // how far the glow has faded in, [0, 1]
     double                                 m_dotPos     = 0; // how far the runner dots have travelled at speed 1, physical px; it outlives the glow so the dots go on where they were
+    double                                 m_clock      = 0; // seconds the characters of a glyph style have been running, which stops with the glow
+    unsigned                               m_seed       = 0; // gives this window's characters a rhythm of their own
+    std::vector<smplhud::GlyphDraw>        m_glyphs;         // the characters as last drawn or stepped to: what the next step is compared with
     int                                    m_waiting    = 0; // steps spent waiting for the first draw to build the path
 };

@@ -1,9 +1,12 @@
 #include "panel.hpp"
 
+#include "glyph.hpp"
 #include "stamp.hpp"
 
 #include <algorithm>
 #include <cmath>
+#include <cstdint>
+#include <limits>
 #include <numbers>
 
 namespace smplhud {
@@ -53,6 +56,21 @@ constexpr double kMergeCap   = 0.35;
 // Frames smaller than this get no notches, no ghost line and no traces.
 constexpr double kFancyWidth  = 480;
 constexpr double kFancyHeight = 160;
+
+// The characters of a glyph style, in terms of their height.
+constexpr double kGlyphStroke = 0.05; // half the thickness of a stroke
+constexpr double kGlyphReach  = 0.28; // how far the glow reaches past a stroke's edge
+constexpr double kGlyphMin    = 6;    // px; no character is smaller
+
+// Where a character can light up along a line: not where the line is all but
+// invisible, not so near the end of a trace that it crowds the character on the
+// end, and not where it would touch the window. Where the line dips towards the
+// window (the notches, the raised baselines) the character stands a little
+// outside it instead, as far as kGlyphNudge logical px.
+constexpr float  kSlotMinAlpha = 0.3f;
+constexpr double kSlotInset    = 1.1; // in pitches
+constexpr double kGlyphClear   = 2.0; // px between a character and the window
+constexpr double kGlyphNudge   = 6.0;
 
 // The rectangle the outline follows, and the sizes that shape it.
 struct Frame {
@@ -243,6 +261,87 @@ double minClearance(const Frame& f) {
     return best;
 }
 
+double segmentDistance(Vec2 q, Vec2 a, Vec2 b) {
+    const double dx = b.x - a.x, dy = b.y - a.y, len2 = dx * dx + dy * dy;
+    const double t = len2 > 0 ? std::clamp(((q.x - a.x) * dx + (q.y - a.y) * dy) / len2, 0.0, 1.0) : 0.0;
+    return std::hypot(q.x - (a.x + dx * t), q.y - (a.y + dy * t));
+}
+
+// How far a point is from the window, its corners cut at 45 degrees the way the
+// outline is measured; 0 inside it.
+double windowDistance(const Params& p, const Frame& f, Vec2 q) {
+    const double W = p.width, H = p.height, c = f.cutEff;
+    if (q.x >= 0 && q.y >= 0 && q.x <= W && q.y <= H && q.x + q.y >= c && (W - q.x) + q.y >= c && (W - q.x) + (H - q.y) >= c && q.x + (H - q.y) >= c)
+        return 0;
+
+    const Vec2 shape[8] = {{c, 0}, {W - c, 0}, {W, c}, {W, H - c}, {W - c, H}, {c, H}, {0, H - c}, {0, c}};
+    double     best     = std::numeric_limits<double>::infinity();
+    for (int i = 0; i < 8; ++i)
+        best = std::min(best, segmentDistance(q, shape[i], shape[(i + 1) % 8]));
+    return best;
+}
+
+// How far out, in whole px, a character may step off the outline to clear the window.
+int glyphNudge(const Frame& f) {
+    return int(std::ceil(kGlyphNudge * f.s));
+}
+
+// Which way is outward, away from the window, at `s` px along a closed stroke:
+// to the left of the way it runs, since it runs clockwise on the screen.
+Vec2 outwardAt(const Stroke& stroke, double s) {
+    const Vec2   a = strokePointAt(stroke, s - 1).pos, b = strokePointAt(stroke, s + 1).pos;
+    const double len = std::hypot(b.x - a.x, b.y - a.y);
+    return len > 0 ? Vec2{(b.y - a.y) / len, -(b.x - a.x) / len} : Vec2{};
+}
+
+// The characters' size, and where along the lines they can light up: evenly
+// spaced round a closed stroke, evenly spaced between the two ends of an open
+// one, in whole px, and only where the line can be seen and the character
+// clears the window (stepping outward off the outline where it must).
+void placeGlyphs(const Style& style, const Params& p, const Frame& f, double halo, Panel& panel) {
+    if (style.glyphHeight <= 0)
+        return;
+
+    GlyphFace& face = panel.glyphs;
+    face.height     = std::max(kGlyphMin, std::round(style.glyphHeight * f.s));
+    face.halfWidth  = kGlyphStroke * face.height;
+    face.reach      = kGlyphReach * face.height;
+    face.haloAlpha  = float(halo);
+    face.pitch      = std::max(face.height * 0.5, std::round(style.glyphPitch * f.s));
+    face.period     = style.glyphPeriod;
+    face.knock      = style.glyphKnock;
+
+    // The farthest a character's strokes reach from its middle, plus the room it keeps.
+    const double clear = std::hypot(face.height * kGlyphW / kGlyphH / 2 + face.halfWidth, face.height / 2 + face.halfWidth) + kGlyphClear;
+
+    for (size_t k = 0; k < panel.strokes.size(); ++k) {
+        const Stroke& stroke = panel.strokes[k];
+        const double  len    = strokeLength(stroke);
+        const double  inset  = stroke.closed ? 0.0 : kSlotInset * face.pitch;
+        const double  span   = len - 2 * inset;
+        if (span < 0)
+            continue;
+
+        const int n = stroke.closed ? std::max(1, int(std::lround(len / face.pitch))) : int(std::floor(span / face.pitch + 1e-9)) + 1;
+        for (int i = 0; i < n; ++i) {
+            const double      at    = stroke.closed ? (i + 0.5) * len / n : (n == 1 ? len / 2 : inset + i * span / (n - 1));
+            const StrokePoint point = strokePointAt(stroke, at);
+            const float       alpha = point.alpha * stroke.alpha;
+            if (alpha < kSlotMinAlpha)
+                continue;
+
+            const Vec2 way = stroke.closed ? outwardAt(stroke, at) : Vec2{};
+            for (int nudge = 0; nudge <= glyphNudge(f); ++nudge) {
+                const Vec2 pos = {std::round(point.pos.x + way.x * nudge), std::round(point.pos.y + way.y * nudge)};
+                if (windowDistance(p, f, pos) >= clear) {
+                    panel.slots.push_back({pos, int(k), at, alpha});
+                    break;
+                }
+            }
+        }
+    }
+}
+
 } // namespace
 
 void buildPanel(const Style& style, const Params& p, Layout& out) {
@@ -321,13 +420,16 @@ void buildPanel(const Style& style, const Params& p, Layout& out) {
         add(cornerTrace(f, cuts, t));
     }
 
-    // Room for the outline, the traces and the beads, whatever the window size.
-    const double lineRoom = roomAround(f.hw, reach);
-    const double beadRoom = beads ? std::max(beadSize(lookOf(dot)), beadSize(lookOf(panel.flare))) / 2.0 : 0.0;
-    const double room     = std::max(lineRoom, beadRoom) + 1;
-    const auto   logical  = [&](double phys) { return int(std::ceil(phys / f.s)) + 2; };
-    const int    side     = logical(std::ceil(f.c) + room);
-    out.extents           = {side, side, logical(std::ceil(f.c + f.tau) + room), side};
+    // Room for the outline, the traces, the beads and the characters, whatever the window size.
+    placeGlyphs(style, p, f, halo, panel);
+    const double    lineRoom  = roomAround(f.hw, reach);
+    const double    dotRoom   = beads ? std::max(beadSize(lookOf(dot)), beadSize(lookOf(panel.flare))) / 2.0 : 0.0;
+    const GlyphSize glyph     = glyphSize(panel.glyphs);
+    const double    glyphRoom = panel.glyphs.on() ? std::max(glyph.w, glyph.h) / 2.0 + glyphNudge(f) : 0.0;
+    const double    room      = std::max({lineRoom, dotRoom, glyphRoom}) + 1;
+    const auto   logical   = [&](double phys) { return int(std::ceil(phys / f.s)) + 2; };
+    const int    side      = logical(std::ceil(f.c) + room);
+    out.extents            = {side, side, logical(std::ceil(f.c + f.tau) + room), side};
 
     const double clear = minClearance(f);
     const int    edge  = int(std::ceil(f.c + f.hw));
@@ -373,7 +475,7 @@ Placed place(const Panel& panel, const Runner& runner, double travelled) {
                                     : bounce(runner.offset + travelled * runner.speed / len) * len;
     const StrokePoint p = strokePointAt(stroke, at);
 
-    out.pose   = {p.pos, std::clamp(p.alpha * runner.look.alpha, 0.f, 1.f), 0.f};
+    out.pose   = {p.pos, std::clamp(p.alpha * runner.look.alpha, 0.f, 1.f), 0.f, runner.stroke, at, stroke.closed ? (runner.speed < 0 ? -1 : 1) : 0};
     out.stroke = runner.stroke;
     out.closed = stroke.closed;
     out.at     = at;
@@ -434,6 +536,189 @@ std::vector<RunnerPose> runnerPoses(const Panel& panel, double travelled) {
         poses[i].glow = float(std::clamp(1.0 - dark, 0.0, 1.0));
     }
     return poses;
+}
+
+namespace {
+
+constexpr double kTwoPi = 2 * std::numbers::pi;
+
+// A dot leaves a trail of characters along its line, in pitches (the distance
+// between two characters).
+constexpr double kLead  = 1.5; // in front of a dot going round
+constexpr double kTail  = 8.0; // behind it
+constexpr double kSides = 3.0; // either side of one running back and forth
+constexpr double kHead  = 1.0; // the characters this near are also drawn in the bright colour
+constexpr double kFall  = 1.3; // how fast a trail fades: 1 is linearly
+constexpr double kSwell = 0.6; // how much longer a trail gets, and how much bigger its head, where its dot glows
+
+// A character at the end of a trace.
+constexpr double kRest       = 0.55; // how bright it is without focus
+constexpr double kDimmest    = 0.12; // how bright at the start of a breath, when it changes into another one
+constexpr double kBreathHeat = 0.5;  // the share of the bright colour at the top of a breath
+constexpr double kHitNear    = 0.5;  // in pitches: a dot this near lights it fully ...
+constexpr double kHitFar     = 2.2;  // ... and one this far not at all
+
+// A character along a line changes into another one every few seconds, each
+// at its own pace. One in kAmbientOneIn also lights up and fades again between
+// two changes without a dot going by.
+constexpr double   kChangeMin    = 4.0; // seconds
+constexpr double   kChangeSpan   = 4.0;
+constexpr unsigned kAmbientOneIn = 8;
+constexpr double   kAmbientPeak  = 0.55;
+constexpr double   kAmbientLit   = 0.65; // the share of the time between two changes that it is lit
+constexpr double   kFlickerHz    = 7.0;  // how often the head of a trail changes
+constexpr double   kFlickerHeat  = 0.4;  // how hot a character must be to do so
+constexpr long long kFlickerBase = 1LL << 40;
+
+// Different things to draw from the same seed.
+enum Salt : uint32_t { kSaltPeriod = 1, kSaltPhase, kSaltGlyph, kSaltLength, kSaltRhythm, kSaltAmbient };
+
+uint32_t mix(uint32_t x) {
+    x ^= x >> 16;
+    x *= 0x7feb352dU;
+    x ^= x >> 15;
+    x *= 0x846ca68bU;
+    x ^= x >> 16;
+    return x;
+}
+
+uint32_t hashOf(uint32_t seed, uint32_t id, uint32_t salt, uint32_t extra = 0) {
+    uint32_t h = mix(seed ^ 0x9e3779b9U);
+    h          = mix(h ^ id);
+    h          = mix(h ^ (salt * 0x85ebca6bU));
+    return mix(h ^ extra);
+}
+
+// 0 up to but not including 1.
+double unit(uint32_t h) {
+    return double(h >> 8) / 16777216.0;
+}
+
+double frac(double v) {
+    return v - std::floor(v);
+}
+
+int steps(double v, int n) {
+    return std::clamp(int(std::lround(v * n)), 0, n);
+}
+
+double smooth(double t) {
+    t = std::clamp(t, 0.0, 1.0);
+    return t * t * (3 - 2 * t);
+}
+
+int glyphAt(uint32_t seed, uint32_t id, long long epoch) {
+    return int(hashOf(seed, id, kSaltGlyph, uint32_t(epoch)) % uint32_t(glyphCount()));
+}
+
+} // namespace
+
+std::vector<GlyphDraw> glyphDraws(const Panel& panel, std::span<const RunnerPose> poses, double clock, double intensity, unsigned seed) {
+    std::vector<GlyphDraw> out;
+    const GlyphFace&       face = panel.glyphs;
+    if (!face.on())
+        return out;
+    intensity = std::clamp(intensity, 0.0, 1.0);
+    clock     = std::max(clock, 0.0);
+    out.reserve(panel.beads.size() + panel.slots.size() / 4);
+
+    const auto put = [&](size_t id, Vec2 pos, int glyph, double alpha, double heat) {
+        const int a = steps(alpha, kGlyphAlphaSteps);
+        if (a > 0)
+            out.push_back({int(id), int(std::lround(pos.x)), int(std::lround(pos.y)), glyph, a, steps(heat, kGlyphHeatSteps)});
+    };
+
+    const Proximity hit = {kHitNear * face.pitch, kHitFar * face.pitch};
+    for (size_t i = 0; i < panel.beads.size(); ++i) {
+        const Bead&    bead   = panel.beads[i];
+        const uint32_t id     = uint32_t(i);
+        const double   period = std::max(0.1, face.period) * (0.85 + 0.35 * unit(hashOf(seed, id, kSaltPeriod)));
+        const double   cycle  = clock / period + unit(hashOf(seed, id, kSaltPhase));
+        const double   wave   = 0.5 - 0.5 * std::cos(kTwoPi * frac(cycle));
+
+        double alpha = std::lerp(kRest, kDimmest + (1 - kDimmest) * wave, intensity);
+        double heat  = intensity * kBreathHeat * wave * wave * wave;
+        for (const RunnerPose& pose : poses) {
+            if (pose.stroke < 0)
+                continue;
+            const double lit = nearness(std::hypot(pose.pos.x - bead.pos.x, pose.pos.y - bead.pos.y), hit) * pose.alpha * intensity;
+            alpha            = std::max(alpha, lit);
+            heat             = std::max(heat, lit);
+        }
+        put(i, bead.pos, glyphAt(seed, id, (long long)std::floor(cycle)), alpha * bead.alpha, heat);
+    }
+
+    std::vector<double> lengths;
+    lengths.reserve(panel.strokes.size());
+    for (const Stroke& stroke : panel.strokes)
+        lengths.push_back(strokeLength(stroke));
+
+    for (size_t j = 0; j < panel.slots.size(); ++j) {
+        const GlyphSlot& slot = panel.slots[j];
+        const uint32_t   id   = uint32_t(j);
+        if (slot.stroke < 0 || size_t(slot.stroke) >= lengths.size())
+            continue;
+        const bool   closed = panel.strokes[size_t(slot.stroke)].closed;
+        const double len    = lengths[size_t(slot.stroke)];
+
+        const double change = kChangeMin + kChangeSpan * unit(hashOf(seed, id, kSaltLength));
+        const double cycle  = clock / change + unit(hashOf(seed, id, kSaltRhythm));
+        const double within = frac(cycle);
+
+        // Every dot on this line lights the characters near it, each as far as it is lit.
+        double dark = 1.0, heat = 0.0;
+        if (intensity > 0 && len > 0) {
+            for (const RunnerPose& pose : poses) {
+                if (pose.stroke != slot.stroke)
+                    continue;
+                double d = slot.at - pose.at;
+                if (closed)
+                    d -= len * std::round(d / len);
+
+                const double swell = 1 + kSwell * pose.glow;
+                double       x     = std::fabs(d) / (kSides * face.pitch * swell);
+                if (pose.dir != 0) {
+                    const double ahead = d * pose.dir;
+                    x                  = ahead >= 0 ? ahead / (kLead * face.pitch * swell) : -ahead / (kTail * face.pitch * swell);
+                }
+                if (x >= 1)
+                    continue;
+                dark *= 1.0 - std::pow(1.0 - x, kFall) * intensity;
+                heat = std::max(heat, smooth(1.0 - std::fabs(d) / (kHead * face.pitch * swell)));
+            }
+        }
+
+        double ambient = 0;
+        if (intensity > 0 && hashOf(seed, id, kSaltAmbient) % kAmbientOneIn == 0 && within < kAmbientLit) {
+            const double s = std::sin(std::numbers::pi * within / kAmbientLit);
+            ambient        = kAmbientPeak * s * s * intensity;
+        }
+
+        const double alpha = 1.0 - dark * (1.0 - ambient);
+        long long    epoch = (long long)std::floor(cycle);
+        if (heat >= kFlickerHeat)
+            epoch = kFlickerBase + (long long)std::floor(clock * kFlickerHz);
+        put(panel.beads.size() + j, slot.pos, glyphAt(seed, id, epoch), alpha * slot.alpha, heat * intensity);
+    }
+    return out;
+}
+
+std::vector<GlyphDraw> glyphChanges(std::span<const GlyphDraw> before, std::span<const GlyphDraw> after) {
+    std::vector<GlyphDraw> out;
+    size_t                 i = 0, j = 0;
+    while (i < before.size() || j < after.size()) {
+        if (j == after.size() || (i < before.size() && before[i].id < after[j].id)) {
+            out.push_back(before[i++]);
+        } else if (i == before.size() || after[j].id < before[i].id) {
+            out.push_back(after[j++]);
+        } else {
+            if (!(before[i] == after[j]))
+                out.push_back(after[j]);
+            ++i;
+            ++j;
+        }
+    }
+    return out;
 }
 
 } // namespace smplhud

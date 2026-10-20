@@ -1,3 +1,4 @@
+#include "../glyph.hpp"
 #include "../stamp.hpp"
 #include "check.hpp"
 
@@ -5,6 +6,7 @@
 #include <cmath>
 #include <cstdio>
 #include <limits>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -549,6 +551,246 @@ void testBeadIsSymmetricAndSoft() {
     CHECK(beadSize(lookOf(wide)) > beadSize(look));
 }
 
+void testToneLevels() {
+    const Rgba c{0.50f, 0.30f, 0.10f, 1.f};
+    CHECK(makeTone(c, c) == makeTone(c, c, kToneLevels));
+
+    const Tone coarse = makeTone(c, c, 3); // four steps a channel
+    for (uint8_t v : coarse.line)
+        CHECK(v == 0 || v == 85 || v == 170 || v == 255);
+    for (uint8_t v : coarse.glow)
+        CHECK(v == 0 || v == 85 || v == 170 || v == 255);
+
+    // a coarse tone keeps one image over a longer stretch of gradient
+    const Rgba d{0.58f, 0.30f, 0.10f, 1.f};
+    CHECK(makeTone(c, c, 3) == makeTone(d, c, 3));
+    CHECK(!(makeTone(c, c) == makeTone(d, c)));
+    CHECK(makeTone(c, c, 0) == makeTone(c, c, 1)); // nonsense steps still give a tone
+}
+
+Look glyphLook() {
+    return {10, 40, 255, 140};
+}
+
+float inkAt(const Image& img, int x, int y) {
+    float p[4];
+    texel(img, x, y, p);
+    return p[3];
+}
+
+void testGlyphImageFitsItsGlyph() {
+    const Look      look     = glyphLook();
+    const int       height16 = 12 * 16;
+    const GlyphSize size     = glyphSize(height16, look);
+    CHECK(size.w == 18 && size.h == 22); // 8 by 12 px of glyph and 4.125 px of line and glow around it
+    CHECK(glyphSize(0, look).w == 0 && glyphSize(0, look).h == 0);
+    CHECK(glyphSize(-16, look).w == 0);
+    CHECK(bakeGlyph({0, 0, look, tone()}).empty());
+
+    // a taller glyph or a wider halo makes a bigger image
+    CHECK(glyphSize(16 * 16, look).h > size.h && glyphSize(16 * 16, look).w > size.w);
+    CHECK(glyphSize(height16, {10, 120, 255, 140}).w > size.w);
+    for (int px = 6; px < 40; ++px) {
+        const GlyphSize s = glyphSize(px * 16 + 7, look);
+        CHECK(s.w % 2 == 0 && s.h % 2 == 0);
+    }
+
+    for (int g = 0; g < glyphCount(); ++g) {
+        const Image img = bakeGlyph({g, height16, look, tone()});
+        CHECK(img.w == size.w && img.h == size.h);
+        CHECK(img.rgba.size() == size_t(img.w) * size_t(img.h) * 4);
+
+        float total = 0;
+        for (int j = 0; j < img.h; ++j) {
+            for (int i = 0; i < img.w; ++i) {
+                total += inkAt(img, i, j);
+                if (i == 0 || j == 0 || i == img.w - 1 || j == img.h - 1)
+                    CHECK(inkAt(img, i, j) == 0); // line and glow end inside the image
+            }
+        }
+        CHECK(total > 255 * 8); // there is something to see
+    }
+}
+
+void testGlyphsBakeDifferently() {
+    std::set<std::vector<uint8_t>> seen;
+    for (int g = 0; g < glyphCount(); ++g)
+        CHECK(seen.insert(bakeGlyph({g, 12 * 16, glyphLook(), tone()}).rgba).second);
+
+    // the index wraps, like glyphStrokes
+    CHECK(bakeGlyph({2, 12 * 16, glyphLook(), tone()}).rgba == bakeGlyph({2 + glyphCount(), 12 * 16, glyphLook(), tone()}).rgba);
+}
+
+void testGlyphsAreMirrored() {
+    // The grid's left edge is the glyph's right, as in the film.
+    int checked = 0;
+    for (int g = 0; g < glyphCount(); ++g) {
+        double sum = 0, length = 0;
+        for (const GlyphStroke& stroke : glyphStrokes(g)) {
+            for (size_t i = 0; i + 1 < stroke.size(); ++i) {
+                const double len = std::hypot(double(stroke[i + 1].x - stroke[i].x), double(stroke[i + 1].y - stroke[i].y));
+                sum += len * (stroke[i].x + stroke[i + 1].x) / 2.0;
+                length += len;
+            }
+        }
+        const double lean = length > 0 ? sum / length - kGlyphW / 2.0 : 0; // below 0: the strokes lie towards the grid's left
+        if (std::fabs(lean) < 0.4)
+            continue;
+
+        const Image img = bakeGlyph({g, 12 * 16, glyphLook(), tone()});
+        double      moment = 0, mass = 0;
+        for (int j = 0; j < img.h; ++j) {
+            for (int i = 0; i < img.w; ++i) {
+                moment += inkAt(img, i, j) * (i + 0.5);
+                mass += inkAt(img, i, j);
+            }
+        }
+        CHECK(mass > 0);
+        CHECK((moment / mass - img.w / 2.0) * lean < 0);
+        ++checked;
+    }
+    CHECK(checked >= 10);
+}
+
+void testGlyphIsCentredOnItsImage() {
+    // Whole px from the image's middle corner to its edges, and a glyph that is
+    // as wide and as tall on both sides of it: it can be placed on whole px.
+    const Look look = glyphLook();
+    const Image img = bakeGlyph({glyphIndex(0), 12 * 16, look, tone()}); // "e": a bar at the top, one at the bottom
+    int         top = img.h, bottom = -1;
+    for (int j = 0; j < img.h; ++j) {
+        for (int i = 0; i < img.w; ++i) {
+            if (inkAt(img, i, j) > 200) {
+                top    = std::min(top, j);
+                bottom = std::max(bottom, j);
+            }
+        }
+    }
+    CHECK(top < bottom);
+    CHECK(top + bottom + 1 == img.h); // symmetric about the middle
+}
+
+void testGlyphKeys() {
+    GlyphSpec glyph{3, 12 * 16, glyphLook(), tone()};
+    CHECK(keyOf(glyph) == keyOf(GlyphSpec(glyph)));
+    differs(glyph, [](GlyphSpec& s) { s.glyph = 4; });
+    differs(glyph, [](GlyphSpec& s) { s.height16 = 13 * 16; });
+    differs(glyph, [](GlyphSpec& s) { s.look.halfWidth16 = 12; });
+    differs(glyph, [](GlyphSpec& s) { s.look.reach16 = 41; });
+    differs(glyph, [](GlyphSpec& s) { s.look.haloAlpha = 100; });
+    differs(glyph, [](GlyphSpec& s) { s.tone.line[0] ^= 8; });
+    differs(glyph, [](GlyphSpec& s) { s.tone.glow[1] ^= 8; });
+    differs(glyph, [](GlyphSpec& s) { s.knock = 100; });
+
+    GlyphSpec same = glyph;
+    same.glyph += glyphCount(); // the same glyph, so the same image
+    CHECK(keyOf(glyph) == keyOf(same));
+
+    CHECK(keyOf(GlyphSpec{}) != keyOf(BeadSpec{}));
+    CHECK(keyOf(GlyphSpec{}) != keyOf(TileSpec{}));
+    CHECK(keyOf(GlyphSpec{}) != keyOf(StripSpec{}));
+}
+
+// What a panel's face asks the baker for.
+void testGlyphFaceSpec() {
+    const GlyphFace face{12, 0.6, 3.4, 0.55f, 14, 4};
+    const Look      look = lookOf(face);
+    CHECK(look.halfWidth16 == 10 && look.reach16 == 54); // 0.6 and 3.4 px, in 1/16 px
+    CHECK(look.lineAlpha == 255 && look.haloAlpha == alpha8(0.55f));
+
+    const Tone      colours = tone();
+    const GlyphSpec spec    = glyphSpecOf(face, 7, colours);
+    CHECK(spec.glyph == 7 && spec.height16 == 12 * 16 && spec.look == look && spec.tone == colours);
+
+    const GlyphSize size = glyphSize(face);
+    CHECK(size.w == glyphSize(spec.height16, look).w && size.h == glyphSize(spec.height16, look).h);
+    CHECK(size.w == 18 && size.h == 22);
+    const Image img = bakeGlyph(spec);
+    CHECK(img.w == size.w && img.h == size.h);
+
+    // Only what the baker uses tells one face from another.
+    GlyphFace spaced = face;
+    spaced.pitch     = 30;
+    spaced.period    = 9;
+    CHECK(keyOf(glyphSpecOf(spaced, 7, colours)) == keyOf(spec));
+
+    GlyphFace taller = face, bolder = face, brighter = face;
+    taller.height    = 18;
+    bolder.halfWidth = 0.9;
+    brighter.haloAlpha = 0.8f;
+    CHECK(glyphSize(taller).h > size.h && glyphSize(taller).w > size.w);
+    for (const GlyphFace& other : {taller, bolder, brighter})
+        CHECK(keyOf(glyphSpecOf(other, 7, colours)) != keyOf(spec));
+
+    CHECK(glyphSize(GlyphFace{}).w == 0 && glyphSize(GlyphFace{}).h == 0);
+
+    // the plate under a character is part of its image
+    GlyphFace plated = face;
+    CHECK(spec.knock == 0);
+    plated.knock = 0.5f;
+    CHECK(glyphSpecOf(plated, 7, colours).knock == alpha8(0.5f));
+    CHECK(keyOf(glyphSpecOf(plated, 7, colours)) != keyOf(spec));
+    CHECK(glyphSize(plated).w == size.w && glyphSize(plated).h == size.h);
+}
+
+// The plate under a glyph: black, soft at its edge, and never past the image.
+void testGlyphPlate() {
+    const int knock = 200;
+    for (const Look look : {glyphLook(), Look{5, 0, 255, 0}, Look{10, 90, 255, 200}}) {
+        for (int g = 0; g < glyphCount(); ++g) {
+            const GlyphSpec bare{g, 12 * 16, look, tone()};
+            GlyphSpec       plated = bare;
+            plated.knock           = knock;
+
+            const Image a = bakeGlyph(bare), b = bakeGlyph(plated);
+            CHECK(a.w == b.w && a.h == b.h);
+
+            int under = 0;
+            for (int j = 0; j < a.h; ++j) {
+                for (int i = 0; i < a.w; ++i) {
+                    float p[4], q[4];
+                    texel(a, i, j, p);
+                    texel(b, i, j, q);
+                    for (int k = 0; k < 3; ++k)
+                        CHECK(q[k] == p[k]); // black adds no light
+                    CHECK(q[3] >= p[3] && q[3] <= p[3] + knock + 1);
+                    if (p[3] == 255)
+                        CHECK(q[3] == 255); // a stroke stays as it is
+                    if (i == 0 || j == 0 || i == a.w - 1 || j == a.h - 1)
+                        CHECK(q[3] == 0); // the plate ends inside the image
+                    if (q[3] > p[3])
+                        ++under;
+
+                    // near the middle the plate is as dark as asked, with what is there showing through it
+                    if (std::hypot(i + 0.5f - a.w / 2.f, j + 0.5f - a.h / 2.f) <= 3.f)
+                        CHECK(std::fabs(q[3] - (p[3] + knock * (1 - p[3] / 255.f))) <= 1.5f);
+                }
+            }
+            CHECK(under > 100);
+        }
+    }
+
+    // soft at the edge: along the middle row it only gets lighter going out
+    const GlyphSpec spec{glyphIndex(0), 12 * 16, glyphLook(), tone(), knock};
+    const Image     img = bakeGlyph(spec);
+    float           last = 255;
+    int             lighter = 0;
+    for (int i = img.w / 2 + 3; i < img.w; ++i) {
+        float q[4];
+        texel(img, i, img.h / 2, q);
+        CHECK(q[3] <= last + 1e-3f);
+        lighter += q[3] < last;
+        last = q[3];
+    }
+    CHECK(lighter >= 2 && last == 0);
+
+    // no knock, no plate
+    const Image bare = bakeGlyph({glyphIndex(0), 12 * 16, glyphLook(), tone()});
+    float       q[4];
+    texel(bare, bare.w / 2 + 5, bare.h / 2, q);
+    CHECK(q[3] == 0);
+}
+
 } // namespace
 
 int main() {
@@ -566,5 +808,13 @@ int main() {
     testStripQuadPutsTheEndsOnTheTexelCentres();
     testTileKeepsItsLineInside();
     testBeadIsSymmetricAndSoft();
+    testToneLevels();
+    testGlyphImageFitsItsGlyph();
+    testGlyphsBakeDifferently();
+    testGlyphsAreMirrored();
+    testGlyphIsCentredOnItsImage();
+    testGlyphKeys();
+    testGlyphFaceSpec();
+    testGlyphPlate();
     return finish("test_stamp");
 }

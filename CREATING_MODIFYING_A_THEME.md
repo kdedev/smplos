@@ -193,12 +193,12 @@ unchanged. niri and other compositors ignore them.
 | `glow_color`, `glow_color_inactive` | accent at 69% alpha, same as active | Single color or gradient |
 | `border_animation` | `"false"` | `"true"` or `"false"` only |
 | `hud_frame` | `"false"` | `"true"` or `"false"` only; turns on the HUD frames the `smpl-hud` Hyprland plugin draws around windows |
-| `hud_style` | `"scifi"` | Name of the HUD look: `scifi` (outline, halos, corner brackets, edge tabs), `minimal` (outline and halos only) or `panel` (notched outline with a step, a ghost line and a cut corner, circuit traces ending in beads, two dots circling the outline in opposite directions and a dot bouncing along each trace, the circling ones glowing as they near a bouncing dot or each other). Lowercase letters, digits, `-` and `_`; an unknown name shows a notification and draws nothing |
-| `hud_gap`, `hud_chamfer` | `"5"`, `"10"` | Non-negative integers: outline distance from the window and corner-cut size, in px. The notches of a `panel` are 9 px deep with a `hud_gap` of 13 or more and shrink below that |
+| `hud_style` | `"scifi"` | Name of the HUD look: `scifi` (outline, halos, corner brackets, edge tabs), `minimal` (outline and halos only), `panel` (notched outline with a step, a ghost line and a cut corner, circuit traces ending in beads, two dots circling the outline in opposite directions and a dot bouncing along each trace, the circling ones glowing as they near a bouncing dot or each other) or `matrix` (the `panel` with Matrix characters instead of dots: streams of them rain along the lines and the beads pulse). Lowercase letters, digits, `-` and `_`; an unknown name shows a notification and draws nothing |
+| `hud_gap`, `hud_chamfer` | `"5"`, `"10"` | Non-negative integers: outline distance from the window and corner-cut size, in px. The notches of a `panel` or `matrix` frame are 9 px deep with a `hud_gap` of 13 or more and shrink below that |
 | `hud_line_width` | `"3"` | Number from 1 to 9.99: outline thickness in px; corner brackets and edge tabs follow it |
 | `hud_float_glow_range` | `"0"` | Non-negative integer. Floating windows glow brighter than tiled ones and their halo reaches at least this many px; `"0"` keeps the style's own reach (14 px for `scifi`) |
-| `hud_sweep` | `"false"` | `"true"` or `"false"` only; a soft glow drifts slowly along the focused window's outline, in the outline's own colors, and fades in and out as focus moves. In the `panel` style it also sets the dots moving along the lines |
-| `hud_sweep_speed`, `hud_sweep_length` | `"80"`, `"180"` | Integers: speed in px per second (10 to 400; the dots of a `panel` run 1.6 times as fast) and length along the line in px (40 to 600). Keep the speed low: it reads as light moving along the frame, not as a spinner (Neon: `"70"`, a lap takes tens of seconds) |
+| `hud_sweep` | `"false"` | `"true"` or `"false"` only; a soft glow drifts slowly along the focused window's outline, in the outline's own colors, and fades in and out as focus moves. In the `panel` and `matrix` styles it also sets the dots or characters moving along the lines |
+| `hud_sweep_speed`, `hud_sweep_length` | `"80"`, `"180"` | Integers: speed in px per second (10 to 400; the dots of a `panel` and the characters of a `matrix` run 1.6 times as fast) and length along the line in px (40 to 600). Keep the speed low: it reads as light moving along the frame, not as a spinner (Neon: `"70"`, a lap takes tens of seconds) |
 
 Gradients use the same syntax as `border_active`: one or more `rgba(rrggbbaa)`
 stops and an optional angle, e.g. `"rgba(00f0ffb0) rgba(2f7bff80) 45deg"`.
@@ -277,6 +277,21 @@ stops and an optional angle, e.g. `"rgba(00f0ffb0) rgba(2f7bff80) 45deg"`.
   warm near-black backgrounds at 0.85 opacity, `rounding = "42"` with
   `rounding_power = "1.0"`, `gaps_in = "24"`, `hud_gap = "15"` (outlines 22 px
   apart), `hud_line_width = "2"`, an amber gradient frame, and an orange glow.
+- The `matrix` style is the `panel` outline with Matrix characters where the
+  panel has dots, and the same room requirements (`hud_gap` of 13 or more, a
+  frame of at least 480 × 160 logical px, `border_animation = "false"`). A
+  character stands every few px along the outline and the traces on a soft dark
+  plate, so the line breaks behind it. The bead at the end of each trace is a
+  character that pulses slowly and changes with every breath. While a window has
+  focus (and `hud_sweep = "true"`, which drives everything that moves), two
+  streams of characters rain around the outline in opposite directions and one
+  runs back and forth along each trace, each a bright head with a fading tail,
+  longer and brighter near a bead or the other stream; a window without focus
+  keeps only its dim beads. `matrix-hud/colors.toml` is a complete example: the
+  Matrix text, accent and status colors on a near-black green background at 0.85
+  opacity, the layout of `amber-hud`, a frame that shades from mint white
+  through green to teal and a deeper emerald-to-aqua glow so the two layers
+  stay apart.
 
 ## 4) Generate theme files
 
@@ -475,7 +490,7 @@ ARGB surfaces and undecorated windows in the native app repos.
 
 ### Stock palette audit
 
-All 20 themes set ordinary active/inactive, browser and messenger multipliers
+All 21 themes set ordinary active/inactive, browser and messenger multipliers
 equal to the native background intensity below. Native surfaces still receive
 compositor **1.0**, not this multiplier. Popup and terminal values are unchanged.
 
@@ -485,7 +500,7 @@ compositor **1.0**, not this multiplier. Popup and terminal values are unchanged
 | Frosted | 0.35 |
 | Tokyo Night | 0.70 |
 | Ethereal | 0.75 |
-| Amber HUD, Everforest, Gruvbox, Hackerman, Kanagawa, Matte Black, Neon, Nord, Osaka Jade, Ristretto, Rose Pine | 0.85 |
+| Amber HUD, Everforest, Gruvbox, Hackerman, Kanagawa, Matrix HUD, Matte Black, Neon, Nord, Osaka Jade, Ristretto, Rose Pine | 0.85 |
 | Catppuccin Latte, Flexoki Light | 0.90 |
 | Amber, Grafium, Matrix | 1.0 (intentionally opaque) |
 

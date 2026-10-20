@@ -104,6 +104,14 @@ struct Style {
     float traceOffset = 0; // logical px the outer traces run beyond the outline
     float beadRadius  = 0; // logical px; 0 draws no beads and no runners
     float runnerSpeed = 1; // speed of the runner dots relative to the travelling glow
+
+    // Glyph styles draw characters where the others draw dots: the beads at the
+    // ends of the traces pulse as characters and the runners leave a trail of
+    // characters behind them (panel.hpp).
+    float glyphHeight = 0; // logical px; 0 draws dots
+    float glyphPitch  = 0; // logical px between two characters along a line
+    float glyphPeriod = 0; // seconds a character at the end of a trace takes to pulse once
+    float glyphKnock  = 0; // how dark the plate behind a character is, 0..1: it dims the line it stands on
 };
 
 struct Params {
@@ -204,6 +212,28 @@ struct Proximity {
     double far  = 0;
 };
 
+// The characters of a glyph style, in place of dots.
+struct GlyphFace {
+    double height    = 0; // px; 0 draws dots
+    double halfWidth = 0; // half the thickness of a stroke of a character, px
+    double reach     = 0; // how far the glow reaches past a stroke's edge, px
+    float  haloAlpha = 0;
+    double pitch     = 0; // px between two characters along a line
+    double period    = 0; // seconds a character at the end of a trace takes to pulse once
+    float  knock     = 0; // opacity of the dark plate behind a character, 0..1
+
+    bool on() const { return height > 0; }
+};
+
+// A place on a line where a character can light up. Characters never move:
+// they light up, change and fade where they are, which keeps them crisp.
+struct GlyphSlot {
+    Vec2   pos;          // whole px
+    int    stroke = 0;   // index into Panel::strokes
+    double at     = 0;   // px along that stroke
+    float  alpha  = 1.f; // how visible the line is there, with the stroke's own opacity
+};
+
 struct Panel {
     std::vector<Stroke> strokes; // strokes[0] is the closed outline round the window
     std::vector<Bead>   beads;   // dots that stay where they are
@@ -216,6 +246,10 @@ struct Panel {
     Bead      flare = {{}, 0.0, 0.0, 0.f, 1.f}; // no radius: none
     Proximity touch;
     Proximity merge;
+
+    // A glyph style draws characters at `beads` and along the lines instead of dots.
+    GlyphFace              glyphs;
+    std::vector<GlyphSlot> slots; // evenly along every stroke, in stroke order
 
     bool empty() const { return strokes.empty(); }
 };

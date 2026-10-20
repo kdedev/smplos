@@ -76,7 +76,7 @@ It started as an attempt to build a lighter version of Omarchy - same keybinding
 - **Fast installs.** Fully offline - no internet required. A fresh install completes in under 2 minutes.
 - **Cross-compositor.** Built from the ground up to support multiple compositors. Hyprland (Wayland) ships first, [DWM (X11) is next](DWM-X11.md). Shared configs, shared themes, shared keybindings - the compositor is just a thin layer.
 - **One UI toolkit.** EWW powers the bar, widgets, and dialogs. It runs on both X11 and Wayland. No waybar, no polybar, no redundant tools.
-- **20 built-in themes.** One command switches colors across the entire system - terminal, bar, notifications, borders, lock screen, and editor.
+- **21 built-in themes.** One command switches colors across the entire system - terminal, bar, notifications, borders, lock screen, and editor.
 
 ---
 
@@ -120,7 +120,7 @@ This is the same pattern we use everywhere: the theme system writes config files
 
 #### Themes
 
-smplOS ships with 20 themes inherited and expanded from the Omarchy project. A single `theme-set` command applies colors system-wide - terminal, EWW bar, notifications, Hyprland borders, lock screen, btop, neovim, and VS Code. Themes are generated from a single `colors.toml` source of truth.
+smplOS ships with 21 themes inherited and expanded from the Omarchy project. A single `theme-set` command applies colors system-wide - terminal, EWW bar, notifications, Hyprland borders, lock screen, btop, neovim, and VS Code. Themes are generated from a single `colors.toml` source of truth.
 
 Native transparency is **background-only**: capable Nemo, Grafium in Auto mode,
 and regular smpl-apps windows use `app_background_opacity`, while text, icons,
@@ -414,7 +414,7 @@ available. The integration never installs dependencies or launches the app.
 | Flexoki Light | Flexoki |
 | Grafium | GitHub |
 | Gruvbox | Gruvbox Material |
-| Hackerman, Matrix | Homebrew |
+| Hackerman, Matrix, Matrix HUD | Homebrew |
 | Kanagawa | Kanso Ink |
 | Matte Black | Monochrome |
 | Nord | Nord Midnight |
@@ -456,7 +456,7 @@ src/
     configs/
       smplos/               Cross-compositor configs (bindings.conf, messengers.conf, branding)
       <app>/                Per-app default configs (btop, dunst, fish, foot, nvim, …)
-    themes/                 20 themes — each a self-contained directory with pre-baked configs
+    themes/                 21 themes — each a self-contained directory with pre-baked configs
     icons/                  SVG status icon templates (baked with accent colors by theme-set)
     applications/           Shared web-app .desktop entries and hicolor icons
     skel/                   Default user home skeleton (copied to /etc/skel in the ISO)
@@ -897,9 +897,9 @@ See the [Development Guide](DEVELOPMENT.md) for hot-reload iteration, VM testing
 
 ## Themes
 
-20 built-in themes. Press <kbd>Super</kbd> + <kbd>Shift</kbd> + <kbd>T</kbd> to open the theme picker and switch instantly.
+21 built-in themes. Press <kbd>Super</kbd> + <kbd>Shift</kbd> + <kbd>T</kbd> to open the theme picker and switch instantly.
 
-Amber, Amber HUD, Catppuccin Mocha, Catppuccin Latte, Ethereal, Everforest, Flexoki Light, Frosted, Grafium, Gruvbox, Hackerman, Kanagawa, Matrix, Matte Black, Neon, Nord, Osaka Jade, Ristretto, Rose Pine, Tokyo Night.
+Amber, Amber HUD, Catppuccin Mocha, Catppuccin Latte, Ethereal, Everforest, Flexoki Light, Frosted, Grafium, Gruvbox, Hackerman, Kanagawa, Matrix, Matrix HUD, Matte Black, Neon, Nord, Osaka Jade, Ristretto, Rose Pine, Tokyo Night.
 
 One command - `theme-set <name>` - applies colors across the entire system: terminal, bar, notifications, compositor borders, lock screen, launcher, system monitor, editor, fish shell, Grafium, and browser chrome.
 
@@ -974,7 +974,7 @@ Terminal templates derive their palette from semantic roles such as `surface`,
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `rounding` | `"10"` | Window corner size in pixels (see `rounding_power` for the shape) |
-| `app_rounding` | same as `rounding` | Circular corner radius in pixels for what Hyprland does not clip: the rofi launcher and dialogs, the Nemo quick preview and niri windows. A theme with `rounding_power = "1"` keeps it tiny (`neon`, `amber-hud`: `"2"`) so that Hyprland's 45° cuts remain the corner shape |
+| `app_rounding` | same as `rounding` | Circular corner radius in pixels for what Hyprland does not clip: the rofi launcher and dialogs, the Nemo quick preview and niri windows. A theme with `rounding_power = "1"` keeps it tiny (`neon`, `amber-hud`, `matrix-hud`: `"2"`) so that Hyprland's 45° cuts remain the corner shape |
 | `blur_size` | `"6"` | Background blur kernel size |
 | `blur_passes` | `"3"` | Number of blur passes (higher = smoother, more GPU) |
 | `opacity_active` | `"1.0"` if absent | Third-party ordinary whole-window opacity, including text/icons. Stock values follow theme background intensity. |
@@ -989,7 +989,7 @@ Each opacity class is owned exactly once — no value is applied twice. See [Opa
 
 #### Effects (optional, Hyprland only)
 
-Every key may be omitted: absent keys give the classic look (small dark shadow, no glow, static borders), so existing themes are unchanged. Other compositors ignore these keys. `neon` is the reference theme (style `scifi`) and `amber-hud` the one for the `panel` style.
+Every key may be omitted: absent keys give the classic look (small dark shadow, no glow, static borders), so existing themes are unchanged. Other compositors ignore these keys. `neon` is the reference theme (style `scifi`), `amber-hud` the one for the `panel` style and `matrix-hud` the one for the `matrix` style.
 
 | Variable | Default | Description |
 |----------|---------|-------------|
@@ -1000,13 +1000,13 @@ Every key may be omitted: absent keys give the classic look (small dark shadow, 
 | `glow_range`, `glow_render_power` | `"10"`, `"3"` | Glow depth and falloff sharpness |
 | `glow_color`, `glow_color_inactive` | accent at 69% alpha, same as active | Single color or gradient, e.g. `"rgba(00f0ffb0) rgba(2f7bff80) 45deg"` |
 | `border_animation` | `"false"` | `"true"` continuously rotates the border (and, on Hyprland 0.56+, glow) gradient. On its own only windows opened after the theme is applied animate; with `smpl-hud` only the focused window turns |
-| `hud_frame` | `"false"` | `"true"` turns on HUD frames, drawn by the `smpl-hud` Hyprland plugin: a chamfered, glowing outline just outside every window, with corner brackets and edge tabs (`scifi`) or notches, circuit traces and running dots (`panel`) |
-| `hud_style` | `"scifi"` | Which HUD look the plugin draws: `scifi` (outline, halos, corner brackets, edge tabs), `minimal` (outline and halos only) or `panel` (notched outline with a step, a ghost line and a cut corner, circuit traces ending in beads, and dots that run along the lines). Lowercase letters, digits, `-` and `_`; an unknown name shows a notification and draws nothing |
-| `hud_gap`, `hud_chamfer` | `"5"`, `"10"` | Pixels between the window edge and the outline, and the size of its 45° corner cuts. With `rounding_power = "1"` the outline stays concentric with the window's own cuts, so `hud_chamfer` only sets a minimum. The notches of a `panel` are 9 px deep with a `hud_gap` of 13 or more and shrink below that |
+| `hud_frame` | `"false"` | `"true"` turns on HUD frames, drawn by the `smpl-hud` Hyprland plugin: a chamfered, glowing outline just outside every window, with corner brackets and edge tabs (`scifi`), notches, circuit traces and running dots (`panel`) or the same with Matrix characters instead of dots (`matrix`) |
+| `hud_style` | `"scifi"` | Which HUD look the plugin draws: `scifi` (outline, halos, corner brackets, edge tabs), `minimal` (outline and halos only), `panel` (notched outline with a step, a ghost line and a cut corner, circuit traces ending in beads, and dots that run along the lines) or `matrix` (the same outline with Matrix characters instead of dots). Lowercase letters, digits, `-` and `_`; an unknown name shows a notification and draws nothing |
+| `hud_gap`, `hud_chamfer` | `"5"`, `"10"` | Pixels between the window edge and the outline, and the size of its 45° corner cuts. With `rounding_power = "1"` the outline stays concentric with the window's own cuts, so `hud_chamfer` only sets a minimum. The notches of a `panel` or `matrix` frame are 9 px deep with a `hud_gap` of 13 or more and shrink below that |
 | `hud_line_width` | `"3"` | Thickness of the outline in pixels, a number from 1 to 9.99. Corner brackets and edge tabs follow it |
 | `hud_float_glow_range` | `"0"` | Floating windows glow brighter than tiled ones and their halo reaches at least this many pixels; `"0"` keeps the style's own reach (14 px for `scifi`) |
-| `hud_sweep` | `"false"` | `"true"` lets a soft glow drift slowly along the focused window's outline, in the outline's own colours (in the `panel` style it also sets the dots running along the lines) |
-| `hud_sweep_speed`, `hud_sweep_length` | `"80"`, `"180"` | How fast the glow travels, in px per second (10 to 400; the dots of a `panel` run 1.6 times as fast), and how long it is along the line, in px (40 to 600) |
+| `hud_sweep` | `"false"` | `"true"` lets a soft glow drift slowly along the focused window's outline, in the outline's own colours (in the `panel` and `matrix` styles it also sets the dots or characters running along the lines) |
+| `hud_sweep_speed`, `hud_sweep_length` | `"80"`, `"180"` | How fast the glow travels, in px per second (10 to 400; the dots of a `panel` and the characters of a `matrix` run 1.6 times as fast), and how long it is along the line, in px (40 to 600) |
 
 `glow`, `border_animation`, `hud_frame` and `hud_sweep` must be `"true"` or `"false"`, `hud_gap`, `hud_chamfer` and `hud_float_glow_range` must be non-negative integers, `hud_sweep_speed` and `hud_sweep_length` integers inside their ranges, `hud_line_width` a number from 1 to 9.99, `hud_style` a style name and `rounding_power` a number from 1 to 10; the generator rejects anything else. The glow is painted inside the window edge, over its content, so keep it short and translucent.
 
@@ -1016,11 +1016,13 @@ Hyprland has a single global `glow_range`, so it cannot give floating windows a 
 
 #### HUD frames (`smpl-hud` plugin)
 
-Hyprland draws every window as a rectangle with rounded or, with `rounding_power = "1"`, 45°-cut corners and a plain border, so the sci-fi frame is drawn by `smpl-hud`, a Hyprland plugin ([`src/compositors/hyprland/plugins/smpl-hud`](src/compositors/hyprland/plugins/smpl-hud/README.md), C++). It is a window decoration inside the compositor's own render pass: it moves, resizes, animates and stacks together with its window, so it never lags behind, and it adds no surfaces and never touches input. With `hud_frame = "true"` it paints, around every ordinary window, an outline that follows the window's cuts at a constant distance, halos on both sides of it and (style `scifi`) corner brackets and mid-edge tabs, in the window's own border and glow gradients, so focus changes and `border_animation` carry over (only the focused window's gradients turn; the others finish their lap and rest). It reads the `hud_*` keys from the generated `~/.config/hypr/theme.conf` and picks up a change on the next Hyprland config reload (`theme-set` triggers one); a theme without `hud_frame = "true"` draws nothing. Neighbouring tiled outlines sit `2 * (gaps_in + border_size) - 2 * hud_gap` apart: that has to exceed `hud_line_width` so the lines do not touch, and should reach `hud_line_width + 13` so their halos stay separate (`neon`: `gaps_in = "18"` leaves 28 px; `amber-hud`: `gaps_in = "24"` with a `hud_gap` of 15 leaves 22 px).
+Hyprland draws every window as a rectangle with rounded or, with `rounding_power = "1"`, 45°-cut corners and a plain border, so the sci-fi frame is drawn by `smpl-hud`, a Hyprland plugin ([`src/compositors/hyprland/plugins/smpl-hud`](src/compositors/hyprland/plugins/smpl-hud/README.md), C++). It is a window decoration inside the compositor's own render pass: it moves, resizes, animates and stacks together with its window, so it never lags behind, and it adds no surfaces and never touches input. With `hud_frame = "true"` it paints, around every ordinary window, an outline that follows the window's cuts at a constant distance, halos on both sides of it and (style `scifi`) corner brackets and mid-edge tabs, in the window's own border and glow gradients, so focus changes and `border_animation` carry over (only the focused window's gradients turn; the others finish their lap and rest). It reads the `hud_*` keys from the generated `~/.config/hypr/theme.conf` and picks up a change on the next Hyprland config reload (`theme-set` triggers one); a theme without `hud_frame = "true"` draws nothing. Neighbouring tiled outlines sit `2 * (gaps_in + border_size) - 2 * hud_gap` apart: that has to exceed `hud_line_width` so the lines do not touch, and should reach `hud_line_width + 13` so their halos stay separate (`neon`: `gaps_in = "18"` leaves 28 px; `amber-hud` and `matrix-hud`: `gaps_in = "24"` with a `hud_gap` of 15 leaves 22 px).
 
 With `hud_sweep = "true"` a soft glow also drifts around the focused window's outline, past corners and cuts, in the outline's own gradient colours, fading in over half a second when a window gets focus and out when it loses it. It is deliberately cheap: one small sprite, rebuilt about 20 times a second only while it moves, with damage limited to the few pixels it leaves and enters (no full-window or full-screen redraws), so it costs about one percent of a CPU core in a software-rendered test compositor however many windows are open, and it stops for hidden windows, fullscreen windows, sleeping monitors and the lock screen. The outline of the ring styles follows the window's `rounding` and `rounding_power`, so a theme gets chamfered (`1`), circular (`2`) or squircle (`4` and up) frames without further work; another outline needs a new style in the plugin ([README](src/compositors/hyprland/plugins/smpl-hud/README.md#styles)).
 
 The `panel` style (`amber-hud`) draws a fixed outline of straight and 45° lines instead: chamfered corners, a notch and a step on the top edge, a raised line and a fading ghost line along the bottom, a bigger cut at the bottom left and three circuit traces ending in glowing beads, all standing `hud_gap` off the window. While a window has focus, dots run along its outline and traces, at 1.6 times `hud_sweep_speed`, and fade with the travelling glow. The window itself stays a chamfered rectangle: the shape lives in the lines around it, and the bottom-left cut can only be as deep as the window's own corner cut. Because the compositor can only draw textured quads, each line is baked once into a small image kept in a GPU cache, so a panel costs next to nothing between changes. It needs room: a frame under 480 × 160 logical px, or a `hud_gap` under 7, gets a plain chamfered outline with two dots, and the notches reach their full 9 px at a `hud_gap` of 13. Keep `border_animation` off in a panel theme, since a turning gradient recolours, and so repaints, every line. `make preview` in the plugin draws a panel as an image without a compositor.
+
+The `matrix` style (`matrix-hud`) is that outline with Matrix characters where the panel has dots: sixty half-width katakana, digits and signs, each drawn from a few strokes (no font is involved), mirrored like the film's and given the line's own bright core and glow. A character stands every few pixels along the outline and the traces on a soft dark plate, so the line breaks behind it instead of striking through it. The bead at the end of a trace is a character that pulses slowly and changes into another one with every breath, and now and then another one along a line fades in and out by itself. While a window has focus, two streams of characters rain around the outline in opposite directions and one runs back and forth along each trace, each a bright head with a tail of characters fading behind it, longer and brighter as it nears a bead or the other stream; a window without focus keeps only its dim beads, and nothing moves. Characters never move: they light up, change and fade where they stand, so each look is a small image baked once into the same GPU cache, and only the characters whose step changed are repainted, about 20 times a second at most. Small frames get the plain chamfered outline with two streams, as the panel does. Keep `hud_sweep = "true"` in a matrix theme, since every moving part is driven by it, and `border_animation` off.
 
 **Delivery.** A Hyprland plugin only loads into the exact Hyprland build it was compiled against, so smplOS compiles its plugins (`smpl-hud` and `smpl-scroll`) against the Hyprland it ships instead of shipping a binary. The ISO build compiles them against the bundled Hyprland package, so the live session and the installed system have them; Update OS rebuilds them after a Hyprland update and swaps them into the running session; every login runs `smplos-plugins load`, which loads the binaries that match the running compositor. If none matches, for example Hyprland was just updated and the rebuild failed, windows keep Hyprland's own cut corners, border, glow and shadow (and columns Hyprland's width limit) and a one-time notification says so; run Update OS again to retry. A plugin that crashes Hyprland cannot lock you out: `start-hyprland` relaunches it in safe mode, which skips the user config and with it the loader.
 

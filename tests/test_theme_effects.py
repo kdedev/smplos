@@ -311,6 +311,81 @@ class StockThemeEffectTests(unittest.TestCase):
         self.assertEqual((THEMES / "amber-hud/icons.theme").read_text(), (THEMES / "amber/icons.theme").read_text())
         self.assertNotIn("app_theme_logseq", palette)
 
+    def test_matrix_hud_is_a_matrix_character_frame_theme_in_the_matrix_palette(self):
+        variables = hypr_vars((THEMES / "matrix-hud/hyprland.conf").read_text())
+        palette = read_palette(THEMES / "matrix-hud/colors.toml")
+        stock_matrix = read_palette(THEMES / "matrix/colors.toml")
+        # The same text, accent and status colours as Matrix; only the backgrounds differ.
+        for key in ("foreground", "fg_dim", "muted", "accent", "accent_alt", "danger", "success", "warning", "info"):
+            self.assertEqual(palette[key], stock_matrix[key], key)
+        self.assertNotEqual(palette["background"], stock_matrix["background"])
+        # The notched outline with Matrix characters instead of dots, around octagonal windows.
+        self.assertEqual(variables["themeHudFrame"], "1")
+        self.assertEqual(variables["themeHudStyle"], "matrix")
+        self.assertEqual(variables["themeRoundingPower"], "1.0")
+        self.assertEqual(variables["themeRounding"], "42")
+        self.assertEqual(variables["themeGlow"], "1")
+        # The notches need the outline at least 13 px off the window.
+        self.assertGreaterEqual(int(variables["themeHudGap"]), 13)
+        apart = 2 * (int(variables["themeGapsIn"]) + int(variables["themeBorderSize"])) - 2 * int(variables["themeHudGap"])
+        self.assertGreaterEqual(apart, int(variables["themeHudLineWidth"]) + 13)
+        # The characters and the travelling glow are the animation, and every one of
+        # them is driven by the sweep: without it the plugin shows only still beads.
+        self.assertEqual(variables["themeBorderAnimation"], "0")
+        self.assertEqual(variables["themeHudSweep"], "1")
+        self.assertTrue(40 <= int(variables["themeHudSweepSpeed"]) <= 100)
+        for var in ("activeBorderColor", "inactiveBorderColor", "themeGlowColor"):
+            self.assertGreaterEqual(variables[var].count("rgba("), 2, var)
+            self.assertRegex(variables[var], r"\d+deg$", var)
+        for strong, dim in (
+            ("themeShadowColor", "themeShadowColorInactive"),
+            ("themeGlowColor", "themeGlowColorInactive"),
+        ):
+            self.assertLess(alpha(variables[dim]), alpha(variables[strong]), dim)
+        self.assertEqual(app_corners(THEMES / "matrix-hud"), ("2", {"2"}, "2"))
+
+    def test_matrix_hud_frame_and_glow_use_different_colours(self):
+        variables = hypr_vars((THEMES / "matrix-hud/hyprland.conf").read_text())
+
+        def hues(*names):
+            return {rgb for name in names for rgb in re.findall(r"rgba\((\w{6})\w{2}\)", variables[name])}
+
+        frame = hues("activeBorderColor", "inactiveBorderColor")
+        glow = hues("themeShadowColor", "themeShadowColorInactive", "themeGlowColor", "themeGlowColorInactive")
+        self.assertTrue(frame and glow)
+        self.assertEqual(frame & glow, set(), "the frame and the glow must not share a colour")
+
+    def test_matrix_hud_is_translucent_unlike_opaque_matrix(self):
+        matrix, hud = (
+            hypr_vars((THEMES / name / "hyprland.conf").read_text()) for name in ("matrix", "matrix-hud")
+        )
+        self.assertEqual(matrix["themeHudFrame"], "0")
+        self.assertLess(float(hud["themeOpacityActive"]), 1.0)
+        self.assertEqual(hud["themeOpacityActive"], hud["themePopupOpacity"])
+
+    def test_matrix_hud_borrows_matrix_editor_presets_and_icons(self):
+        palette = read_palette(THEMES / "matrix-hud/colors.toml")
+        for key, file in (("app_theme_nvim", "neovim.lua"), ("app_theme_vscode", "vscode.json")):
+            with self.subTest(key=key):
+                self.assertEqual(palette[key], "matrix")
+                self.assertTrue((THEMES / palette[key] / file).is_file())
+        self.assertEqual((THEMES / "matrix-hud/icons.theme").read_text(), (THEMES / "matrix/icons.theme").read_text())
+        self.assertNotIn("app_theme_logseq", palette)
+
+    def test_matrix_hud_uses_a_style_the_plugin_declares(self):
+        declared = set(re.findall(
+            r'\.name\s*=\s*"([a-z0-9_-]+)"',
+            (SRC / "compositors/hyprland/plugins/smpl-hud/geometry.cpp").read_text(),
+        ))
+        self.assertIn("matrix", declared)
+        # The generator accepts any style name; the plugin shows a notification and
+        # draws nothing for one it does not know.
+        for theme in stock_themes():
+            variables = hypr_vars((theme / "hyprland.conf").read_text())
+            if variables["themeHudFrame"] == "1":
+                with self.subTest(theme=theme.name):
+                    self.assertIn(variables["themeHudStyle"], declared)
+
 
 class ThemeDisplayNameTests(unittest.TestCase):
     def run_script(self, name, home):
@@ -324,15 +399,22 @@ class ThemeDisplayNameTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as home:
             names = self.run_script("theme-list", home)
         self.assertIn("Amber HUD", names)
+        self.assertIn("Matrix HUD", names)
         self.assertIn("Amber", names)
         self.assertIn("Rose Pine", names)
         self.assertNotIn("Amber Hud", names)
+        self.assertNotIn("Matrix Hud", names)
 
     def test_hud_stays_an_acronym_in_the_current_theme_name(self):
         with tempfile.TemporaryDirectory() as home:
             current = Path(home) / ".config/smplos/current"
             current.mkdir(parents=True)
-            for stored, shown in (("amber-hud", "Amber HUD"), ("rose-pine", "Rose Pine"), ("amber", "Amber")):
+            for stored, shown in (
+                ("amber-hud", "Amber HUD"),
+                ("matrix-hud", "Matrix HUD"),
+                ("rose-pine", "Rose Pine"),
+                ("amber", "Amber"),
+            ):
                 with self.subTest(stored=stored):
                     (current / "theme.name").write_text(stored + "\n")
                     self.assertEqual(self.run_script("theme-current", home), [shown])

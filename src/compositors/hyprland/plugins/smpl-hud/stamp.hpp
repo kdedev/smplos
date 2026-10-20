@@ -69,10 +69,11 @@ struct Look {
 
 Look lookOf(const Stroke& stroke);
 Look lookOf(const Bead& bead);
+Look lookOf(const GlyphFace& face); // the core is half the thickness of a stroke of a character
 
 // The colours of the line and of its glow at a place: straight (not
-// premultiplied) 8 bit RGBA, rounded to 5 bits a channel so that a slowly
-// changing gradient does not bake a new image at every step.
+// premultiplied) 8 bit RGBA, rounded to 5 bits a channel (`levels` + 1 steps) so
+// that a slowly changing gradient does not bake a new image at every step.
 struct Tone {
     uint8_t line[4] = {255, 255, 255, 255};
     uint8_t glow[4] = {255, 255, 255, 255};
@@ -80,7 +81,9 @@ struct Tone {
     bool operator==(const Tone&) const = default;
 };
 
-Tone makeTone(const Rgba& line, const Rgba& glow);
+constexpr int kToneLevels = 31;
+
+Tone makeTone(const Rgba& line, const Rgba& glow, int levels = kToneLevels);
 
 // Opacity 0..1 as 8 bit.
 int alpha8(float alpha);
@@ -139,5 +142,32 @@ int beadSize(const Look& look);
 
 Image       bakeBead(const BeadSpec& spec);
 std::string keyOf(const BeadSpec& spec);
+
+// A Matrix glyph (glyph.hpp) as an image: its strokes get the core and the halo
+// of a line, and the whole is mirrored left to right. Under the strokes goes a
+// soft black plate, so that a line that runs behind the glyph is dimmed there
+// rather than striking it through.
+struct GlyphSpec {
+    int  glyph    = 0; // any whole number; it wraps around the glyphs there are
+    int  height16 = 0; // the glyph's height in 1/16 px; its width follows from the grid
+    Look look;         // the core is half the thickness of the strokes
+    Tone tone;
+    int  knock    = 0; // the plate's opacity, 0..255; 0 has none
+};
+
+struct GlyphSize {
+    int w = 0, h = 0;
+};
+
+// Size of a glyph's image in px, both even: the glyph sits on the middle
+// corner, so a glyph drawn at whole px lands on whole px. Empty for no height.
+GlyphSize glyphSize(int height16, const Look& look);
+
+// The same for a character of a panel's face.
+GlyphSize glyphSize(const GlyphFace& face);
+GlyphSpec glyphSpecOf(const GlyphFace& face, int glyph, const Tone& tone);
+
+Image       bakeGlyph(const GlyphSpec& spec);
+std::string keyOf(const GlyphSpec& spec);
 
 } // namespace smplhud

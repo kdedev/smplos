@@ -46,12 +46,13 @@ namespace {
         return float(q) / kColourLevels;
     }
 
-    // Baked images of the lines and dots of panel styles (see stamp.hpp), kept
-    // on the GPU and shared by all windows, so each is baked and uploaded once.
-    // The key holds everything the image depends on. A full cache is emptied
-    // rather than managed: the next frame bakes what it needs again.
+    // Baked images of the lines, dots and characters of panel styles (see
+    // stamp.hpp), kept on the GPU and shared by all windows, so each is baked and
+    // uploaded once. The key holds everything the image depends on. A full cache
+    // is emptied rather than managed: the next frame bakes what it needs again.
+    // The characters are the most numerous: some sixty of them in a few tones.
     std::unordered_map<std::string, SP<Render::ITexture>> g_stamps;
-    constexpr size_t                                      kMaxStamps = 768;
+    constexpr size_t                                      kMaxStamps = 2048;
 
     template <class Bake>
     SP<Render::ITexture> stampOf(const std::string& key, Bake&& bake) {
@@ -123,9 +124,9 @@ namespace {
     };
 
     // The colours of a line and of its glow at (x, y).
-    smplhud::Tone toneAt(const SHudFrame& frame, smplhud::Paint core, smplhud::Paint halo, double x, double y) {
+    smplhud::Tone toneAt(const SHudFrame& frame, smplhud::Paint core, smplhud::Paint halo, double x, double y, int levels = smplhud::kToneLevels) {
         const auto& area = frame.layout->sampleBox;
-        return smplhud::makeTone(paintAt(frame.paints[size_t(core)], area, x, y), paintAt(frame.paints[size_t(halo)], area, x, y));
+        return smplhud::makeTone(paintAt(frame.paints[size_t(core)], area, x, y), paintAt(frame.paints[size_t(halo)], area, x, y), levels);
     }
 
     // A dot of the panel centred on `pos`, window-relative physical px.
@@ -180,6 +181,10 @@ namespace {
             }
         }
 
+        // A glyph style shows its dots as characters (drawGlyphs).
+        if (panel.glyphs.on())
+            return;
+
         for (const auto& bead : panel.beads)
             drawBead(scope, frame, bead, bead.pos, frame.alpha * bead.alpha);
     }
@@ -189,7 +194,7 @@ namespace {
     void drawPanelDots(const SHudFrame& frame) {
         const auto& panel   = frame.layout->panel;
         const auto& runners = panel.runners;
-        if (frame.runners.size() != runners.size())
+        if (panel.glyphs.on() || frame.runners.size() != runners.size())
             return;
 
         CTextureScope scope;
@@ -199,6 +204,47 @@ namespace {
             drawBead(scope, frame, runners[i].look, pose.pos, alpha);
             if (pose.glow > 0.F)
                 drawBead(scope, frame, panel.flare, pose.pos, alpha * pose.glow);
+        }
+    }
+
+    // A character is small and its colour changes slowly along the line, so
+    // 8 steps a channel are enough to keep the images that are baked few.
+    constexpr int kGlyphToneLevels = 7;
+
+    // The characters of a glyph style, each in the colours of the line where it
+    // stands, on a dark plate that dims the line behind it. One that is hot has
+    // the same character drawn over it in the bright colour (without a plate), as
+    // strongly as it is hot; the glow of the two adds up.
+    void drawGlyphs(const SHudFrame& frame) {
+        const auto& face = frame.layout->panel.glyphs;
+        const auto  size = smplhud::glyphSize(face);
+        if (!face.on() || size.w <= 0 || size.h <= 0)
+            return;
+
+        CTextureScope scope;
+        for (const auto& glyph : frame.glyphs) {
+            const CBox box    = {frame.window.x + glyph.x - size.w / 2.0, frame.window.y + glyph.y - size.h / 2.0, double(size.w), double(size.h)};
+            auto       damage = scope.damageIn(outward(box));
+            if (damage.empty())
+                continue;
+
+            const auto lay = [&](smplhud::Paint core, float strength, bool plate) {
+                if (frame.alpha * strength < 0.002F)
+                    return;
+
+                auto spec = smplhud::glyphSpecOf(face, glyph.glyph, toneAt(frame, core, smplhud::Paint::Glow, glyph.x, glyph.y, kGlyphToneLevels));
+                if (!plate)
+                    spec.knock = 0;
+                if (const auto texture = stampOf(smplhud::keyOf(spec), [&] { return smplhud::bakeGlyph(spec); })) {
+                    auto region = damage.copy();
+                    scope.draw(texture, box, region, frame.alpha * strength);
+                }
+            };
+
+            const float lit = float(glyph.alpha) / smplhud::kGlyphAlphaSteps;
+            lay(smplhud::Paint::Line, lit, true);
+            if (glyph.heat > 0)
+                lay(smplhud::Paint::Bright, lit * float(glyph.heat) / smplhud::kGlyphHeatSteps, false);
         }
     }
 
@@ -332,8 +378,10 @@ std::vector<UP<IPassElement>> CHudPassElement::draw() {
     if (m_frame.sweep)
         drawSweep(m_frame);
 
-    if (!layout.panel.empty())
+    if (!layout.panel.empty()) {
         drawPanelDots(m_frame);
+        drawGlyphs(m_frame);
+    }
 
     g_pHyprOpenGL->scissor(nullptr);
     return {};

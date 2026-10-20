@@ -1,8 +1,11 @@
 #include "stamp.hpp"
 
+#include "glyph.hpp"
+
 #include <algorithm>
 #include <cmath>
 #include <limits>
+#include <utility>
 
 namespace smplhud {
 namespace {
@@ -372,8 +375,9 @@ Look lookOf(const Bead& bead) {
     return {round16(bead.radius), round16(bead.reach), 255, alpha8(bead.haloAlpha)};
 }
 
-Tone makeTone(const Rgba& line, const Rgba& glow) {
-    auto quantised = [](float v) { return uint8_t(std::lround(std::lround(std::clamp(v, 0.f, 1.f) * 31) * 255.0 / 31)); };
+Tone makeTone(const Rgba& line, const Rgba& glow, int levels) {
+    levels         = std::max(levels, 1);
+    auto quantised = [levels](float v) { return uint8_t(std::lround(std::lround(std::clamp(v, 0.f, 1.f) * levels) * 255.0 / levels)); };
     Tone tone;
     const float lc[4] = {line.r, line.g, line.b, line.a};
     const float gc[4] = {glow.r, glow.g, glow.b, glow.a};
@@ -558,6 +562,98 @@ Image bakeBead(const BeadSpec& spec) {
 
 std::string keyOf(const BeadSpec& spec) {
     return Key().add(3).add(spec.look).add(spec.tone).str();
+}
+
+GlyphSize glyphSize(int height16, const Look& look) {
+    if (height16 <= 0)
+        return {};
+    const double pad = (look.halfWidth16 + look.reach16) / 16.0 + 1;
+    const double w   = height16 / 16.0 * kGlyphW / kGlyphH, h = height16 / 16.0;
+    return {2 * ceilI(w / 2 + pad), 2 * ceilI(h / 2 + pad)};
+}
+
+Look lookOf(const GlyphFace& face) {
+    return {round16(face.halfWidth), round16(face.reach), 255, alpha8(face.haloAlpha)};
+}
+
+GlyphSize glyphSize(const GlyphFace& face) {
+    return glyphSize(round16(face.height), lookOf(face));
+}
+
+GlyphSpec glyphSpecOf(const GlyphFace& face, int glyph, const Tone& tone) {
+    return {glyph, round16(face.height), lookOf(face), tone, alpha8(face.knock)};
+}
+
+namespace {
+
+// The plate behind a glyph, in terms of the glyph's height: how far it reaches
+// past the glyph's box on each side, how soft its edge is, and how round its corners.
+constexpr double kPlatePadX    = 0.10;
+constexpr double kPlatePadY    = 0.08;
+constexpr double kPlateFeather = 0.16;
+constexpr double kPlateRound   = 0.12;
+
+// Puts black under an image of the glyph: a rounded box with half sides `hx` by
+// `hy` around the image's middle, `feather` px soft over its edge, `strength`
+// (0..1) dark. The image is premultiplied, so black under it adds opacity only.
+void plateUnder(Image& img, double hx, double hy, double feather, double round, double strength) {
+    // Never reach past the image: its border stays clear.
+    hx = std::min(hx, img.w / 2.0 - 1 - feather / 2);
+    hy = std::min(hy, img.h / 2.0 - 1 - feather / 2);
+    if (hx <= 0 || hy <= 0 || strength <= 0)
+        return;
+
+    const double r = std::min({round, hx, hy});
+    for (int j = 0; j < img.h; ++j) {
+        for (int i = 0; i < img.w; ++i) {
+            const double qx = std::fabs(i + 0.5 - img.w / 2.0) - (hx - r), qy = std::fabs(j + 0.5 - img.h / 2.0) - (hy - r);
+            const double sd = std::hypot(std::max(qx, 0.0), std::max(qy, 0.0)) + std::min(std::max(qx, qy), 0.0) - r;
+            const double t  = std::clamp(0.5 - sd / feather, 0.0, 1.0);
+            const double a  = strength * t * t * (3 - 2 * t);
+
+            uint8_t* px = &img.rgba[(size_t(j) * size_t(img.w) + size_t(i)) * 4 + 3];
+            *px         = uint8_t(std::lround(*px + 255.0 * a * (1.0 - *px / 255.0)));
+        }
+    }
+}
+
+} // namespace
+
+Image bakeGlyph(const GlyphSpec& spec) {
+    const GlyphSize size = glyphSize(spec.height16, spec.look);
+    TileSpec        tile;
+    tile.w    = size.w;
+    tile.h    = size.h;
+    tile.look = spec.look;
+    tile.tone = spec.tone;
+    if (size.w <= 0 || size.h <= 0)
+        return bakeTile(tile);
+
+    const double h = spec.height16 / 16.0, w = h * kGlyphW / kGlyphH;
+    // Mirrored: the grid's left edge is the glyph's right.
+    const auto at = [&](const GlyphPoint& p) {
+        const double x = size.w / 2.0 + (0.5 - double(p.x) / kGlyphW) * w, y = size.h / 2.0 + (double(p.y) / kGlyphH - 0.5) * h;
+        return std::pair{round16(x), round16(y)};
+    };
+    for (const GlyphStroke& stroke : glyphStrokes(spec.glyph)) {
+        if (stroke.empty())
+            continue;
+        // A lone point is a dot: a segment that does not go anywhere.
+        const size_t count = std::max<size_t>(stroke.size() - 1, 1);
+        for (size_t i = 0; i < count; ++i) {
+            const auto a = at(stroke[i]), b = at(stroke[std::min(i + 1, stroke.size() - 1)]);
+            tile.segs.push_back({a.first, a.second, b.first, b.second, 255, 255});
+        }
+    }
+
+    Image img = bakeTile(tile);
+    if (spec.knock > 0)
+        plateUnder(img, w / 2 + kPlatePadX * h, h / 2 + kPlatePadY * h, kPlateFeather * h, kPlateRound * h, spec.knock / 255.0);
+    return img;
+}
+
+std::string keyOf(const GlyphSpec& spec) {
+    return Key().add(4).add(glyphIndex(spec.glyph)).add(spec.height16).add(spec.look).add(spec.tone).add(spec.knock).str();
 }
 
 } // namespace smplhud

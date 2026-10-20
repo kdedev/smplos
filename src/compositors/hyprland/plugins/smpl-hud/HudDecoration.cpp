@@ -4,6 +4,7 @@
 #include <array>
 #include <chrono>
 #include <cmath>
+#include <span>
 #include <vector>
 
 #include <hyprland/src/Compositor.hpp>
@@ -277,6 +278,30 @@ namespace {
             region.add(CRegion(box.expand(2)));
         }
     }
+
+    // The characters of a glyph style, `level` of the way into the fade with the
+    // focus, once the dots have travelled `travelled` and `clock` seconds have
+    // passed. Nothing of a window is left to draw but the characters at rest
+    // while it has no focus.
+    std::vector<smplhud::GlyphDraw> glyphsAt(const smplhud::Panel& panel, double travelled, double clock, double level, unsigned seed) {
+        if (!panel.glyphs.on())
+            return {};
+
+        const double intensity = smplhud::sweepIntensity(level);
+        return smplhud::glyphDraws(panel, intensity > 0 ? smplhud::runnerPoses(panel, travelled) : std::vector<smplhud::RunnerPose>{}, clock, intensity, seed);
+    }
+
+    // Adds to `region` the boxes, in global logical px, of the characters
+    // `glyphs` of `panel`. `origin` is the window's box.
+    void addGlyphBoxes(CRegion& region, const smplhud::Panel& panel, std::span<const smplhud::GlyphDraw> glyphs, const CBox& origin, double scale) {
+        const auto   size = smplhud::glyphSize(panel.glyphs);
+        const double w    = size.w + 2;
+        const double h    = size.h + 2;
+        for (const auto& glyph : glyphs) {
+            CBox box = {origin.x + (glyph.x - w / 2) / scale, origin.y + (glyph.y - h / 2) / scale, w / scale, h / scale};
+            region.add(CRegion(box.expand(2)));
+        }
+    }
 }
 
 const SHudSettings& hudSettings() {
@@ -367,9 +392,11 @@ void damageAllHuds() {
 }
 
 CHudDecoration::CHudDecoration(PHLWINDOW window) : IHyprWindowDecoration(window), m_window(window) {
-    // Windows start at different points of their lines, spread by the golden ratio.
+    // Windows start at different points of their lines, spread by the golden
+    // ratio, and their characters each keep a time of their own.
     static unsigned s_decorations = 0;
-    m_sweep.phase                 = std::fmod(s_decorations++ * 0.6180339887498949, 1.0);
+    m_sweep.phase                 = std::fmod(s_decorations * 0.6180339887498949, 1.0);
+    m_seed                        = s_decorations++ * 2654435761U;
 
     g_decorations.push_back(this);
 }
@@ -455,6 +482,7 @@ void CHudDecoration::damageIfAnimated() {
             for (const auto& tile : stroke.tiles)
                 add(tile.box);
         }
+        addGlyphBoxes(region, m_layout->panel, m_glyphs, box, scale); // their colours follow the gradient too
     } else {
         const double corner = window->rounding() + 2;
         for (const double cx : {box.x, box.x + box.width - corner}) {
@@ -547,8 +575,10 @@ CHudDecoration::SSweepStep CHudDecoration::advanceSweep(double seconds) {
 
     const double dotsBefore = m_dotPos;
     m_dotPos += seconds * g_settings.theme.sweepSpeed * g_settings.style->runnerSpeed * m_sweep.scale;
+    m_clock += seconds;
 
-    // The glow leaves one box and enters another, and so does each dot; nothing else repaints.
+    // The glow leaves one box and enters another, and so does each dot or, in a
+    // glyph style, each character that changes; nothing else repaints.
     const CBox origin = windowBoxGlobal(window);
     CRegion    region;
     for (const double at : {before, after}) {
@@ -560,7 +590,11 @@ CHudDecoration::SSweepStep CHudDecoration::advanceSweep(double seconds) {
         region.add(CRegion(logical.expand(2)));
     }
 
-    if (m_layout) {
+    if (m_layout && m_layout->panel.glyphs.on()) {
+        auto now = glyphsAt(m_layout->panel, m_dotPos, m_clock, m_sweepLevel, m_seed);
+        addGlyphBoxes(region, m_layout->panel, smplhud::glyphChanges(m_glyphs, now), origin, m_sweep.scale);
+        m_glyphs = std::move(now);
+    } else if (m_layout) {
         addRunnerBoxes(region, m_layout->panel, dotsBefore, origin, m_sweep.scale);
         addRunnerBoxes(region, m_layout->panel, m_dotPos, origin, m_sweep.scale);
     }
@@ -620,6 +654,7 @@ void CHudDecoration::draw(PHLMONITOR monitor, const float& a) {
         m_layout    = std::make_shared<const smplhud::Layout>(smplhud::buildLayout(*g_settings.style, params));
         m_layoutKey = key;
         m_sweep.path.reset(); // the path follows the layout
+        m_glyphs.clear();     // and so do the places of the characters
     }
 
     if (!m_layout->valid)
@@ -654,14 +689,24 @@ void CHudDecoration::draw(PHLMONITOR monitor, const float& a) {
     frame.bounds              = grown(local, m_extents, 2);
 
     const float intensity = float(smplhud::sweepIntensity(m_sweepLevel));
+    const bool  glyphs    = m_layout->panel.glyphs.on();
     if (m_sweep.path && intensity > 0.002F) {
         if (!m_sweep.cache)
             m_sweep.cache = std::make_shared<SHudSweepCache>();
         frame.sweep = SHudSweep{m_sweep.path, m_sweep.shape, m_sweep.limit, m_sweep.texel, m_sweep.phase * m_sweep.path->length, m_sweep.cache, intensity};
 
-        frame.runners = smplhud::runnerPoses(m_layout->panel, m_dotPos);
-        for (auto& pose : frame.runners)
-            pose.alpha *= intensity;
+        if (!glyphs) {
+            frame.runners = smplhud::runnerPoses(m_layout->panel, m_dotPos);
+            for (auto& pose : frame.runners)
+                pose.alpha *= intensity;
+        }
+    }
+
+    // The characters are there at rest too, and are worked out from the same
+    // state the steps of the timer compare with.
+    if (glyphs) {
+        frame.glyphs = glyphsAt(m_layout->panel, m_dotPos, m_clock, m_sweepLevel, m_seed);
+        m_glyphs     = frame.glyphs;
     }
 
     g_pHyprRenderer->addPassElement(makeUnique<CHudPassElement>(std::move(frame)));

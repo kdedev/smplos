@@ -24,6 +24,7 @@ PALETTES = {
     "hackerman": "Homebrew",
     "kanagawa": "Kanso Ink",
     "matrix": "Homebrew",
+    "matrix-hud": "Homebrew",
     "matte-black": "Monochrome",
     "neon": "Tokyo Night",
     "nord": "Nord Midnight",

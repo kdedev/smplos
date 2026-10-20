@@ -56,14 +56,15 @@ struct SHudFrame {
     std::array<SHudPaint, 3>               paints; // indexed by smplhud::Paint
     std::optional<SHudSweep>               sweep;
     std::vector<smplhud::RunnerPose>       runners; // one per layout->panel.runners; their opacity already includes the fade with the focus, their glow says how much of the flare goes over them
+    std::vector<smplhud::GlyphDraw>        glyphs;  // the characters of a glyph style, which take the place of the dots; empty for every other style
     float                                  alpha         = 1.F;
     float                                  roundingPower = 1.F;
     CBox                                   window;  // window box, monitor-local physical px
     CBox                                   bounds;  // everything the HUD can touch, monitor-local logical px
 };
 
-// Drops the baked line and dot images a panel style keeps on the GPU, shared by
-// all windows. They are baked again when next needed.
+// Drops the baked line, dot and character images a panel style keeps on the GPU,
+// shared by all windows. They are baked again when next needed.
 void clearHudStamps();
 
 class CHudPassElement : public IPassElement {

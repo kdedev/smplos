@@ -4,7 +4,8 @@ A Hyprland plugin that draws HUD window frames around every window, from the
 active theme: either a chamfered, glowing outline with corner brackets and edge
 tabs (the look of the `neon` theme), or a notched panel outline with circuit
 traces, dots that circle the outline and dots that bounce along the traces (the
-look of `amber-hud`).
+look of `amber-hud`), or that panel with Matrix characters instead of dots
+(the look of `matrix-hud`).
 
 It is a **window decoration inside the compositor's own render pass**. It moves,
 resizes, animates, fades and stacks together with its window, so it never lags
@@ -22,13 +23,14 @@ glow and shadow.
 | `geometry.{hpp,cpp}` | Compositor-free. The **style registry** (`kStyles[]`) and `buildLayout()`, which turns a style plus a window size into a list of concentric border rings and flat fills (ring styles) or a `Panel` of polylines and dots (panel styles), in physical pixels, and the centre line of the outline the travelling glow follows. |
 | `gradient.{hpp,cpp}` | Compositor-free. CPU port of Hyprland's `gradient.glsl`, so flat shapes (edge tabs, the lines of a panel) take the colour the border shader would paint at that point. Keep it in step with the shader. |
 | `sweep.{hpp,cpp}` | Compositor-free. The travelling glow: the outline's centre path (`buildPath` for a rounded rectangle or a polyline, `pointAt`), the sprite rasteriser (`renderSweep`), its bounds, and the speed, tick-rate and fade-in/out maths. |
-| `panel.{hpp,cpp}` | Compositor-free. The notched outline, traces and dots of a `Kind::Panel` style (`buildPanel`), and where each dot is once it has travelled so far and how much it glows (`runnerPoses`). |
-| `stamp.{hpp,cpp}` | Compositor-free. Turns the lines and dots of a panel into small images the compositor can draw as textured quads: cuts a stroke into strips and tiles (`cutStroke`), bakes them (`bakeStrip`, `bakeTile`, `bakeBead`) and gives each a cache key. |
+| `panel.{hpp,cpp}` | Compositor-free. The notched outline, traces and dots of a `Kind::Panel` style (`buildPanel`), where each dot is once it has travelled so far and how much it glows (`runnerPoses`), and, for a glyph style, where the characters stand (`placeGlyphs`) and which are lit and how brightly (`glyphDraws`, `glyphChanges`). |
+| `glyph.{hpp,cpp}` | Compositor-free. The characters of the `matrix` style: sixty half-width katakana, digits and signs, each a few strokes on a 4 × 6 grid, so no font is needed. |
+| `stamp.{hpp,cpp}` | Compositor-free. Turns the lines, dots and characters of a panel into small images the compositor can draw as textured quads: cuts a stroke into strips and tiles (`cutStroke`), bakes them (`bakeStrip`, `bakeTile`, `bakeBead`, `bakeGlyph`) and gives each a cache key. |
 | `theme.{hpp,cpp}` | Compositor-free. Reads the `$themeHud*` variables from the generated `theme.conf`. |
 | `HudDecoration.{hpp,cpp}` | `IHyprWindowDecoration` on every window: reports the HUD's extents, caches the layout, collects the window's live (animated) border and glow gradients and queues a pass element. Owns the one timer that advances the focused window's travelling glow and dots, and decides whose `border_animation` loops keep turning (see "Focus only"). |
-| `HudPassElement.{hpp,cpp}` | Draws the layout with the compositor's border shader and plain rects, or the panel's cached images, then the travelling glow's cached sprite and the dots. |
+| `HudPassElement.{hpp,cpp}` | Draws the layout with the compositor's border shader and plain rects, or the panel's cached images, then the travelling glow's cached sprite and the dots or characters. |
 | `main.cpp` | Plugin entry points: ABI check, event listeners (window open, active window, fullscreen, config reload, tick), cleanup. |
-| `tests/` | Unit tests for the compositor-free parts, and `preview.cpp`, which renders a panel to a PPM image so a look can be judged without a compositor. |
+| `tests/` | Unit tests for the compositor-free parts, and `preview.cpp`, which renders a panel, a matrix frame or the character set to a PPM image so a look can be judged without a compositor. |
 
 ## Theme keys
 
@@ -39,13 +41,13 @@ Hyprland config reload, which `theme-set` triggers. Values are clamped.
 | Variable | `colors.toml` key | Default | Range |
 |----------|-------------------|---------|-------|
 | `$themeHudFrame` | `hud_frame` | `false` | `true` / `false` |
-| `$themeHudStyle` | `hud_style` | `scifi` | a registered style name (`scifi`, `minimal`, `panel`); an unknown one shows a notification and draws nothing |
+| `$themeHudStyle` | `hud_style` | `scifi` | a registered style name (`scifi`, `minimal`, `panel`, `matrix`); an unknown one shows a notification and draws nothing |
 | `$themeHudGap` | `hud_gap` | `5` | 0 to 64 px between window edge and outline |
 | `$themeHudChamfer` | `hud_chamfer` | `10` | 0 to 96 px minimum corner cut |
 | `$themeHudLineWidth` | `hud_line_width` | `3` | 1 to 16 px |
 | `$themeHudFloatGlowRange` | `hud_float_glow_range` | `0` | 0 to 64 px; floating windows' halo reaches at least this far |
-| `$themeHudSweep` | `hud_sweep` | `false` | `true` / `false`; a soft glow drifts along the focused window's outline, and the dots of a `panel` move along its lines |
-| `$themeHudSweepSpeed` | `hud_sweep_speed` | `80` | 10 to 400 px per second (the dots of a `panel` run 1.6 times as fast) |
+| `$themeHudSweep` | `hud_sweep` | `false` | `true` / `false`; a soft glow drifts along the focused window's outline, and the dots of a `panel` or the characters of a `matrix` move along its lines |
+| `$themeHudSweepSpeed` | `hud_sweep_speed` | `80` | 10 to 400 px per second (the dots of a `panel` and the characters of a `matrix` run 1.6 times as fast) |
 | `$themeHudSweepLength` | `hud_sweep_length` | `180` | 40 to 600 px along the line |
 
 Frame and glow colours are not keys of their own: the plugin paints with each
@@ -137,6 +139,7 @@ A style is one entry in `kStyles[]` in `geometry.cpp`; the fields are documented
 | `scifi` | Outline, halos on both sides, corner brackets, mid-edge tabs |
 | `minimal` | Outline and halos only |
 | `panel` | Notched outline with a step, a ghost line and a cut corner, circuit traces ending in beads, two dots circling the outline in opposite directions and a dot bouncing along each trace; the circling dots glow as they near a bouncing dot or each other (`amber-hud`) |
+| `matrix` | The `panel` with Matrix characters where it has dots: a character every few pixels along the lines on a dark plate, slowly pulsing characters at the ends of the traces, and glowing streams of characters raining round the outline in opposite directions and along each trace (`matrix-hud`) |
 
 For the ring styles (`scifi`, `minimal`) the corner shape is not part of the
 style: the outline follows the window's own `rounding` and `rounding_power` at a
@@ -189,7 +192,7 @@ pixels), beads and runners, all in physical px from the window's top-left corner
   and bakes each piece once: a strip is a 2-texel image stretched along its run
   (the GPU's bilinear filter blends the colours of its two ends, so one image
   serves a run of any length), a tile is a bitmap drawn 1:1, a bead a soft round
-  sprite. They are kept on the GPU in a cache shared by all windows (at most 768
+  sprite. They are kept on the GPU in a cache shared by all windows (at most 2048
   images; a full cache is emptied and refilled from the next frame), keyed on
   everything an image depends on, colours rounded to 5 bits a channel. Pieces never
   overlap, and only the frame's damage is painted. A dot that glows is drawn twice,
@@ -203,11 +206,56 @@ pixels), beads and runners, all in physical px from the window's top-left corner
   draws a panel the way the compositor will, without one (arguments at the top of
   `tests/preview.cpp`).
 
+### The `matrix` style
+
+A `matrix` style is a `Kind::Panel` style with `glyphHeight` above 0: the same
+outline, traces and runners as the `panel` style, with characters where the panel
+has dots. `placeGlyphs()` (`panel.cpp`) fills `Panel::glyphs` (a `GlyphFace`:
+character height, stroke weight, halo, pitch, pulse period and plate opacity,
+derived from the style and the scale) and the slots, a `GlyphSlot` every
+`glyphPitch` px along the lines.
+
+- **Characters.** `glyph.cpp` holds sixty half-width katakana, digits and signs,
+  each a few straight strokes on a 4 × 6 grid, mirrored like the film's. Drawing
+  them from strokes, not from a font, keeps the HUD free of a font or text
+  library and every machine rendering the same glyph; `stamp.cpp` bakes them with
+  the same bright core and soft halo as the lines.
+- **Which are lit.** `glyphDraws()` is a pure function of the clock, the runners'
+  poses, how far the window has focus (`intensity`, 0 to 1) and a per-window
+  seed, so the tests and `make preview` can ask for any moment. A bead is a
+  character that breathes (`Style::glyphPeriod`), changes into another one as each
+  breath begins, rests at 55% brightness without focus and lights up when a runner
+  on a trace reaches it. A runner leaves a trail of characters: eight behind one
+  going round, three on each side of one running back and forth, longer and bigger
+  where it glows, the nearest ones overdrawn in the Bright colour and the head
+  changing character about seven times a second. One character in eight along the
+  lines also lights up and fades again by itself, and all of them change
+  character every few seconds. At intensity 0 only the beads are lit.
+- **Plate.** Each character is baked on a soft dark rounded plate
+  (`Style::glyphKnock` is its opacity) that adds alpha only, so the line breaks
+  behind a character instead of striking through it. The Bright overdraw has no
+  plate of its own.
+- **How it is drawn.** A lit character is one textured quad from the shared stamp
+  cache, keyed on the glyph, its alpha and heat step (32 and 8 of them), size,
+  colours and plate; the characters are the most numerous images, which is why the
+  cache holds 2048. They never move: they light up, change and fade where they
+  stand, `glyphChanges()` lists what differs between two moments, and only those
+  characters' boxes are damaged at each tick of the timer that also drives the
+  travelling glow. A theme without `hud_sweep` gets no motion at all, only the
+  still beads.
+- **Preview.** `build/preview matrix 900 560 1 1 0 700 3.0 matrix 1 3 > matrix.ppm`
+  draws a focused frame three seconds into its run, and
+  `build/preview glyphs 4 matrix > glyphs.ppm` every character.
+
+### Adding a style
+
 To add a look:
 
 1. Add an entry to `kStyles[]`. The name is lowercase letters, digits, `-` and `_`
    (what the theme generator accepts) and unique. Setting `bracketLen` / `tabLen`
-   to `0` drops the corner brackets / edge tabs.
+   to `0` drops the corner brackets / edge tabs, and a `Kind::Panel` style with
+   `glyphHeight` above 0 draws characters instead of dots (`glyphPitch`,
+   `glyphPeriod`, `glyphKnock`).
 2. `make test`. The tests walk `allStyles()`, so the new style is checked for a
    valid name, shapes that stay inside the extents the compositor was told about,
    and concentric rings without editing them. Add a test for anything particular
@@ -248,7 +296,7 @@ safe mode, which does not load the user config and with it the `autostart` loade
 ```bash
 make            # build/smpl-hud.so against the installed Hyprland
 make test       # unit tests; plain g++, no Hyprland headers, runs anywhere
-make preview    # build/preview: draws a panel style as a PPM image, no compositor needed
+make preview    # build/preview: draws a panel or matrix style as a PPM image, no compositor needed
 make clean
 ```
 
@@ -274,7 +322,7 @@ session you work in, and load a build by path with
 - It needs room: tiled neighbours' outlines are
   `2 * (gaps_in + border_size) - 2 * hud_gap` apart (see the theme guide), and
   with small gaps the lines and halos touch.
-- A `panel` is a frame, not a window shape: the window itself stays a uniformly
+- A `panel` or `matrix` is a frame, not a window shape: the window itself stays a uniformly
   chamfered rectangle (`rounding`, `rounding_power`), and the notches, the step and
   the bottom-left cut are lines drawn in the margin around it.
 - A theme change applies on the next config reload, not instantly.

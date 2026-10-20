@@ -1,0 +1,42 @@
+# Tide prompt colors for matrix hud (the matrix prompt: same palette)
+# Applied by theme-set -- overrides Tide rainbow defaults
+
+# Core prompt segments
+set -U tide_pwd_bg_color 00FF00
+set -U tide_pwd_color_anchors 000000
+set -U tide_pwd_color_dirs 000000
+set -U tide_pwd_color_truncated_dirs 000000
+
+set -U tide_git_bg_color 22BB55
+set -U tide_git_bg_color_unstable FF9900
+set -U tide_git_bg_color_urgent FF9900
+set -U tide_git_color_branch 000000
+set -U tide_git_color_conflicted 000000
+set -U tide_git_color_dirty 000000
+set -U tide_git_color_operation 000000
+set -U tide_git_color_staged 000000
+set -U tide_git_color_stash 000000
+set -U tide_git_color_untracked 000000
+set -U tide_git_color_upstream 000000
+
+set -U tide_character_color 00FF00
+set -U tide_character_color_failure FF9900
+
+set -U tide_cmd_duration_bg_color FF9900
+set -U tide_cmd_duration_color 000000
+
+set -U tide_status_bg_color 0D1A0D
+set -U tide_status_bg_color_failure FF9900
+set -U tide_status_color 00FF00
+set -U tide_status_color_failure FFCC33
+
+set -U tide_prompt_color_frame_and_connection 339933
+set -U tide_prompt_color_separator_same_color 339933
+
+set -U tide_context_bg_color 0D1A0D
+set -U tide_context_color_default 00FF00
+set -U tide_context_color_root FFCC33
+set -U tide_context_color_ssh 00FF00
+
+set -U tide_jobs_bg_color 0a0f0a
+set -U tide_jobs_color 03A062
