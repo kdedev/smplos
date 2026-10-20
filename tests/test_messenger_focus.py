@@ -207,6 +207,33 @@ class MessengerFocusTests(unittest.TestCase):
         self.assertEqual(json.loads(self.focus_state.read_text())["address"], "0x10")
         self.assertTrue(any(c[0] == "dispatch" and "hl.dsp.exec_cmd" in c[1] for c in self.calls()))
 
+    def fit_calls(self):
+        return [c for c in self.calls() if c[:2] == ["smplhud", "fit"]]
+
+    def test_show_asks_the_hud_plugin_to_fit_the_frame_once_the_window_is_placed(self):
+        self.toggle()
+        calls = self.calls()
+        self.assertEqual(self.fit_calls(), [["smplhud", "fit", "0x20"]])
+        placed = max(i for i, c in enumerate(calls)
+                     if c[0] == "dispatch" and ".window.move(" in c[1] and "x=" in c[1])
+        asked = calls.index(["smplhud", "fit", "0x20"])
+        focused = next(i for i, c in enumerate(calls)
+                       if c[0] == "dispatch" and ".focus(" in c[1] and "address:0x20" in c[1])
+        self.assertLess(placed, asked)
+        self.assertLess(asked, focused)
+
+    def test_only_showing_asks_for_a_fit(self):
+        self.toggle()
+        self.toggle()
+        self.assertEqual(len(self.fit_calls()), 1)
+
+        # A cold launch is placed by the window rules and by the plugin when the window opens.
+        state = self.state()
+        state["clients"] = [w for w in state["clients"] if w["class"] != "signal"]
+        self.save(state)
+        self.toggle()
+        self.assertEqual(len(self.fit_calls()), 1)
+
     def add_stashed_browser(self):
         state = self.state()
         state["clients"].append({

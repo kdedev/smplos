@@ -29,11 +29,11 @@ it has no border line at all.
 | `panel.{hpp,cpp}` | Compositor-free. The notched outline of a `Kind::Panel` style (`buildPanel`) and, for `amber-hud`, its traces and dots: where each dot is once it has travelled so far and how much it glows (`runnerPoses`). For the `matrix` style, the columns the characters fall in (`RainLane`), which characters are lit and how brightly (`glyphDraws`, `glyphChanges`), and where each lamp is, how long and how strong (`lampPose`). |
 | `glyph.{hpp,cpp}` | Compositor-free. The characters of the `matrix` style: sixty half-width katakana, digits and signs, each a few strokes on a 4 × 6 grid, so no font is needed. |
 | `stamp.{hpp,cpp}` | Compositor-free. Turns the lines, dots and characters of a panel into small images the compositor can draw as textured quads: cuts a stroke into strips and tiles (`cutStroke`), bakes them (`bakeStrip`, `bakeTile`, `bakeBead`, `bakeGlyph`) and gives each a cache key. |
-| `place.{hpp,cpp}` | Compositor-free. `fitWithFrame()`: where the box of a floating window has to go so that its whole frame stays inside a monitor's usable area. It moves the box in from the edges and shrinks it only when it cannot fit. The compositor side is `placeHudWindow()` (see "Floating windows"). |
+| `place.{hpp,cpp}` | Compositor-free. `fitWithFrame()`: where the box of a floating window has to go so that its whole frame stays inside a monitor's usable area. It moves the box in from the edges and shrinks it only when it cannot fit. `parseFitRequest()` reads the window address out of a `hyprctl smplhud fit` request. The compositor side is `placeHudWindow()` and `runHudCommand()` (see "Floating windows"). |
 | `theme.{hpp,cpp}` | Compositor-free. Reads the `$themeHud*` variables from the generated `theme.conf`. |
 | `HudDecoration.{hpp,cpp}` | `IHyprWindowDecoration` on every window: reports the HUD's extents, caches the layout, collects the window's live (animated) border and glow gradients and queues a pass element. Owns the one timer that advances the focused window's travelling glow, dots, lamps and falling characters, and decides whose `border_animation` loops keep turning (see "Focus only"). Also keeps floating windows' frames on screen (see "Floating windows"). |
 | `HudPassElement.{hpp,cpp}` | Draws the layout with the compositor's border shader and plain rects, or the panel's cached images, then the travelling glow's (or each lamp's) cached sprite and the dots or characters. |
-| `main.cpp` | Plugin entry points: ABI check, event listeners (window open, floating, moved to another workspace, active window, fullscreen, config reload, tick), cleanup. |
+| `main.cpp` | Plugin entry points: ABI check, event listeners (window open, floating, moved to another workspace, active window, fullscreen, config reload, tick), the `hyprctl smplhud` command, cleanup. |
 | `tests/` | Unit tests for the compositor-free parts, and `preview.cpp`, which renders a panel, a matrix frame or the character set to a PPM image so a look can be judged without a compositor. |
 
 ## Theme keys
@@ -99,6 +99,14 @@ frame, and the halo with it, beyond the screen. `placeHudWindow()` in
 - after it is moved to another workspace or monitor (`window.moveToWorkspace`).
   The compositor does its own placement after it sends that event, so the plugin
   runs once that is done (`placeHudWindowLater()`),
+- on request: `hyprctl smplhud fit <window address>` (`runHudCommand()`). The
+  compositor sends nothing when a window is put at a position, so a script that
+  does that asks for the fit once it is done. `toggle-messenger` does: it brings
+  its window back from the hidden workspace and pins it 2 px from the monitor's
+  right edge and 34 px above its bottom, inside the frame's reach, and then asks.
+  The reply is `ok`, `no such window` or a usage line. The request changes nothing
+  for a window that already fits and for a theme without a frame, and without the
+  plugin hyprctl answers `unknown request`, which a script can ignore,
 - for every open window when the frame's extent changes, which is when the plugin
   loads or a theme change makes the frame wider. A config reload that keeps the
   extent changes nothing.

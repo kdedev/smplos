@@ -241,7 +241,9 @@ stops and an optional angle, e.g. `"rgba(00f0ffb0) rgba(2f7bff80) 45deg"`.
   keeps them on screen itself: when one opens, becomes floating or moves to
   another workspace or monitor, it is moved in from the monitor's edge by the
   frame's reach, and made smaller only if it cannot fit (a window you move or
-  resize yourself stays where you put it).
+  resize yourself stays where you put it). A script that puts a window at a
+  position of its own, as the messenger toggle does, asks for the same with
+  `hyprctl smplhud fit <window address>` once it is done.
 - `hud_sweep = "true"` adds a soft glow that drifts along the focused window's
   outline, in the outline's own colors, fading in over half a second when a
   window gets focus and out when it loses it. It is one small sprite, rebuilt

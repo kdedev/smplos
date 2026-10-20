@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <stdexcept>
+#include <utility>
 #include <vector>
 
 #include <hyprland/src/Compositor.hpp>
@@ -22,6 +23,7 @@ APICALL EXPORT std::string PLUGIN_API_VERSION() {
 
 namespace {
     std::vector<CHyprSignalListener> g_listeners;
+    SP<SHyprCtlCommand>              g_command;
 
     void decorate(const PHLWINDOW& window) {
         if (!window || !window->m_isMapped)
@@ -73,10 +75,18 @@ APICALL EXPORT PLUGIN_DESCRIPTION_INFO PLUGIN_INIT(HANDLE handle) {
         decorate(window);
     syncHudFocus(true);
 
+    SHyprCtlCommand command;
+    command.name  = "smplhud";
+    command.exact = false; // the verb and its argument follow the name
+    command.fn    = [](eHyprCtlOutputFormat, std::string request) { return runHudCommand(request); };
+    g_command     = HyprlandAPI::registerHyprCtlCommand(PHANDLE, command);
+
     return {"smpl-hud", "HUD frames around windows, drawn in the compositor from the active theme", "smplOS", "1.0"};
 }
 
 APICALL EXPORT void PLUGIN_EXIT() {
+    if (g_command)
+        HyprlandAPI::unregisterHyprCtlCommand(PHANDLE, std::exchange(g_command, nullptr));
     g_listeners.clear();
     stopHudSweep();
     stopHudPlacement();

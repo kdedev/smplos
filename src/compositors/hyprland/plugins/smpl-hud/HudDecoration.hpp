@@ -76,6 +76,14 @@ void placeHudWindowLater(const PHLWINDOW& window);
 // Drops the placements still waiting; the plugin is unloading.
 void stopHudPlacement();
 
+// The plugin's `hyprctl smplhud` command: `fit <address>` places that window
+// now, as when it opens. The compositor tells nobody when a script puts a
+// window somewhere by hand (the messenger toggle moves its window into the
+// corner of the monitor, beyond where the frame has room), so such a script
+// asks for the placement once it is done. The reply is what hyprctl prints;
+// it is never empty, or the compositor answers "unknown request".
+std::string runHudCommand(const std::string& request);
+
 // A window decoration that paints the HUD in the compositor's own render pass,
 // with the window's live animated geometry, so it can never lag behind it and
 // sits in the right place in the window stack. It takes no input.

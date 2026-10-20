@@ -158,6 +158,46 @@ void testFractionalMonitor() {
     CHECK_NEAR(box.y + box.h + 33, area.h, 1e-9);
 }
 
+void testFitRequestTakesTheAddress() {
+    const auto address = parseFitRequest("smplhud fit 0x55d0c2a4b3f0");
+    CHECK(address.has_value());
+    CHECK(address == uintptr_t(0x55d0c2a4b3f0ULL));
+
+    // as the address is printed by `hyprctl clients`, or without its 0x
+    CHECK(parseFitRequest("smplhud fit 0X1F") == std::optional<uintptr_t>(0x1f));
+    CHECK(parseFitRequest("smplhud fit 1f") == std::optional<uintptr_t>(0x1f));
+    CHECK(parseFitRequest("smplhud fit 0xABCdef") == std::optional<uintptr_t>(0xabcdef));
+
+    // spacing, and the newline a request can end with
+    CHECK(parseFitRequest("  smplhud \t fit   0x2a \n") == std::optional<uintptr_t>(0x2a));
+}
+
+void testFitRequestRefusesAnythingElse() {
+    CHECK(!parseFitRequest(""));
+    CHECK(!parseFitRequest("smplhud"));
+    CHECK(!parseFitRequest("smplhud fit"));
+    CHECK(!parseFitRequest("smplhud fit 0x"));
+    CHECK(!parseFitRequest("smplhud fit 0"));
+    CHECK(!parseFitRequest("smplhud fit 0x0"));
+    CHECK(!parseFitRequest("smplhud fit 0xzz"));
+    CHECK(!parseFitRequest("smplhud fit 12g4"));
+    CHECK(!parseFitRequest("smplhud fit -0x1"));
+    CHECK(!parseFitRequest("smplhud fit +0x1"));
+    CHECK(!parseFitRequest("smplhud fit address:0x1"));
+    CHECK(!parseFitRequest("smplhud fit 0x1 0x2"));
+    CHECK(!parseFitRequest("smplhud fit 0x1 extra"));
+    CHECK(!parseFitRequest("smplhud fits 0x1"));
+    CHECK(!parseFitRequest("smplhud0x1 fit 0x1"));
+    CHECK(!parseFitRequest("smplhudx fit 0x1"));
+    CHECK(!parseFitRequest("hud fit 0x1"));
+    CHECK(!parseFitRequest("fit 0x1"));
+    CHECK(!parseFitRequest("smplhud 0x1"));
+
+    // wider than an address
+    CHECK(!parseFitRequest("smplhud fit 0x10000000000000000"));
+    CHECK(!parseFitRequest("smplhud fit 0xffffffffffffffffff"));
+}
+
 } // namespace
 
 int main() {
@@ -172,5 +212,7 @@ int main() {
     testDegenerateBoxIsUntouched();
     testPropertiesOverManyBoxes();
     testFractionalMonitor();
+    testFitRequestTakesTheAddress();
+    testFitRequestRefusesAnythingElse();
     return finish("test_place");
 }

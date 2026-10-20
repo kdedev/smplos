@@ -386,6 +386,21 @@ void stopHudPlacement() {
     g_placeQueue.clear();
 }
 
+std::string runHudCommand(const std::string& request) {
+    const auto address = smplhud::parseFitRequest(request);
+    if (!address)
+        return "usage: hyprctl smplhud fit <window address>";
+
+    for (const auto& window : Desktop::windowState()->windows()) {
+        if (reinterpret_cast<uintptr_t>(window.get()) != *address)
+            continue;
+
+        placeHudWindow(window);
+        return "ok";
+    }
+    return "no such window";
+}
+
 void setHudTheme(const smplhud::Theme& theme) {
     for (auto* deco : g_decorations)
         deco->damageEntire();
