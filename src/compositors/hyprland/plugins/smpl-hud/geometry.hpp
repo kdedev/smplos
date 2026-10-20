@@ -137,6 +137,8 @@ struct Params {
     double floatGlowRange = 14;
     double sweepLength    = 180; // logical px: how long a lamp is at most, which decides how many fit on an edge
     double sideOpacity    = 1;   // 0..1: how visible the outline of a panel style is down its left and right sides (1: as everywhere else); the corners fade between a side and an edge
+    double edgeOpacity    = 1;   // 0..1: the same along its top and bottom edge
+    double underglow      = 0;   // 0..1: how bright a glow is that lies along the top and the bottom edge and fades out away from the window, as if it shone from under it; 0 has none
 };
 
 // The rounded rectangle through the middle of the line: the track the sweep
@@ -185,7 +187,7 @@ struct TilePiece {
 struct Stroke {
     std::vector<Vertex> pts;
     bool                closed = false;
-    float               alpha  = 1.f; // overall opacity of the line
+    float               alpha  = 1.f; // overall opacity of the line; 0 for a glow with no line
     Paint               core   = Paint::Line;
     Paint               halo   = Paint::Glow;
     double              halfWidth = 1; // half the line's thickness, px
@@ -262,7 +264,7 @@ struct Lamp {
 };
 
 struct Panel {
-    std::vector<Stroke> strokes; // strokes[0] is the closed outline round the window
+    std::vector<Stroke> strokes; // strokes[0] is the closed outline round the window; the underglow, if any, is the last two: glows with no line along its top and its bottom edge
     std::vector<Bead>   beads;   // dots that stay where they are
     std::vector<Runner> runners;
 

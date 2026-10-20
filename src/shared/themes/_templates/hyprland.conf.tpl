@@ -41,3 +41,5 @@ $themeHudSweepLength = {{ hud_sweep_length }}
 $themeHudHideBorder = {{ hud_hide_border_flag }}
 $themeHudGlyphColor = {{ hud_glyph_color }}
 $themeHudSideOpacity = {{ hud_side_opacity }}
+$themeHudEdgeOpacity = {{ hud_edge_opacity }}
+$themeHudUnderglow = {{ hud_underglow }}

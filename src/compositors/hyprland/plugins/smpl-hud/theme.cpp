@@ -93,6 +93,10 @@ void apply(Theme& t, std::string_view key, std::string_view value) {
         parseBool(value, t.hideBorder);
     else if (key == "themeHudSideOpacity")
         parseNumber(value, 0, 1, t.sideOpacity);
+    else if (key == "themeHudEdgeOpacity")
+        parseNumber(value, 0, 1, t.edgeOpacity);
+    else if (key == "themeHudUnderglow")
+        parseNumber(value, 0, 1, t.underglow);
     else if (key == "themeHudGlyphColor") {
         if (Rgb8 colour; parseColour(value, colour))
             t.glyphColour = colour;

@@ -28,6 +28,8 @@ struct Theme {
     double      sweepLength    = 180;   // $themeHudSweepLength, logical px along the line
     bool        hideBorder     = false; // $themeHudHideBorder, Hyprland's own border is off so the frame is the only line
     double      sideOpacity    = 1;     // $themeHudSideOpacity, 0..1: how visible the outline of a panel style is down its left and right sides; 1 draws them like the rest
+    double      edgeOpacity    = 1;     // $themeHudEdgeOpacity, 0..1: the same along its top and bottom edge
+    double      underglow      = 0;     // $themeHudUnderglow, 0..1: a glow along the top and bottom edge that seems to shine from under the window; 0 has none
     std::optional<Rgb8> glyphColour;    // $themeHudGlyphColor, `rgb(rrggbb)`: the colour of the characters of a glyph style; `none` or absent leaves them the colours of the line
 
     bool operator==(const Theme&) const = default;

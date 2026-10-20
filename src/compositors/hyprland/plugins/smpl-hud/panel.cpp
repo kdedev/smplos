@@ -111,6 +111,9 @@ constexpr double kLampDim          = 0.35; // how strong it is at the bottom of 
 constexpr int    kLampLengthSteps  = 6;
 constexpr int    kLampStrengthSteps = 12;
 
+// How far the underglow takes to die away towards the corners of the window, as a multiple of its reach.
+constexpr double kUnderglowTaper = 1.5;
+
 // The rectangle the outline follows, and the sizes that shape it.
 struct Frame {
     double s    = 1;
@@ -398,10 +401,10 @@ bool onSide(const Vertex& v, const Frame& f) {
     return v.x == f.left || v.x == f.right;
 }
 
-// The track the lamps follow: the outline, dark where it runs down a side, so
-// that no glow runs where the characters fall. The corners between a side and
-// an edge fade the glow out.
-std::vector<Vertex> lampTrack(std::vector<Vertex> pts, const Frame& f) {
+// The outline with its sides masked out: what runs along the top and the bottom edge,
+// for the lamps to follow, so that none of them goes where the characters fall. The
+// corners between a side and an edge fade the glow out.
+std::vector<Vertex> edgeTrack(std::vector<Vertex> pts, const Frame& f) {
     for (Vertex& v : pts) {
         if (onSide(v, f))
             v.alpha = 0.f;
@@ -409,15 +412,24 @@ std::vector<Vertex> lampTrack(std::vector<Vertex> pts, const Frame& f) {
     return pts;
 }
 
-// The outline as visible down its sides as `opacity` says, the glow beside the line
-// with it, so that whatever runs down them stands out. The corners between a side
-// and an edge fade from one to the other.
-std::vector<Vertex> dimSides(std::vector<Vertex> pts, const Frame& f, double opacity) {
-    for (Vertex& v : pts) {
-        if (onSide(v, f))
-            v.alpha *= float(std::clamp(opacity, 0.0, 1.0));
-    }
+// The outline as visible as the theme says, the glow beside the line with it: `side`
+// down its left and right sides, `edge` along the top and the bottom. The corners
+// between a side and an edge fade from one to the other.
+std::vector<Vertex> dimOutline(std::vector<Vertex> pts, const Frame& f, double side, double edge) {
+    for (Vertex& v : pts)
+        v.alpha *= float(std::clamp(onSide(v, f) ? side : edge, 0.0, 1.0));
     return pts;
+}
+
+// A glow with no line to it along the window's own edge `y`, which is not where the outline is: it
+// stands off from the window, and the light is to come from under the window. It is strongest
+// between the corners and dies away over `taper` towards them, where the characters fall.
+std::vector<Vertex> underglowRun(double width, double y, double taper) {
+    const double half = width / 2.0;
+    taper             = std::max(std::round(taper), 1.0); // whole px, so that no run of it is shorter than one
+    if (taper >= half)
+        return {{0, y, 0.f}, {half, y, 1.f}, {width, y, 0.f}};
+    return {{0, y, 0.f}, {taper, y, 1.f}, {width - taper, y, 1.f}, {width, y, 0.f}};
 }
 
 // The lamps of the top and the bottom edge, going to and fro between the first
@@ -426,7 +438,7 @@ void placeLamps(const Style& style, const Params& p, const Frame& f, std::vector
     if (style.lamps <= 0)
         return;
 
-    panel.track = lampTrack(std::move(outline), f);
+    panel.track = edgeTrack(std::move(outline), f);
     std::vector<double> at(panel.track.size(), 0.0); // px along the track at each vertex
     for (size_t i = 1; i < at.size(); ++i)
         at[i] = at[i - 1] + std::hypot(panel.track[i].x - panel.track[i - 1].x, panel.track[i].y - panel.track[i - 1].y);
@@ -478,7 +490,7 @@ void buildPanel(const Style& style, const Params& p, Layout& out) {
     Panel& panel = out.panel;
     panel        = {};
     std::vector<Vertex> outline = f.fancy ? fancyOutline(f, cuts) : plainOutline(f);
-    panel.strokes.push_back(stroke(dimSides(outline, f, p.sideOpacity), true, style.lineAlpha, reach, halo));
+    panel.strokes.push_back(stroke(dimOutline(outline, f, p.sideOpacity, p.edgeOpacity), true, style.lineAlpha, reach, halo));
 
     // Beads sit at the ends of the traces; dots travel along the outline and the traces.
     Bead bead;
@@ -528,6 +540,15 @@ void buildPanel(const Style& style, const Params& p, Layout& out) {
         add(stepTrace(f, cuts, t));
         t = {};
         add(cornerTrace(f, cuts, t));
+    }
+
+    // Last, so that the runners, which name their strokes by place, find the ones they run on: a glow
+    // with no line, as far out as the outline's own, along the window's top and bottom edge, whatever
+    // the outline itself is like. One too faint to see has no stroke at all.
+    const double underglow = std::clamp(p.underglow * boost, 0.0, 1.0);
+    if (underglow >= kInvisible && reach > 0) {
+        for (const double y : {f.snap(0), f.snap(p.height)})
+            panel.strokes.push_back(stroke(underglowRun(p.width, y, kUnderglowTaper * reach), false, 0.0, reach, underglow));
     }
 
     // Room for the outline, the traces, the beads and the characters, whatever the window size.

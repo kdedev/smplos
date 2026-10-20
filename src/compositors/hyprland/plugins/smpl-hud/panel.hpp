@@ -16,7 +16,9 @@
 //    other one comes close.
 //
 //  - Matrix: the outline alone, standing on the window's edge and as faint down its two
-//    sides as the theme says (sideOpacity), so that what falls there stands out. Heads of
+//    sides and along its top and bottom as the theme says (sideOpacity, edgeOpacity), so
+//    that what falls and glows there stands out, with a glow of its own along the top and
+//    the bottom, close to the window, as if it shone from under it (underglow). Heads of
 //    falling characters glide down both straight sides, in three columns a side: the
 //    first on the line itself, as if they slid along it, the others beyond it,
 //    inside its glow, each smaller, dimmer and slower than the one before, so that

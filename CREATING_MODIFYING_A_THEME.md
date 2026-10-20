@@ -167,7 +167,7 @@ Most themes never need overrides. Use `term_N` only when a terminal slot should 
 
 - **Decoration**: `rounding`, `app_rounding` (optional), `blur_size`, `blur_passes`, `opacity_active`, `opacity_inactive`, `app_background_opacity`, `term_opacity_active`, `term_opacity_inactive`, `popup_opacity`, `messenger_opacity`, `browser_opacity`
 - **Layout**: `gaps_in`, `gaps_out`, `border_size`, `border_active` (optional), `border_inactive` (optional)
-- **Effects** (optional, Hyprland only): `rounding_power`, `shadow_range`, `shadow_render_power`, `shadow_color`, `shadow_color_inactive`, `glow`, `glow_range`, `glow_render_power`, `glow_color`, `glow_color_inactive`, `border_animation`, `hud_frame`, `hud_hide_border`, `hud_style`, `hud_gap`, `hud_chamfer`, `hud_line_width`, `hud_float_glow_range`, `hud_sweep`, `hud_sweep_speed`, `hud_sweep_length`, `hud_glyph_color`, `hud_side_opacity`
+- **Effects** (optional, Hyprland only): `rounding_power`, `shadow_range`, `shadow_render_power`, `shadow_color`, `shadow_color_inactive`, `glow`, `glow_range`, `glow_render_power`, `glow_color`, `glow_color_inactive`, `border_animation`, `hud_frame`, `hud_hide_border`, `hud_style`, `hud_gap`, `hud_chamfer`, `hud_line_width`, `hud_float_glow_range`, `hud_sweep`, `hud_sweep_speed`, `hud_sweep_length`, `hud_glyph_color`, `hud_side_opacity`, `hud_edge_opacity`, `hud_underglow`
 - **App selectors**: `app_theme_nvim`, `app_theme_vscode`
 
 Example:
@@ -201,7 +201,9 @@ unchanged. niri and other compositors ignore them.
 | `hud_sweep` | `"false"` | `"true"` or `"false"` only; a soft glow drifts slowly along the focused window's outline, in the outline's own colors, and fades in and out as focus moves. In the `panel` style it also sets the dots moving along the lines, in the `matrix` style the falling characters and the drifting glows |
 | `hud_sweep_speed`, `hud_sweep_length` | `"80"`, `"180"` | Integers: speed in px per second (10 to 400; the dots of a `panel` run 1.6 times as fast and the characters of a `matrix` fall 0.6 times as fast) and length along the line in px (40 to 600; the longest a glow of a `matrix` gets, which also decides how many fit on an edge). Keep the speed low: it reads as light moving along the frame, not as a spinner (Neon: `"70"`, a lap takes tens of seconds) |
 | `hud_glyph_color` | `"none"` | `"rgb(rrggbb)"` (hex digits, no `#`) or `"none"`: the colour of the characters of a glyph style such as `matrix`, for the falling rain, and of its lamps, with the heads and the glow of the characters derived from it (the heads are the same colour lightened). `"none"` gives them the colours of the outline and its glow. `matrix-hud` uses `"rgb(3cff28)"`, hue 114°, a yellower green than its teal outline, like the film's code. Styles without characters ignore it |
-| `hud_side_opacity` | `"1"` | Decimal from `"0"` to `"1"`: how visible the outline of a `panel` or `matrix` frame is down its left and right sides, its halo beside it with it; the corners fade between that and the full line of the top and the bottom. Dim it where characters fall so that they stand out: `matrix-hud` uses `"0.1"`, almost unseen, and `"0"` draws no line there at all. `"1"` is as strong as the rest. The ring styles ignore it |
+| `hud_side_opacity` | `"1"` | Decimal from `"0"` to `"1"`: how visible the outline of a `panel` or `matrix` frame is down its left and right sides, its halo beside it with it; the corners fade between that and the top and the bottom edge's (`hud_edge_opacity`). Dim it where characters fall so that they stand out: `matrix-hud` uses `"0.1"`, almost unseen, and `"0"` draws no line there at all. `"1"` is as strong as the rest. The ring styles ignore it |
+| `hud_edge_opacity` | `"1"` | Decimal from `"0"` to `"1"`: the same along the top and the bottom edge of a `panel` or `matrix` frame. `"1"` is the full line; `matrix-hud` uses `"0.1"`, as dark as its sides, and `"0"` draws no line there at all (the lamps of a `matrix` and the underglow are not dimmed by it). The ring styles ignore it |
+| `hud_underglow` | `"0"` | Decimal from `"0"` to `"1"`: how bright a glow with no line is along the window's own top and bottom edge, fading out away from it, as if the light shone from under the window (an opaque window hides the half of it that lies under it, a see-through one shows it). `matrix-hud` uses `"0.3"`; `"0"` has none. The ring styles ignore it |
 
 Gradients use the same syntax as `border_active`: one or more `rgba(rrggbbaa)`
 stops and an optional angle, e.g. `"rgba(00f0ffb0) rgba(2f7bff80) 45deg"`.
@@ -315,11 +317,16 @@ stops and an optional angle, e.g. `"rgba(00f0ffb0) rgba(2f7bff80) 45deg"`.
   with a green of hue 114° (`"rgb(3cff28)"`), yellower than its teal outline, like
   the film's code; without it they take the outline's and the glow's colours.
   `hud_side_opacity` is how visible the line is down the two sides where they fall
-  (`matrix-hud`: `"0.1"`, almost unseen, so the characters dominate there; the top
-  and the bottom keep the full line and the corners fade between the two); `"1"`,
-  the default, keeps the whole line.
+  and `hud_edge_opacity` how visible it is along the top and the bottom
+  (`matrix-hud`: `"0.1"` for both, almost unseen, so that the characters and the
+  lamps are what the eye sees; the corners fade between the two); `"1"`, the
+  default, keeps the whole line. `hud_underglow` puts light back along the window's
+  own top and bottom edge, a soft glow with no line that fades out away from it, as
+  if it shone from under the window (`matrix-hud`: `"0.3"`; `"0"`, the default, has
+  none). An opaque window hides the half of it that lies under it and a
+  see-through one shows it.
   Along the top and the bottom up to two ellipses of light per edge (the lamps)
-  drift slowly to and fro and pulse, also inside the glow, in the colour of the
+  drift slowly to and fro and pulse, in the colour of the
   characters. Only the focused window moves, and `hud_sweep = "true"` drives all
   of it (`"false"` leaves the outline and its halo); keep
   `border_animation = "false"`. The three columns reach about 13 px from the

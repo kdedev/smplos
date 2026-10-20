@@ -99,7 +99,7 @@ void drawReference(const Stroke& s, const Tone& t, Canvas& cv) {
             for (size_t i = 0; i < count; ++i) {
                 const Vertex& a = s.pts[i];
                 const Vertex& b = s.pts[(i + 1) % n];
-                if (s.alpha * std::max(a.alpha, b.alpha) < kInvisible)
+                if (std::max(s.alpha, s.haloAlpha) * std::max(a.alpha, b.alpha) < kInvisible) // a glow with no line is seen by its halo
                     continue;
                 const double dx = b.x - a.x, dy = b.y - a.y, len2 = dx * dx + dy * dy;
                 const double f  = len2 > 0 ? std::clamp(((px - a.x) * dx + (py - a.y) * dy) / len2, 0.0, 1.0) : 0.0;
@@ -144,6 +144,8 @@ const std::vector<Fixture>& fixtures() {
         {"open with a fade", {{10, 20, 1.f}, {110, 20, 1.f}, {210, 20, 0.2f}, {210, 90, 0.2f}}, false, 1.f, 0.5f, 3},
         {"dim trace", {{10, 40}, {60, 40}, {110, 90}, {110, 160}}, false, 0.55f, 0.5f, 3},
         {"vertical then diagonal", {{40, 10}, {40, 90}, {100, 150}, {180, 150}}, false, 1.f, 0.5f, 3},
+        {"glow with no line", {{20, 30, 0.f}, {60, 30}, {160, 30}, {200, 30, 0.f}}, false, 0.f, 0.6f, 3},
+        {"glow with no line, round a corner", {{20, 30}, {100, 30}, {140, 70}, {140, 120}}, false, 0.f, 0.5f, 3},
     };
     return list;
 }
@@ -268,6 +270,23 @@ void testNothingToDraw() {
     cutStroke(s);
     CHECK(s.strips.empty() && s.tiles.empty());
 
+    // a glow with no line is seen by its glow alone, unless that is too faint to see
+    s.alpha     = 0.f;
+    s.haloAlpha = 0.5f;
+    s.pts       = {{5, 5}, {50, 5}, {50, 50}};
+    cutStroke(s);
+    CHECK(!s.strips.empty() && !s.tiles.empty());
+
+    s.haloAlpha = 0.001f;
+    cutStroke(s);
+    CHECK(s.strips.empty() && s.tiles.empty());
+
+    s.haloAlpha = 0.f;
+    s.alpha     = 1.f;
+    s.pts       = {{5, 5, 0.f}, {50, 5, 0.f}, {50, 50, 0.f}};
+    cutStroke(s);
+    CHECK(s.strips.empty() && s.tiles.empty());
+
     // a zero length segment does not crash
     s.pts = {{5, 5}, {5, 5}, {50, 5}};
     cutStroke(s);
@@ -275,23 +294,25 @@ void testNothingToDraw() {
 }
 
 void testInvisibleStretchesDrawNothing() {
-    // Two visible runs with an invisible one between them
-    Stroke s;
-    s.halfWidth = 1;
-    s.reach     = 6;
-    s.alpha     = 1.f;
-    s.haloAlpha = 0.5f;
-    s.pts       = {{10, 10}, {80, 10}, {80, 10, 0.f}, {160, 10, 0.f}, {160, 10}, {230, 10}};
-    cutStroke(s);
-    CHECK(!s.strips.empty());
-    const int room = roomAround(1, 6);
-    for (const StripPiece& sp : s.strips) {
-        // nothing is drawn over the hidden middle, except the cap tiles' reach
-        CHECK(sp.box.x + sp.box.w <= 80 + 1 || sp.box.x >= 160 - 1 || sp.alphaA > 0.f);
-        CHECK(!(sp.box.x < 80 + 2 && sp.box.x + sp.box.w > 160 - 2));
+    // Two visible runs with an invisible one between them, drawn with a line and its glow and by a glow alone
+    for (const float alpha : {1.f, 0.f}) {
+        Stroke s;
+        s.halfWidth = 1;
+        s.reach     = 6;
+        s.alpha     = alpha;
+        s.haloAlpha = 0.5f;
+        s.pts       = {{10, 10}, {80, 10}, {80, 10, 0.f}, {160, 10, 0.f}, {160, 10}, {230, 10}};
+        cutStroke(s);
+        CHECK(!s.strips.empty());
+        const int room = roomAround(1, 6);
+        for (const StripPiece& sp : s.strips) {
+            // nothing is drawn over the hidden middle, except the cap tiles' reach
+            CHECK(sp.box.x + sp.box.w <= 80 + 1 || sp.box.x >= 160 - 1 || sp.alphaA > 0.f);
+            CHECK(!(sp.box.x < 80 + 2 && sp.box.x + sp.box.w > 160 - 2));
+        }
+        for (const TilePiece& t : s.tiles)
+            CHECK(!(t.box.x < 80 - room && t.box.x + t.box.w > 160 + room));
     }
-    for (const TilePiece& t : s.tiles)
-        CHECK(!(t.box.x < 80 - room && t.box.x + t.box.w > 160 + room));
 }
 
 void testStrokeLengthAndPoints() {

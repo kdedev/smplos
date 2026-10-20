@@ -131,8 +131,13 @@ border_animation = "false"
 # the heads are the same green lightened. none gives them the colours of the line.
 # hud_side_opacity is how visible the outline is down the left and right edges, where
 # the characters fall: 0.1 leaves it almost unseen so that they dominate there, and
-# the corners fade between that and the full line along the top and the bottom. The
+# the corners fade between that and the line along the top and the bottom. The
 # halo beside it fades with it. 1 would bring the whole line back.
+# hud_edge_opacity is the same along the top and the bottom: 0.1 draws that line as
+# dark as the sides, and the lamps and the glow still pulse on it.
+# hud_underglow is a glow along the window's own top and bottom edge, with no line to
+# it, as if light spilled from under the window. It is seen beyond the window's edge
+# and, through the windows that are translucent, under it too. 0 has none.
 # hud_sweep_length is how long an ellipse is at most, which decides how many fit
 # on an edge (two at most).
 # hud_gap is how far the outline stands off the window; 3 is as close as a 2 px
@@ -150,6 +155,8 @@ hud_sweep_speed = "60"
 hud_sweep_length = "180"
 hud_glyph_color = "rgb(3cff28)"
 hud_side_opacity = "0.1"
+hud_edge_opacity = "0.1"
+hud_underglow = "0.3"
 
 # -- App Theme Selectors --
 app_theme_nvim = "matrix"

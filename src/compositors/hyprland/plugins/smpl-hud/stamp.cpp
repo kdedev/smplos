@@ -89,12 +89,17 @@ bool continues(const Vertex& a, const Vertex& b, const Vertex& c) {
     return std::fabs(cross) < 1e-6 * std::hypot(ux, uy) * std::hypot(vx, vy) && dot > 0;
 }
 
+// How opaque a stroke is where it is clearest: its line or, if it has none, its glow.
+float peak(const Stroke& stroke) {
+    return std::max(stroke.alpha, stroke.haloAlpha);
+}
+
 bool segmentVisible(const Stroke& stroke, const Vertex& a, const Vertex& b) {
-    return stroke.alpha * std::max(a.alpha, b.alpha) >= kInvisible;
+    return peak(stroke) * std::max(a.alpha, b.alpha) >= kInvisible;
 }
 
 bool endVisible(const Stroke& stroke, const Vertex& v) {
-    return stroke.alpha * v.alpha >= kInvisible;
+    return peak(stroke) * v.alpha >= kInvisible;
 }
 
 // A stretch of a stroke that can be seen.
@@ -301,7 +306,7 @@ void addStrips(Stroke& stroke, const Vertex& a, const Vertex& b, int reach, cons
         strip.b        = flat ? Vec2{double(piece.x1), c} : Vec2{c, double(piece.y1)};
         strip.alphaA   = opacity(flat ? piece.x0 : piece.y0);
         strip.alphaB   = opacity(flat ? piece.x1 : piece.y1);
-        if (stroke.alpha * std::max(strip.alphaA, strip.alphaB) < kInvisible)
+        if (peak(stroke) * std::max(strip.alphaA, strip.alphaB) < kInvisible)
             continue;
         stroke.strips.push_back(strip);
     }

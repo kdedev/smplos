@@ -70,8 +70,9 @@ bool half(double v) {
     return std::fabs(v - std::floor(v) - 0.5) < 1e-9;
 }
 
+// A glow with no line (the underglow) is seen by its halo.
 bool visible(const Stroke& s, const Vertex& a, const Vertex& b) {
-    return s.alpha * std::max(a.alpha, b.alpha) >= kInvisible;
+    return std::max(s.alpha, s.haloAlpha) * std::max(a.alpha, b.alpha) >= kInvisible;
 }
 
 // Calls fn(a, b) for every segment, including the closing one of a closed stroke.
@@ -200,7 +201,8 @@ void checkLayout(const Layout& lay, const Params& p) {
 
     for (const Stroke& st : lay.panel.strokes) {
         CHECK_NEAR(st.halfWidth, outline.halfWidth, 1e-9);
-        CHECK(st.reach >= 0 && st.haloAlpha >= 0 && st.haloAlpha <= 1 && st.alpha > 0 && st.alpha <= 1);
+        CHECK(st.reach >= 0 && st.haloAlpha >= 0 && st.haloAlpha <= 1 && st.alpha >= 0 && st.alpha <= 1);
+        CHECK(st.alpha > 0 || (!st.closed && st.haloAlpha > 0 && p.underglow > 0)); // only the underglow has no line
         checkSegments(st, p);
         CHECK(!st.strips.empty() || !st.tiles.empty());
 
@@ -1245,23 +1247,18 @@ bool onSide(const Layout& lay, double x) {
     return std::fabs(x - lay.centre.x) < 1e-6 || std::fabs(x - (lay.centre.x + lay.centre.w)) < 1e-6;
 }
 
-// What `sideOpacity` does to the layout of a panel style, compared with the layout it would be without it:
-// the outline is fainter down the sides, the corners fade from one strength to the other and the top
-// and the bottom edge are as they were. Nothing else changes.
-void checkSideOpacity(const Style& style, const Params& p, double o) {
-    Params q      = p;
-    q.sideOpacity = o;
-    const Layout a = buildLayout(style, p), b = buildLayout(style, q);
-    CHECK(a.valid && b.valid);
-    if (!a.valid || !b.valid || a.panel.strokes.empty() || b.panel.strokes.empty())
-        return;
-
-    // The window is as clear of it and the glow is as big as they were.
+// What two layouts of a panel style have in common whatever is done to the outline or added after the
+// traces: the window is as clear of the line and the glow is as big as it was, and the traces (those
+// both have), the dots, the lamps with the track they follow and the rain stay as they are.
+void checkRestAsWas(const Layout& a, const Layout& b) {
     CHECK(a.extents == b.extents && a.sampleBox == b.sampleBox);
     CHECK(a.centre.x == b.centre.x && a.centre.y == b.centre.y && a.centre.w == b.centre.w && a.centre.h == b.centre.h);
 
-    // The traces, the dots, the lamps with the track they follow and the rain stay as they are.
-    CHECK(a.panel.strokes.size() == b.panel.strokes.size() && a.panel.beads.size() == b.panel.beads.size() && a.panel.runners.size() == b.panel.runners.size());
+    CHECK(a.panel.beads.size() == b.panel.beads.size() && a.panel.runners.size() == b.panel.runners.size());
+    for (size_t i = 0; i < std::min(a.panel.runners.size(), b.panel.runners.size()); ++i) {
+        const Runner &ra = a.panel.runners[i], &rb = b.panel.runners[i];
+        CHECK(ra.stroke == rb.stroke && ra.offset == rb.offset && ra.speed == rb.speed);
+    }
     for (size_t k = 1; k < std::min(a.panel.strokes.size(), b.panel.strokes.size()); ++k) {
         const Stroke &ta = a.panel.strokes[k], &tb = b.panel.strokes[k];
         CHECK(ta.pts.size() == tb.pts.size() && ta.strips.size() == tb.strips.size() && ta.tiles.size() == tb.tiles.size());
@@ -1283,49 +1280,109 @@ void checkSideOpacity(const Style& style, const Params& p, double o) {
         const RainLane &la = a.panel.lanes[i], &lb = b.panel.lanes[i];
         CHECK(la.x == lb.x && la.y0 == lb.y0 && la.cells == lb.cells && la.streams == lb.streams && la.column == lb.column);
     }
+    CHECK(a.panel.touch.near == b.panel.touch.near && a.panel.touch.far == b.panel.touch.far);
+    CHECK(a.panel.merge.near == b.panel.merge.near && a.panel.merge.far == b.panel.merge.far);
     CHECK(glyphDraws(a.panel, 700, 1.0, 3) == glyphDraws(b.panel, 700, 1.0, 3));
+}
 
-    // Every corner of the outline stands where it stood; those on the sides are as faint as asked and the others are not.
+// How strong the line of a closed stroke is at a point on it: what the corners either side of it make
+// of their opacities, the line being drawn with its opacity running from one corner to the next.
+float alphaAt(const Stroke& s, Vec2 at) {
+    float  alpha   = 0.f;
+    double closest = kInf;
+    eachSegment(s, [&](const Vertex& a, const Vertex& b) {
+        const double dx = b.x - a.x, dy = b.y - a.y, len2 = dx * dx + dy * dy;
+        const double t = len2 > 0 ? std::clamp(((at.x - a.x) * dx + (at.y - a.y) * dy) / len2, 0.0, 1.0) : 0.0;
+        const double d = std::hypot(at.x - (a.x + dx * t), at.y - (a.y + dy * t));
+        if (d < closest - 1e-9) {
+            closest = d;
+            alpha   = float(a.alpha + (b.alpha - a.alpha) * t);
+        }
+    });
+    return alpha;
+}
+
+// The part of the outline of a panel style that a theme can make fainter: the sides, down which the
+// characters fall (`hud_side_opacity`), or the top and the bottom edge (`hud_edge_opacity`).
+enum class Part { Sides, Edges };
+
+// What `sideOpacity` or `edgeOpacity` does to the layout of a panel style, compared with the layout it
+// would be without it: the outline is fainter on that part, the corners fade from one strength to the
+// other and the rest of the outline is as it was. Nothing else changes.
+void checkOutlineOpacity(const Style& style, const Params& p, Part part, double o) {
+    const bool sides = part == Part::Sides;
+    Params     q     = p;
+    (sides ? q.sideOpacity : q.edgeOpacity) = o;
+    const Layout a = buildLayout(style, p), b = buildLayout(style, q);
+    CHECK(a.valid && b.valid);
+    if (!a.valid || !b.valid || a.panel.strokes.empty() || b.panel.strokes.empty())
+        return;
+
+    CHECK(a.panel.strokes.size() == b.panel.strokes.size());
+    checkRestAsWas(a, b);
+
+    // Every corner of the outline stands where it stood; those on the part that is fainter are as faint as
+    // asked, relative to what the corner was, and the others are as they were. (The ghost line that the
+    // notched outline doubles back along its bottom edge is fainter to begin with.)
     const Stroke &sa = a.panel.strokes[0], &sb = b.panel.strokes[0];
     CHECK(sa.pts.size() == sb.pts.size());
-    size_t sides = 0;
+    size_t fainter = 0;
     for (size_t i = 0; i < std::min(sa.pts.size(), sb.pts.size()); ++i) {
-        const bool side = onSide(a, sa.pts[i].x);
-        sides += side;
+        const bool faint = onSide(a, sa.pts[i].x) == sides;
+        fainter += faint;
         CHECK(sa.pts[i].x == sb.pts[i].x && sa.pts[i].y == sb.pts[i].y);
-        CHECK(sb.pts[i].alpha == (side ? sa.pts[i].alpha * float(o) : sa.pts[i].alpha));
+        CHECK(sb.pts[i].alpha == sa.pts[i].alpha * (faint ? float(o) : 1.f));
     }
-    CHECK(sides >= 4);
+    CHECK(fainter >= 4);
 
-    if (o * style.lineAlpha < kInvisible) {
-        // Nothing of the line down a side is left to draw, and the rest of it is.
+    // Where a piece of line from `from` to `to` runs: down a side, along an edge (the top or the
+    // bottom, or what a notch of the outline has of them) or across a corner, where the corners
+    // either side of it are of different strengths.
+    enum class Along { Side, Edge, Corner };
+    constexpr double kEps = 1e-6;
+    const auto       along = [&](Vec2 from, Vec2 to) {
+        if (std::fabs(from.x - to.x) < kEps)
+            return onSide(b, from.x) ? Along::Side : Along::Edge;
+        return std::fabs(from.y - to.y) < kEps ? Along::Edge : Along::Corner;
+    };
+    const auto isFainter = [&](Along w) { return w == (sides ? Along::Side : Along::Edge); };
+
+    const double peak = std::max(double(sb.alpha), double(sb.haloAlpha));
+    if (o * peak < kInvisible) {
+        // Nothing of the line is left to draw where it is gone and the rest of it is, every piece
+        // on a stretch of the outline that can be seen.
+        size_t     kept = 0;
+        const auto seen = [&](Vec2 from, Vec2 to) {
+            CHECK(!isFainter(along(from, to)));
+            CHECK(!segmentsAt(sb, {(from.x + to.x) / 2, (from.y + to.y) / 2}).empty());
+            ++kept;
+        };
         for (const StripPiece& s : sb.strips)
-            CHECK(!(s.vertical && onSide(b, s.centre)));
+            seen(s.a, s.b);
         for (const TilePiece& t : sb.tiles)
             for (const TileSeg& g : t.segs)
-                CHECK(!(onSide(b, g.a.x) && onSide(b, g.b.x)));
-        CHECK(!sb.strips.empty() || !sb.tiles.empty());
+                seen(g.a, g.b);
+        CHECK(kept > 0);
         return;
     }
 
-    // The same pieces in the same places: down a side they are as faint as the corners, along the top
-    // and the bottom as they were and in between, on the corners, anywhere from one to the other.
-    constexpr double kEps = 1e-6;
-    const auto       fits = [&](float was, float is, bool onASide, bool flat) {
+    // The same pieces in the same places. Their ends are as strong as the corners they are between make
+    // them: as faint as asked where the whole piece is on the part that is fainter, as they were where
+    // it is on the rest and anywhere from one to the other across a corner.
+    const auto fits = [&](float was, float is, Vec2 end, Along w) {
         CHECK(is <= was + kEps && is >= o * double(was) - kEps);
-        if (onASide)
-            CHECK_NEAR(is, o * double(was), kEps);
-        if (flat)
-            CHECK_NEAR(is, was, kEps);
+        CHECK_NEAR(is, alphaAt(sb, end), 1e-5);
+        if (w != Along::Corner)
+            CHECK_NEAR(is, (isFainter(w) ? o : 1.0) * double(was), kEps);
     };
 
     CHECK(sa.strips.size() == sb.strips.size() && sa.tiles.size() == sb.tiles.size());
     for (size_t i = 0; i < std::min(sa.strips.size(), sb.strips.size()); ++i) {
         const StripPiece &x = sa.strips[i], &y = sb.strips[i];
         CHECK(x.box == y.box && x.vertical == y.vertical && x.centre == y.centre);
-        const bool side = y.vertical && onSide(b, y.centre);
-        fits(x.alphaA, y.alphaA, side, !y.vertical);
-        fits(x.alphaB, y.alphaB, side, !y.vertical);
+        const Along w = along(y.a, y.b);
+        fits(x.alphaA, y.alphaA, y.a, w);
+        fits(x.alphaB, y.alphaB, y.b, w);
     }
     for (size_t i = 0; i < std::min(sa.tiles.size(), sb.tiles.size()); ++i) {
         const TilePiece &x = sa.tiles[i], &y = sb.tiles[i];
@@ -1333,17 +1390,18 @@ void checkSideOpacity(const Style& style, const Params& p, double o) {
         for (size_t j = 0; j < std::min(x.segs.size(), y.segs.size()); ++j) {
             const TileSeg &u = x.segs[j], &v = y.segs[j];
             CHECK(u.a.x == v.a.x && u.a.y == v.a.y && u.b.x == v.b.x && u.b.y == v.b.y);
-            const bool side = onSide(b, v.a.x) && onSide(b, v.b.x), flat = std::fabs(v.a.y - v.b.y) < kEps;
-            fits(u.alphaA, v.alphaA, side, flat);
-            fits(u.alphaB, v.alphaB, side, flat);
+            const Along w = along(v.a, v.b);
+            fits(u.alphaA, v.alphaA, v.a, w);
+            fits(u.alphaB, v.alphaB, v.b, w);
         }
     }
 }
 
-// How faint the outline of a panel style is down its sides is the theme's to say (`hud_side_opacity`), and a
-// style that is a ring has no such sides to dim. Without a word on it the look is what it was.
-void testSideOpacity() {
-    CHECK(Params{}.sideOpacity == 1.0);
+// How faint the outline of a panel style is down its sides and along its top and bottom edge is the
+// theme's to say (`hud_side_opacity`, `hud_edge_opacity`), and a style that is a ring has neither to dim.
+// Without a word on them the look is what it was.
+void testOutlineOpacity() {
+    CHECK(Params{}.sideOpacity == 1.0 && Params{}.edgeOpacity == 1.0);
 
     for (const auto& size : kSizes)
         for (float s : kScales)
@@ -1355,13 +1413,16 @@ void testSideOpacity() {
 
                     for (const Style& style : allStyles()) {
                         if (style.kind == Kind::Panel) {
-                            for (double o : {0.5, 0.2, 0.05, 0.0})
-                                checkSideOpacity(style, p, o);
+                            for (const Part part : {Part::Sides, Part::Edges})
+                                for (double o : {0.5, 0.2, 0.05, 0.0})
+                                    checkOutlineOpacity(style, p, part, o);
                             continue;
                         }
 
                         Params q      = p;
                         q.sideOpacity = 0.1;
+                        q.edgeOpacity = 0.1;
+                        q.underglow   = 0.5;
                         const Layout a = buildLayout(style, p), b = buildLayout(style, q);
                         CHECK(a.valid == b.valid && a.panel.empty() && b.panel.empty());
                         CHECK(a.extents == b.extents && a.sampleBox == b.sampleBox);
@@ -1372,48 +1433,190 @@ void testSideOpacity() {
                             CHECK(a.fills[i].box == b.fills[i].box && a.fills[i].alpha == b.fills[i].alpha);
                     }
 
-                    // Asked for nothing, the outline of a window is as strong on the sides as anywhere.
+                    // Asked for nothing, the outline of a window is as strong on its sides and its top as it was
+                    // made: only the ghost line of the notched outline, doubling back along its bottom edge, is faint.
                     const Layout lay = buildLayout(matrixStyle(), p);
                     CHECK(lay.valid && !lay.panel.strokes.empty());
-                    if (!lay.panel.strokes.empty())
-                        for (const Vertex& v : lay.panel.strokes[0].pts)
+                    if (!lay.panel.strokes.empty()) {
+                        const auto& pts   = lay.panel.strokes[0].pts;
+                        size_t      ghost = 0;
+                        for (const Vertex& v : pts) {
                             CHECK(!onSide(lay, v.x) || v.alpha == 1.f);
+                            ghost += v.alpha != 1.f;
+                        }
+                        CHECK(ghost == (pts.size() == 21 ? 3u : 0u));
+                    }
                     if (g_failures != before)
                         std::fprintf(stderr, "  ^ %s, gap %g\n", label(p).c_str(), gap);
                 }
 
-    // The corners on the sides are the ones that fade and the others are as they were.
+    // The corners on the sides are the ones that fade by the sides' opacity and the others by the edges'.
     for (double gap : {15.0, 3.0}) {
         Params p = params(900, 560);
         p.gap    = gap;
-        const Layout full = buildLayout(matrixStyle(), p);
-        p.sideOpacity     = 0.25;
-        const Layout lay  = buildLayout(matrixStyle(), p);
-        CHECK(lay.valid && lay.panel.strokes.size() == 1 && full.panel.strokes.size() == 1);
-        if (lay.panel.strokes.size() == 1 && full.panel.strokes.size() == 1) {
-            const auto &pts = lay.panel.strokes[0].pts, &was = full.panel.strokes[0].pts;
-            CHECK(pts.size() == was.size() && pts.size() == (gap == 3 ? 8u : 21u));
-            size_t faint = 0;
-            for (size_t i = 0; i < std::min(pts.size(), was.size()); ++i)
-                if (onSide(lay, pts[i].x)) {
-                    CHECK(was[i].alpha == 1.f && pts[i].alpha == 0.25f);
-                    ++faint;
-                } else
-                    CHECK(pts[i].alpha == was[i].alpha);
-            CHECK(faint == 4);
-        }
-
-        // More than the outline can be is all of it and less than none is none: it is the same layout.
-        const auto alphas = [&](double o) {
+        const auto build = [&](double side, double edge) {
             Params q      = p;
-            q.sideOpacity = o;
-            const Layout       l = buildLayout(matrixStyle(), q);
+            q.sideOpacity = side;
+            q.edgeOpacity = edge;
+            return buildLayout(matrixStyle(), q);
+        };
+        const auto alphas = [&](double side, double edge) {
+            const Layout       l = build(side, edge);
             std::vector<float> out;
             for (const Vertex& v : l.panel.strokes[0].pts)
                 out.push_back(v.alpha);
             return out;
         };
-        CHECK(alphas(7) == alphas(1) && alphas(-1) == alphas(0) && alphas(0) != alphas(1));
+
+        const Layout full = build(1, 1), lay = build(0.25, 0.5);
+        CHECK(lay.valid && lay.panel.strokes.size() == 1 && full.panel.strokes.size() == 1);
+        if (lay.panel.strokes.size() == 1 && full.panel.strokes.size() == 1) {
+            const auto &pts = lay.panel.strokes[0].pts, &was = full.panel.strokes[0].pts;
+            CHECK(pts.size() == was.size() && pts.size() == (gap == 3 ? 8u : 21u));
+            size_t sides = 0, edges = 0;
+            for (size_t i = 0; i < std::min(pts.size(), was.size()); ++i) {
+                const bool side = onSide(lay, pts[i].x);
+                CHECK(pts[i].alpha == was[i].alpha * (side ? 0.25f : 0.5f));
+                (side ? sides : edges) += 1;
+            }
+            CHECK(sides == 4 && edges == pts.size() - 4);
+        }
+
+        // Each is its own: neither fades what the other is for.
+        CHECK(alphas(0.25, 1) != alphas(1, 0.25) && alphas(0, 1) != alphas(1, 0));
+
+        // More than the outline can be is all of it and less than none is none: it is the same layout.
+        CHECK(alphas(7, 7) == alphas(1, 1) && alphas(-1, -1) == alphas(0, 0) && alphas(0, 0) != alphas(1, 1));
+        CHECK(alphas(7, 1) == alphas(1, 1) && alphas(1, 7) == alphas(1, 1) && alphas(-1, 1) == alphas(0, 1) && alphas(1, -1) == alphas(1, 0));
+
+        // With the sides and the edges both gone no line of the outline is left to draw, and all
+        // the rest is as it was.
+        const Layout none = build(0, 0);
+        CHECK(none.valid && none.panel.strokes.size() == 1);
+        if (none.panel.strokes.size() == 1 && full.panel.strokes.size() == 1) {
+            CHECK(none.panel.strokes[0].strips.empty() && none.panel.strokes[0].tiles.empty());
+            checkRestAsWas(full, none);
+        }
+    }
+}
+
+// How far from a corner of the window the underglow has died away, in reaches of its own glow: the
+// characters fall by the sides, and it is gone where they are.
+constexpr double kUnderglowTaper = 1.5;
+
+// What `underglow` adds to the layout of a panel style, compared with the layout it would be without it:
+// two glows with no line to them, along the window's own top and bottom edge and after everything else, and
+// nothing changes. A glow too faint to see adds none.
+void checkUnderglow(const Style& style, const Params& p, double u) {
+    Params q    = p;
+    q.underglow = u;
+    const Layout a = buildLayout(style, p), b = buildLayout(style, q);
+    CHECK(a.valid && b.valid);
+    if (!a.valid || !b.valid || a.panel.strokes.empty() || b.panel.strokes.empty())
+        return;
+
+    const double strength = std::clamp(u * (p.floating ? double(style.floatBoost) : 1.0), 0.0, 1.0);
+    const bool   glows    = strength >= kInvisible;
+    const size_t n        = a.panel.strokes.size();
+    CHECK(b.panel.strokes.size() == n + (glows ? 2 : 0));
+    if (b.panel.strokes.size() != n + (glows ? 2 : 0))
+        return;
+
+    // The outline, the traces and all the rest are as they were, each stroke in its place.
+    checkRestAsWas(a, b);
+    for (size_t i = 0; i < n; ++i) {
+        const Stroke &x = a.panel.strokes[i], &y = b.panel.strokes[i];
+        CHECK(same(x, y) && x.closed == y.closed && x.alpha == y.alpha && x.reach == y.reach && x.haloAlpha == y.haloAlpha && x.halfWidth == y.halfWidth);
+    }
+    if (!glows)
+        return;
+
+    const Stroke& outline = b.panel.strokes[0];
+    const bool    odd     = thickness(p) % 2 == 1;
+    for (size_t k = 0; k < 2; ++k) {
+        const Stroke& s = b.panel.strokes[n + k];
+        CHECK(!s.closed && s.alpha == 0.f && s.haloAlpha == float(strength));
+        CHECK_NEAR(s.reach, outline.reach, 1e-9);
+        CHECK_NEAR(s.halfWidth, outline.halfWidth, 1e-9);
+
+        // It lies on the window's own edge, is strongest between the corners and is gone at them.
+        const double        y     = (k == 0 ? 0.0 : double(p.height)) + (odd ? 0.5 : 0.0);
+        const double        mid   = p.width / 2.0;
+        const double        taper = std::max(std::round(kUnderglowTaper * s.reach), 1.0);
+        std::vector<Vertex> want;
+        if (taper >= mid)
+            want = {{0, y, 0.f}, {mid, y, 1.f}, {double(p.width), y, 0.f}};
+        else
+            want = {{0, y, 0.f}, {taper, y, 1.f}, {p.width - taper, y, 1.f}, {double(p.width), y, 0.f}};
+        CHECK(s.pts.size() == want.size());
+        for (size_t i = 0; i < std::min(s.pts.size(), want.size()); ++i)
+            CHECK(s.pts[i].x == want[i].x && s.pts[i].y == want[i].y && s.pts[i].alpha == want[i].alpha);
+
+        // It is drawn as straight strips from one end to the other, abutting: with no line to it there is
+        // no end to round off.
+        CHECK(s.tiles.empty() && !s.strips.empty());
+        if (s.strips.empty())
+            continue;
+        double at  = 0;
+        float  top = 0.f;
+        for (const StripPiece& piece : s.strips) {
+            CHECK(!piece.vertical && piece.centre == y && piece.a.y == y && piece.b.y == y);
+            CHECK(piece.a.x == at && piece.b.x > piece.a.x);
+            at  = piece.b.x;
+            top = std::max({top, piece.alphaA, piece.alphaB});
+        }
+        CHECK(at == double(p.width) && top == 1.f);
+        CHECK(s.strips.front().alphaA == 0.f && s.strips.back().alphaB == 0.f);
+        if (want.size() == 4)
+            CHECK(s.strips.size() == 3 && s.strips[1].alphaA == 1.f && s.strips[1].alphaB == 1.f);
+    }
+
+    checkLayout(b, q);
+}
+
+// A theme can have a glow along the top and the bottom edge of the window that looks like light from
+// under it (`hud_underglow`), and a style that is a ring has none. Without a word on it the look is
+// what it was.
+void testUnderglow() {
+    CHECK(Params{}.underglow == 0.0);
+
+    for (const auto& size : kSizes)
+        for (float s : kScales)
+            for (bool floating : {false, true})
+                for (double gap : {15.0, 3.0}) {
+                    const int before = g_failures;
+                    Params    p      = params(size[0], size[1], s, floating);
+                    p.gap            = gap;
+
+                    for (const Style* style : {&panelStyle(), &matrixStyle()})
+                        for (double u : {0.0, 0.003, 0.1, 0.3, 1.0, 5.0})
+                            checkUnderglow(*style, p, u);
+
+                    // As a theme can have it: the outline faint on its sides and its edges, and the glow under the window.
+                    for (const double side : {0.1, 0.0}) {
+                        Params q      = p;
+                        q.sideOpacity = side;
+                        q.edgeOpacity = 0.1;
+                        q.underglow   = 0.3;
+                        checkLayout(buildLayout(matrixStyle(), q), q);
+                    }
+                    if (g_failures != before)
+                        std::fprintf(stderr, "  ^ %s, gap %g\n", label(p).c_str(), gap);
+                }
+
+    // With the outline gone nothing of it is drawn, and the glow still is.
+    Params p      = params(900, 560);
+    p.sideOpacity = 0;
+    p.edgeOpacity = 0;
+    p.underglow   = 0.3;
+    for (const Style* style : {&panelStyle(), &matrixStyle()}) {
+        const Layout lay = buildLayout(*style, p);
+        CHECK(lay.valid && lay.panel.strokes.size() >= 3);
+        if (lay.panel.strokes.size() < 3)
+            continue;
+        CHECK(lay.panel.strokes[0].strips.empty() && lay.panel.strokes[0].tiles.empty());
+        for (size_t k = lay.panel.strokes.size() - 2; k < lay.panel.strokes.size(); ++k)
+            CHECK(!lay.panel.strokes[k].strips.empty());
     }
 }
 
@@ -2475,7 +2678,8 @@ int main() {
     testFewerColumns();
     testMatrixFrame();
     testLamps();
-    testSideOpacity();
+    testOutlineOpacity();
+    testUnderglow();
     testLampPose();
     testRainDraws();
     testFurtherColumns();

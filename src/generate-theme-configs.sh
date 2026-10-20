@@ -155,14 +155,19 @@ generate_theme() {
     echo "ERROR: $name: hud_glyph_color must be none or rgb(rrggbb)" >&2
     return 1
   fi
-  # How visible the outline is down the left and the right side, from 0 (gone) to 1
-  # (as strong as the rest): a theme whose characters fall there dims it so that they
-  # stand out. Plain decimals only, so the plugin reads exactly what is written.
-  pairs[hud_side_opacity]="${pairs[hud_side_opacity]-1}"
-  if [[ ! "${pairs[hud_side_opacity]}" =~ ^(0(\.[0-9]+)?|1(\.0+)?)$ ]]; then
-    echo "ERROR: $name: hud_side_opacity must be a number from 0 to 1" >&2
-    return 1
-  fi
+  # How visible the outline is down the left and the right side and along the top and
+  # the bottom, from 0 (gone) to 1 (as strong as the rest): a theme whose characters fall
+  # at the sides dims them so that they stand out. And how strong the glow is that seems
+  # to shine from under the window, from 0 (none) to 1. Plain decimals only, so the
+  # plugin reads exactly what is written.
+  for hud_pair in hud_side_opacity:1 hud_edge_opacity:1 hud_underglow:0; do
+    hud_key="${hud_pair%%:*}"
+    pairs[$hud_key]="${pairs[$hud_key]-${hud_pair#*:}}"
+    if [[ ! "${pairs[$hud_key]}" =~ ^(0(\.[0-9]+)?|1(\.0+)?)$ ]]; then
+      echo "ERROR: $name: $hud_key must be a number from 0 to 1" >&2
+      return 1
+    fi
+  done
   local accent_hex="${pairs[accent]:-}"
   pairs[shadow_range]="${pairs[shadow_range]:-2}"
   pairs[shadow_render_power]="${pairs[shadow_render_power]:-3}"

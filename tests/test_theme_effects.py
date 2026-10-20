@@ -44,6 +44,15 @@ HUD = (
     ("hud_hide_border", "hud_hide_border_flag", "themeHudHideBorder"),
     ("hud_glyph_color", "hud_glyph_color", "themeHudGlyphColor"),
     ("hud_side_opacity", "hud_side_opacity", "themeHudSideOpacity"),
+    ("hud_edge_opacity", "hud_edge_opacity", "themeHudEdgeOpacity"),
+    ("hud_underglow", "hud_underglow", "themeHudUnderglow"),
+)
+# The HUD keys that are a fraction from 0 to 1, with the variable each is written to and the value it
+# has when a theme does not set it.
+FRACTIONS = (
+    ("hud_side_opacity", "themeHudSideOpacity", "1"),
+    ("hud_edge_opacity", "themeHudEdgeOpacity", "1"),
+    ("hud_underglow", "themeHudUnderglow", "0"),
 )
 EFFECT_KEYS = tuple(key for key, _, _ in EFFECTS + HUD)
 EFFECT_VARS = tuple(var for _, _, var in EFFECTS + HUD)
@@ -72,6 +81,8 @@ CLASSIC = {
     "themeHudHideBorder": "0",
     "themeHudGlyphColor": "none",
     "themeHudSideOpacity": "1",
+    "themeHudEdgeOpacity": "1",
+    "themeHudUnderglow": "0",
 }
 
 # Evaluates the real looknfeel.lua (and theme.lua) against a recording hl stub.
@@ -410,11 +421,20 @@ class StockThemeEffectTests(unittest.TestCase):
         # Almost not seen but not gone: the corners fade into it and the top and the bottom stay bright.
         self.assertTrue(0 < float(variables["themeHudSideOpacity"]) <= 0.2, variables["themeHudSideOpacity"])
 
-    def test_other_hud_themes_keep_the_whole_outline_down_the_sides(self):
+    def test_matrix_hud_draws_its_top_and_bottom_as_dark_as_its_sides_with_a_glow_from_under_the_window(self):
+        variables = hypr_vars((THEMES / "matrix-hud/hyprland.conf").read_text())
+        # Dark but not gone, so that the lamps and the glow along it have a line to sit on.
+        self.assertTrue(0 < float(variables["themeHudEdgeOpacity"]) <= 0.2, variables["themeHudEdgeOpacity"])
+        # A soft glow, there to be seen but not a second line.
+        self.assertTrue(0 < float(variables["themeHudUnderglow"]) <= 0.5, variables["themeHudUnderglow"])
+
+    def test_other_hud_themes_keep_the_whole_outline_and_have_no_underglow(self):
         for name in ("neon", "amber-hud"):
             with self.subTest(theme=name):
                 variables = hypr_vars((THEMES / name / "hyprland.conf").read_text())
                 self.assertEqual(variables["themeHudSideOpacity"], "1")
+                self.assertEqual(variables["themeHudEdgeOpacity"], "1")
+                self.assertEqual(variables["themeHudUnderglow"], "0")
 
     def test_matrix_hud_is_translucent_unlike_opaque_matrix(self):
         matrix, hud = (
@@ -645,20 +665,20 @@ class EffectGenerationTests(unittest.TestCase):
         variables = self.variables()
         self.assertEqual(
             [variables[var] for _, _, var in HUD],
-            ["0", "scifi", "5", "10", "3", "0", "0", "80", "180", "0", "none", "1"],
+            ["0", "scifi", "5", "10", "3", "0", "0", "80", "180", "0", "none", "1", "1", "0"],
         )
         result = self.generate(
             'hud_frame = "true"\nhud_style = "minimal"\nhud_gap = "6"\n'
             'hud_chamfer = "0"\nhud_line_width = "2.5"\nhud_float_glow_range = "14"\n'
             'hud_sweep = "true"\nhud_sweep_speed = "120"\nhud_sweep_length = "240"\n'
             'hud_hide_border = "true"\nhud_glyph_color = "rgb(3cff28)"\n'
-            'hud_side_opacity = "0.1"\n'
+            'hud_side_opacity = "0.1"\nhud_edge_opacity = "0.2"\nhud_underglow = "0.3"\n'
         )
         self.assertEqual(result.returncode, 0, result.stderr)
         variables = self.variables()
         self.assertEqual(
             [variables[var] for _, _, var in HUD],
-            ["1", "minimal", "6", "0", "2.5", "14", "1", "120", "240", "1", "rgb(3cff28)", "0.1"],
+            ["1", "minimal", "6", "0", "2.5", "14", "1", "120", "240", "1", "rgb(3cff28)", "0.1", "0.2", "0.3"],
         )
 
     def test_hidden_border_gives_hyprland_no_border_but_keeps_the_configured_width(self):
@@ -750,33 +770,49 @@ class EffectGenerationTests(unittest.TestCase):
         self.assertNotIn("{{", text)
         self.assertEqual(self.variables()["themeHudGlyphColor"], "none")
 
-    def test_hud_side_opacity_accepts_decimals_from_zero_to_one(self):
-        for value in ("0", "0.0", "0.1", "0.15", "0.5", "0.999", "1", "1.0", "1.00"):
-            with self.subTest(value=value):
-                result = self.generate(f'hud_side_opacity = "{value}"\n')
-                self.assertEqual(result.returncode, 0, result.stderr)
-                self.assertEqual(self.variables()["themeHudSideOpacity"], value)
+    def test_hud_fractions_accept_decimals_from_zero_to_one(self):
+        for key, var, _ in FRACTIONS:
+            for value in ("0", "0.0", "0.1", "0.15", "0.5", "0.999", "1", "1.0", "1.00"):
+                with self.subTest(key=key, value=value):
+                    result = self.generate(f'{key} = "{value}"\n')
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    self.assertEqual(self.variables()[var], value)
 
-    def test_hud_side_opacity_rejects_everything_else(self):
+    def test_hud_fractions_reject_everything_else(self):
         bad = ("-0.1", "1.1", "1.01", "2", "10", ".5", "5.", "0.5.5", "00.5", "01", "1e-1", "0x1", "50%", "dim", "")
-        for value in bad:
-            with self.subTest(value=value):
-                result = self.generate(f'hud_side_opacity = "{value}"\n')
-                self.assertNotEqual(result.returncode, 0)
-                self.assertIn("fixture: hud_side_opacity must be a number from 0 to 1", result.stderr)
-                self.assertFalse((self.theme / "hyprland.conf").exists())
+        for key, _, _ in FRACTIONS:
+            for value in bad:
+                with self.subTest(key=key, value=value):
+                    result = self.generate(f'{key} = "{value}"\n')
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertIn(f"fixture: {key} must be a number from 0 to 1", result.stderr)
+                    self.assertFalse((self.theme / "hyprland.conf").exists())
 
-    def test_hud_side_opacity_is_never_left_as_a_placeholder(self):
-        # Unset it is the whole outline, written out as 1; a 0 is written too, never skipped as empty.
+    def test_hud_fractions_are_never_left_as_a_placeholder(self):
+        # Unset, each is written out as the value it has by default; a 0 is written too, never skipped as empty.
         result = self.generate()
         self.assertEqual(result.returncode, 0, result.stderr)
-        text = (self.theme / "hyprland.conf").read_text()
-        self.assertNotIn("{{", text)
-        self.assertEqual(self.variables()["themeHudSideOpacity"], "1")
-        result = self.generate('hud_side_opacity = "0"\n')
-        self.assertEqual(result.returncode, 0, result.stderr)
         self.assertNotIn("{{", (self.theme / "hyprland.conf").read_text())
-        self.assertEqual(self.variables()["themeHudSideOpacity"], "0")
+        for _, var, default in FRACTIONS:
+            self.assertEqual(self.variables()[var], default)
+        for key, var, _ in FRACTIONS:
+            with self.subTest(key=key):
+                result = self.generate(f'{key} = "0"\n')
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertNotIn("{{", (self.theme / "hyprland.conf").read_text())
+                self.assertEqual(self.variables()[var], "0")
+
+    def test_hud_fractions_are_written_apart(self):
+        # Setting one leaves the others as they are, so none is ever wired to another's variable.
+        for key, _, _ in FRACTIONS:
+            with self.subTest(key=key):
+                result = self.generate(f'{key} = "0.3"\n')
+                self.assertEqual(result.returncode, 0, result.stderr)
+                variables = self.variables()
+                for other, var, default in FRACTIONS:
+                    self.assertEqual(variables[var], "0.3" if other == key else default, other)
+
+    def test_hud_style_accepts_style_names(self):
         for value in ("scifi", "minimal", "my-style_2", "a"):
             with self.subTest(value=value):
                 result = self.generate(f'hud_style = "{value}"\n')

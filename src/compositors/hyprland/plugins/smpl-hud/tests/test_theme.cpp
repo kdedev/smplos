@@ -18,6 +18,8 @@ void testDefaults() {
     CHECK_NEAR(t.sweepLength, 180, 1e-9);
     CHECK(!t.hideBorder);
     CHECK_NEAR(t.sideOpacity, 1, 1e-9);
+    CHECK_NEAR(t.edgeOpacity, 1, 1e-9);
+    CHECK_NEAR(t.underglow, 0, 1e-9);
     CHECK(!t.glyphColour);
     CHECK(t == Theme{});
 }
@@ -35,6 +37,8 @@ void testNeonBlock() {
                                "$themeHudSweepLength = 200\n"
                                "$themeHudHideBorder = 1\n"
                                "$themeHudSideOpacity = 0.15\n"
+                               "$themeHudEdgeOpacity = 0.1\n"
+                               "$themeHudUnderglow = 0.3\n"
                                "$themeHudGlyphColor = rgb(46ff3c)\n");
     CHECK(t.frame);
     CHECK_NEAR(t.gap, 6, 1e-9);
@@ -47,6 +51,8 @@ void testNeonBlock() {
     CHECK_NEAR(t.sweepLength, 200, 1e-9);
     CHECK(t.hideBorder);
     CHECK_NEAR(t.sideOpacity, 0.15, 1e-9);
+    CHECK_NEAR(t.edgeOpacity, 0.1, 1e-9);
+    CHECK_NEAR(t.underglow, 0.3, 1e-9);
     const Rgb8 green{0x46, 0xff, 0x3c};
     CHECK(t.glyphColour == green);
 }
@@ -129,36 +135,59 @@ void testFractionalAndStyle() {
 }
 
 void testIgnoresUnrelatedLines() {
-    const Theme t = parseTheme("windowrule = float\n$themeHudFrameX = 1\nmisc:foo = 1\n$noequals\n$themeHudHideBorderX = 1\n$themeHudGlyphColorX = rgb(ffffff)\n$themeHudSideOpacityX = 0.5\n");
+    const Theme t = parseTheme("windowrule = float\n$themeHudFrameX = 1\nmisc:foo = 1\n$noequals\n$themeHudHideBorderX = 1\n$themeHudGlyphColorX = rgb(ffffff)\n$themeHudSideOpacityX = 0.5\n"
+                               "$themeHudEdgeOpacityX = 0.5\n$themeHudUnderglowX = 0.5\n");
     CHECK(!t.frame);
     CHECK(!t.hideBorder);
     CHECK(!t.glyphColour);
     CHECK_NEAR(t.sideOpacity, 1, 1e-9);
+    CHECK_NEAR(t.edgeOpacity, 1, 1e-9);
+    CHECK_NEAR(t.underglow, 0, 1e-9);
 }
 
-// How visible the sides of the outline are: 0 to 1, as it is written, and 1 when nothing says otherwise.
-void testSideOpacity() {
-    CHECK_NEAR(parseTheme("$themeHudSideOpacity = 0.15").sideOpacity, 0.15, 1e-9);
-    CHECK_NEAR(parseTheme("  $themeHudSideOpacity=0.5   # dark").sideOpacity, 0.5, 1e-9);
-    CHECK_NEAR(parseTheme("$themeHudSideOpacity = 0").sideOpacity, 0, 1e-9);
-    CHECK_NEAR(parseTheme("$themeHudSideOpacity = 1").sideOpacity, 1, 1e-9);
-    CHECK_NEAR(parseTheme("$themeHudSideOpacity = 0.3\n$themeHudSideOpacity = 0.7").sideOpacity, 0.7, 1e-9);
+// A setting that is a fraction, 0 to 1, as it is written, and `fallback` when nothing says otherwise.
+void checkFraction(const char* key, double Theme::*member, double fallback) {
+    const std::string line = std::string("$themeHud") + key + " = ";
+    const auto        read = [&](const std::string& text) { return parseTheme(text).*member; };
+
+    CHECK_NEAR(read(line + "0.15"), 0.15, 1e-9);
+    CHECK_NEAR(read(std::string("  $themeHud") + key + "=0.5   # dark"), 0.5, 1e-9);
+    CHECK_NEAR(read(line + "0"), 0, 1e-9);
+    CHECK_NEAR(read(line + "1"), 1, 1e-9);
+    CHECK_NEAR(read(line + "0.3\n" + line + "0.7"), 0.7, 1e-9);
 
     // More or less than it can be is as much as it can be.
-    CHECK_NEAR(parseTheme("$themeHudSideOpacity = 7").sideOpacity, 1, 1e-9);
-    CHECK_NEAR(parseTheme("$themeHudSideOpacity = -0.5").sideOpacity, 0, 1e-9);
+    CHECK_NEAR(read(line + "7"), 1, 1e-9);
+    CHECK_NEAR(read(line + "-0.5"), 0, 1e-9);
 
     // Anything but a number leaves what was there.
     for (const char* bad : {"", "dark", "0.5x", "nan", "inf", "-inf", "50%"}) {
-        CHECK_NEAR(parseTheme(std::string("$themeHudSideOpacity = ") + bad).sideOpacity, 1, 1e-9);
-        CHECK_NEAR(parseTheme(std::string("$themeHudSideOpacity = 0.2\n$themeHudSideOpacity = ") + bad).sideOpacity, 0.2, 1e-9);
+        CHECK_NEAR(read(line + bad), fallback, 1e-9);
+        CHECK_NEAR(read(line + "0.2\n" + line + bad), 0.2, 1e-9);
     }
 
-    // It is a setting of its own: setting it turns nothing else on.
-    const Theme only = parseTheme("$themeHudSideOpacity = 0.15");
-    Theme       same;
-    same.sideOpacity = 0.15;
-    CHECK(only == same && !only.frame && !only.sweep && !only.hideBorder && !only.glyphColour);
+    // It is a setting of its own: setting it turns nothing else on and changes no other setting.
+    Theme same;
+    same.*member = 0.15;
+    CHECK(parseTheme(line + "0.15") == same);
+}
+
+// How visible the sides of the outline are, how visible its top and bottom, and how strong the glow
+// under the window is.
+void testSideOpacity() { checkFraction("SideOpacity", &Theme::sideOpacity, 1); }
+void testEdgeOpacity() { checkFraction("EdgeOpacity", &Theme::edgeOpacity, 1); }
+void testUnderglow() { checkFraction("Underglow", &Theme::underglow, 0); }
+
+// The three settings are read apart: each one keeps its own value.
+void testFractionsAreIndependent() {
+    const Theme t = parseTheme("$themeHudSideOpacity = 0.2\n$themeHudEdgeOpacity = 0.4\n$themeHudUnderglow = 0.6\n");
+    CHECK_NEAR(t.sideOpacity, 0.2, 1e-9);
+    CHECK_NEAR(t.edgeOpacity, 0.4, 1e-9);
+    CHECK_NEAR(t.underglow, 0.6, 1e-9);
+
+    const Theme u = parseTheme("$themeHudUnderglow = 0.6");
+    CHECK_NEAR(u.sideOpacity, 1, 1e-9);
+    CHECK_NEAR(u.edgeOpacity, 1, 1e-9);
 }
 
 void testGlyphColour() {
@@ -195,5 +224,8 @@ int main() {
     testIgnoresUnrelatedLines();
     testGlyphColour();
     testSideOpacity();
+    testEdgeOpacity();
+    testUnderglow();
+    testFractionsAreIndependent();
     return finish("test_theme");
 }
