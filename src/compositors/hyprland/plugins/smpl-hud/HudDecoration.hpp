@@ -60,6 +60,22 @@ void syncHudFocus(bool force = false);
 // window when it unloads.
 void restoreHudLoops();
 
+// Keeps the frame of a floating window on its monitor. The compositor places
+// a window by its box alone, so a window a rule puts against an edge, or that
+// is made floating at a size the screen cannot hold, has the part of its frame
+// that sticks out cut off. This moves the window in from the edges of the
+// usable area by the frame's extent, and makes it smaller only when it fits no
+// other way. It is for the moments a window is placed: never while the user
+// is dragging it, and tiled, fullscreen and grouped windows are left alone.
+void placeHudWindow(const PHLWINDOW& window);
+
+// The same, once the compositor has finished what it is doing to the window:
+// it re-places a window after it has told us it moved to another workspace.
+void placeHudWindowLater(const PHLWINDOW& window);
+
+// Drops the placements still waiting; the plugin is unloading.
+void stopHudPlacement();
+
 // A window decoration that paints the HUD in the compositor's own render pass,
 // with the window's live animated geometry, so it can never lag behind it and
 // sits in the right place in the window stack. It takes no input.

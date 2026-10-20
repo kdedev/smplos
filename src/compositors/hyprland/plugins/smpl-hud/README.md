@@ -29,10 +29,11 @@ it has no border line at all.
 | `panel.{hpp,cpp}` | Compositor-free. The notched outline of a `Kind::Panel` style (`buildPanel`) and, for `amber-hud`, its traces and dots: where each dot is once it has travelled so far and how much it glows (`runnerPoses`). For the `matrix` style, the columns the characters fall in (`RainLane`), which characters are lit and how brightly (`glyphDraws`, `glyphChanges`), and where each lamp is, how long and how strong (`lampPose`). |
 | `glyph.{hpp,cpp}` | Compositor-free. The characters of the `matrix` style: sixty half-width katakana, digits and signs, each a few strokes on a 4 × 6 grid, so no font is needed. |
 | `stamp.{hpp,cpp}` | Compositor-free. Turns the lines, dots and characters of a panel into small images the compositor can draw as textured quads: cuts a stroke into strips and tiles (`cutStroke`), bakes them (`bakeStrip`, `bakeTile`, `bakeBead`, `bakeGlyph`) and gives each a cache key. |
+| `place.{hpp,cpp}` | Compositor-free. `fitWithFrame()`: where the box of a floating window has to go so that its whole frame stays inside a monitor's usable area. It moves the box in from the edges and shrinks it only when it cannot fit. The compositor side is `placeHudWindow()` (see "Floating windows"). |
 | `theme.{hpp,cpp}` | Compositor-free. Reads the `$themeHud*` variables from the generated `theme.conf`. |
-| `HudDecoration.{hpp,cpp}` | `IHyprWindowDecoration` on every window: reports the HUD's extents, caches the layout, collects the window's live (animated) border and glow gradients and queues a pass element. Owns the one timer that advances the focused window's travelling glow, dots, lamps and falling characters, and decides whose `border_animation` loops keep turning (see "Focus only"). |
+| `HudDecoration.{hpp,cpp}` | `IHyprWindowDecoration` on every window: reports the HUD's extents, caches the layout, collects the window's live (animated) border and glow gradients and queues a pass element. Owns the one timer that advances the focused window's travelling glow, dots, lamps and falling characters, and decides whose `border_animation` loops keep turning (see "Focus only"). Also keeps floating windows' frames on screen (see "Floating windows"). |
 | `HudPassElement.{hpp,cpp}` | Draws the layout with the compositor's border shader and plain rects, or the panel's cached images, then the travelling glow's (or each lamp's) cached sprite and the dots or characters. |
-| `main.cpp` | Plugin entry points: ABI check, event listeners (window open, active window, fullscreen, config reload, tick), cleanup. |
+| `main.cpp` | Plugin entry points: ABI check, event listeners (window open, floating, moved to another workspace, active window, fullscreen, config reload, tick), cleanup. |
 | `tests/` | Unit tests for the compositor-free parts, and `preview.cpp`, which renders a panel, a matrix frame or the character set to a PPM image so a look can be judged without a compositor. |
 
 ## Theme keys
@@ -83,6 +84,40 @@ the focus, both in `HudDecoration.cpp`:
 
 Neither adds a theme key: `hud_sweep` and `border_animation` stay the switches, and
 the cost no longer grows with the number of windows.
+
+## Floating windows
+
+The compositor places a floating window by its box alone and knows nothing of a
+frame that reaches past it. A window a rule puts against an edge (the start menu,
+the notification centre, Signal), one made floating (`Super+T`) at a size the
+monitor cannot hold and one sent to a smaller monitor would lose part of its
+frame, and the halo with it, beyond the screen. `placeHudWindow()` in
+`HudDecoration.cpp` prevents that at the moments a window is placed:
+
+- when it opens (`window.open`, before its open animation starts),
+- when it becomes floating (`window.floating`),
+- after it is moved to another workspace or monitor (`window.moveToWorkspace`).
+  The compositor does its own placement after it sends that event, so the plugin
+  runs once that is done (`placeHudWindowLater()`),
+- for every open window when the frame's extent changes, which is when the plugin
+  loads or a theme change makes the frame wider. A config reload that keeps the
+  extent changes nothing.
+
+`fitWithFrame()` (`place.cpp`, a pure function with its own tests) moves the box in
+from each edge of the monitor's usable area (the monitor minus what bars reserve)
+by the frame's extent on that side, and makes it smaller only if it fits no other
+way. A window whose frame is already inside is not touched. The extent used is that
+of the widest look (floating, with its halo), so a window does not shift when
+focus or its floating state changes the frame.
+
+Left alone: a window being dragged or resized; every move or resize the user makes
+(nothing is checked after it, so a window put half off-screen stays there); tiled,
+fullscreen and grouped windows; windows without a frame (see Limits); and a monitor
+too small to hold the frame around a 40 px window, where the compositor's placement
+stands. Tiled windows are placed by the layout inside the margin `gaps_out` leaves,
+so a theme's `gaps_out` has to be at least as wide as the frame's reach (the
+outline's distance plus its halo) for the frames of tiled windows at the screen
+edge to show whole.
 
 ## Travelling glow
 
@@ -391,3 +426,6 @@ session you work in, and load a build by path with
   chamfered rectangle (`rounding`, `rounding_power`), and the notches, the step and
   the bottom-left cut are lines drawn in the margin around it.
 - A theme change applies on the next config reload, not instantly.
+- A floating window is kept on screen only when it is placed (see "Floating
+  windows"): a client with a minimum size the monitor cannot hold, or a window you
+  drag out by hand, can still show less than its whole frame.

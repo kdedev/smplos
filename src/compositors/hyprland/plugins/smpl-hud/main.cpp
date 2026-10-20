@@ -53,8 +53,11 @@ APICALL EXPORT PLUGIN_DESCRIPTION_INFO PLUGIN_INIT(HANDLE handle) {
     auto& events = Event::bus()->m_events;
     g_listeners.emplace_back(events.window.open.listen([](PHLWINDOW window) {
         decorate(window);
-        syncHudFocus(true); // a window that maps again starts its loops afresh
+        placeHudWindow(window); // the box it was given can put the frame off the screen
+        syncHudFocus(true);     // a window that maps again starts its loops afresh
     }));
+    g_listeners.emplace_back(events.window.floating.listen([](PHLWINDOW window) { placeHudWindow(window); }));
+    g_listeners.emplace_back(events.window.moveToWorkspace.listen([](PHLWINDOW window, PHLWORKSPACE) { placeHudWindowLater(window); }));
     g_listeners.emplace_back(events.window.active.listen([](PHLWINDOW, Desktop::eFocusReason) { syncHudFocus(); }));
     g_listeners.emplace_back(events.window.fullscreen.listen([](PHLWINDOW) { syncHudFocus(true); })); // a fullscreen window stops turning, and starts again
     g_listeners.emplace_back(events.config.reloaded.listen([] {
@@ -76,6 +79,7 @@ APICALL EXPORT PLUGIN_DESCRIPTION_INFO PLUGIN_INIT(HANDLE handle) {
 APICALL EXPORT void PLUGIN_EXIT() {
     g_listeners.clear();
     stopHudSweep();
+    stopHudPlacement();
     restoreHudLoops();
     damageAllHuds();
     g_pHyprRenderer->m_renderPass.removeAllOfType(CHudPassElement::kPassName);

@@ -235,6 +235,13 @@ stops and an optional angle, e.g. `"rgba(00f0ffb0) rgba(2f7bff80) 45deg"`.
   `hud_line_width` or their lines touch, and at least `hud_line_width + 13` if
   their halos (about 6 px beyond each line are clearly visible) should stay
   separate; widen `gaps_in` to get there (Neon: `gaps_in = "18"` leaves 28 px).
+  A tiled window at the screen edge sits `gaps_out` from it, so keep `gaps_out`
+  at least as wide as the frame's reach (`hud_gap`, the line and its halo) or the
+  frame is cut off there. Floating windows have no such margin, so the plugin
+  keeps them on screen itself: when one opens, becomes floating or moves to
+  another workspace or monitor, it is moved in from the monitor's edge by the
+  frame's reach, and made smaller only if it cannot fit (a window you move or
+  resize yourself stays where you put it).
 - `hud_sweep = "true"` adds a soft glow that drifts along the focused window's
   outline, in the outline's own colors, fading in over half a second when a
   window gets focus and out when it loses it. It is one small sprite, rebuilt

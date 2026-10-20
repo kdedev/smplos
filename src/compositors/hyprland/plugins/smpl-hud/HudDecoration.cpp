@@ -9,9 +9,11 @@
 
 #include <hyprland/src/Compositor.hpp>
 #include <hyprland/src/desktop/state/FocusState.hpp>
+#include <hyprland/src/desktop/state/WindowState.hpp>
 #include <hyprland/src/desktop/view/Window.hpp>
 #include <hyprland/src/helpers/MiscFunctions.hpp>
 #include <hyprland/src/helpers/time/Time.hpp>
+#include <hyprland/src/layout/LayoutManager.hpp>
 #include <hyprland/src/managers/SessionLockManager.hpp>
 #include <hyprland/src/managers/eventLoop/EventLoopManager.hpp>
 #include <hyprland/src/managers/fullscreen/FullscreenController.hpp>
@@ -21,6 +23,7 @@
 
 #include "HudPassElement.hpp"
 #include "globals.hpp"
+#include "place.hpp"
 #include "stamp.hpp"
 
 namespace {
@@ -31,6 +34,10 @@ namespace {
     std::vector<CHudDecoration*> g_decorations;
     PHLWINDOWREF                 g_focus; // the window last given focus
 
+    // Windows waiting for the compositor to finish moving them to another
+    // workspace before they are placed, and the callback that does it.
+    std::vector<PHLWINDOWREF> g_placeQueue;
+    UP<SEventLoopDoLaterLock> g_placeLater;
     // One timer moves the travelling glow of the focused window, or its lamps
     // and falling characters, and fades out those of the one that lost focus.
     // It runs only while the theme asks for them, and while nothing could be
@@ -329,9 +336,61 @@ const SHudSettings& hudSettings() {
     return g_settings;
 }
 
+void placeHudWindow(const PHLWINDOW& window) {
+    if (!g_settings.active() || !validMapped(window) || !window->m_isFloating || window->m_group || window->m_wantsInitialFullscreen || window->m_X11DoesntWantBorders ||
+        window->isX11OverrideRedirect())
+        return;
+
+    const auto target  = window->layoutTarget();
+    const auto monitor = window->m_monitor.lock();
+    if (!target || !monitor || !framed(window) || Fullscreen::controller()->getFullscreenModes(window).internal != Fullscreen::FSMODE_NONE)
+        return;
+
+    // A window being dragged or resized is where the user puts it.
+    if (g_layoutManager->dragController()->target() == target)
+        return;
+
+    // The usable area, not the work area: that one keeps a gap of its own
+    // from the edge, which the frame would be laid over.
+    const CBox box    = target->position();
+    const CBox usable = monitor->logicalBoxMinusReserved();
+    const auto fitted = smplhud::fitWithFrame({box.x, box.y, box.w, box.h}, g_extents, {usable.x, usable.y, usable.w, usable.h});
+
+    constexpr double kTolerance = 0.5; // the compositor rounds boxes to whole px
+    if (std::abs(fitted.x - box.x) < kTolerance && std::abs(fitted.y - box.y) < kTolerance && std::abs(fitted.w - box.w) < kTolerance && std::abs(fitted.h - box.h) < kTolerance)
+        return;
+
+    target->setPositionGlobal(CBox{fitted.x, fitted.y, fitted.w, fitted.h});
+}
+
+void placeHudWindowLater(const PHLWINDOW& window) {
+    if (!window || !g_settings.active())
+        return;
+
+    g_placeQueue.emplace_back(window);
+    if (g_placeLater)
+        return;
+
+    g_placeLater = g_pEventLoopManager->doLaterLock([] {
+        auto queue = std::move(g_placeQueue);
+        g_placeQueue.clear();
+        g_placeLater.reset();
+
+        for (const auto& ref : queue)
+            placeHudWindow(ref.lock());
+    });
+}
+
+void stopHudPlacement() {
+    g_placeLater.reset(); // takes a callback that has not run out of the compositor
+    g_placeQueue.clear();
+}
+
 void setHudTheme(const smplhud::Theme& theme) {
     for (auto* deco : g_decorations)
         deco->damageEntire();
+
+    const auto previousExtents = g_extents;
 
     g_settings.theme = theme;
     g_settings.style = smplhud::styleFor(theme.style);
@@ -345,6 +404,13 @@ void setHudTheme(const smplhud::Theme& theme) {
         deco->reposition();
     for (auto* deco : g_decorations)
         deco->damageEntire();
+
+    // Windows that are open were placed for another frame, or for none. A
+    // reload that keeps the frame must not undo where the user put a window.
+    if (g_extents != previousExtents) {
+        for (const auto& window : Desktop::windowState()->windows())
+            placeHudWindow(window);
+    }
 
     syncHudSweep();
 
