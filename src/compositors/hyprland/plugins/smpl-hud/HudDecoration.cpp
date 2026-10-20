@@ -261,12 +261,18 @@ namespace {
     // that are visible once they have travelled `travelled`. `origin` is the
     // window's box.
     void addRunnerBoxes(CRegion& region, const smplhud::Panel& panel, double travelled, const CBox& origin, double scale) {
-        for (const auto& runner : panel.runners) {
-            const auto pose = smplhud::runnerPose(panel, runner, travelled);
+        const auto poses = smplhud::runnerPoses(panel, travelled);
+        for (size_t i = 0; i < poses.size(); ++i) {
+            const auto& pose = poses[i];
             if (pose.alpha <= 0.F)
                 continue;
 
-            const double half = smplhud::beadSize(smplhud::lookOf(runner.look)) / 2.0 + 1;
+            // A dot that glows is drawn with the flare over it.
+            int size = smplhud::beadSize(smplhud::lookOf(panel.runners[i].look));
+            if (pose.glow > 0.F)
+                size = std::max(size, smplhud::beadSize(smplhud::lookOf(panel.flare)));
+
+            const double half = size / 2.0 + 1;
             CBox         box  = {origin.x + (pose.pos.x - half) / scale, origin.y + (pose.pos.y - half) / scale, 2 * half / scale, 2 * half / scale};
             region.add(CRegion(box.expand(2)));
         }
@@ -653,11 +659,9 @@ void CHudDecoration::draw(PHLMONITOR monitor, const float& a) {
             m_sweep.cache = std::make_shared<SHudSweepCache>();
         frame.sweep = SHudSweep{m_sweep.path, m_sweep.shape, m_sweep.limit, m_sweep.texel, m_sweep.phase * m_sweep.path->length, m_sweep.cache, intensity};
 
-        for (const auto& runner : m_layout->panel.runners) {
-            auto pose = smplhud::runnerPose(m_layout->panel, runner, m_dotPos);
+        frame.runners = smplhud::runnerPoses(m_layout->panel, m_dotPos);
+        for (auto& pose : frame.runners)
             pose.alpha *= intensity;
-            frame.runners.push_back(pose);
-        }
     }
 
     g_pHyprRenderer->addPassElement(makeUnique<CHudPassElement>(std::move(frame)));

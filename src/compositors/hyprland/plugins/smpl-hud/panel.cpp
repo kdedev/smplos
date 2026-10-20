@@ -23,6 +23,33 @@ constexpr double kBeadMin    = 1.5; // px
 constexpr double kBeadReach  = 0.8; // of the outline's glow reach
 constexpr double kRunnerGrow = 1.15;
 
+// The two dots going round the outline run opposite ways, one a little slower
+// than the other, so that they do not always meet at the same two places.
+constexpr double kRoundSpeed = 1.0;
+constexpr double kBackSpeed  = 0.85;
+
+// The dots on the traces start in different places along them.
+constexpr double kBounceStart[3] = {0.0, 0.4, 0.75};
+
+// A dot going round swells into a flare, in terms of the dot's own sizes.
+constexpr double kFlareRadius = 1.3;
+constexpr double kFlareReach  = 2.0;
+constexpr double kFlareHalo   = 1.7;
+
+// It is fully lit within kTouchNear px of a dot on a trace and not at all from
+// kTouchFar px on (at scale 1).
+constexpr double kTouchNear = 14;
+constexpr double kTouchFar  = 70;
+
+// It is lit by the other dot going round from kMergeShare of the outline's
+// length away, but from no less than kMergeMin and no more than kMergeMax px
+// (at scale 1) and never from more than kMergeCap of it, and fully so within a
+// tenth of that.
+constexpr double kMergeShare = 0.10;
+constexpr double kMergeMin   = 160;
+constexpr double kMergeMax   = 400;
+constexpr double kMergeCap   = 0.35;
+
 // Frames smaller than this get no notches, no ghost line and no traces.
 constexpr double kFancyWidth  = 480;
 constexpr double kFancyHeight = 160;
@@ -254,8 +281,18 @@ void buildPanel(const Style& style, const Params& p, Layout& out) {
 
     const bool beads = style.beadRadius > 0;
     if (beads) {
-        panel.runners.push_back({0, 0.0, 1.0, dot});
-        panel.runners.push_back({0, 0.5, 1.0, dot});
+        panel.runners.push_back({0, 0.0, kRoundSpeed, dot});
+        panel.runners.push_back({0, 0.5, -kBackSpeed, dot});
+
+        panel.flare           = dot;
+        panel.flare.radius    = dot.radius * kFlareRadius;
+        panel.flare.reach     = dot.reach * kFlareReach;
+        panel.flare.haloAlpha = float(std::min(1.0, halo * kFlareHalo));
+        panel.touch           = {kTouchNear * f.s, kTouchFar * f.s};
+
+        const double outline = strokeLength(panel.strokes[0]);
+        const double far     = std::min(std::clamp(kMergeShare * outline, kMergeMin * f.s, kMergeMax * f.s), kMergeCap * outline);
+        panel.merge          = {0.1 * far, far};
     }
 
     if (f.fancy && f.tau > 0) {
@@ -263,7 +300,8 @@ void buildPanel(const Style& style, const Params& p, Layout& out) {
         const double speeds[3] = {0.6, 1.0, 0.8};
         int          n         = 0;
         const auto   add       = [&](bool ok) {
-            const double speed = speeds[n++];
+            const double speed = speeds[n];
+            const double start = kBounceStart[n++];
             if (!ok)
                 return;
             panel.strokes.push_back(stroke(std::move(t.pts), false, style.lineAlpha * kTraceAlpha, kTraceReach * reach, kTraceHalo * halo));
@@ -273,7 +311,7 @@ void buildPanel(const Style& style, const Params& p, Layout& out) {
             panel.beads.push_back(bead);
             bead.pos = t.to;
             panel.beads.push_back(bead);
-            panel.runners.push_back({int(panel.strokes.size()) - 1, 0.0, speed, dot});
+            panel.runners.push_back({int(panel.strokes.size()) - 1, start, speed, dot});
         };
         t = {};
         add(notchTrace(f, cuts, t));
@@ -285,7 +323,7 @@ void buildPanel(const Style& style, const Params& p, Layout& out) {
 
     // Room for the outline, the traces and the beads, whatever the window size.
     const double lineRoom = roomAround(f.hw, reach);
-    const double beadRoom = beads ? beadSize(lookOf(dot)) / 2.0 : 0.0;
+    const double beadRoom = beads ? std::max(beadSize(lookOf(dot)), beadSize(lookOf(panel.flare))) / 2.0 : 0.0;
     const double room     = std::max(lineRoom, beadRoom) + 1;
     const auto   logical  = [&](double phys) { return int(std::ceil(phys / f.s)) + 2; };
     const int    side     = logical(std::ceil(f.c) + room);
@@ -298,24 +336,104 @@ void buildPanel(const Style& style, const Params& p, Layout& out) {
     out.valid          = true;
 }
 
-RunnerPose runnerPose(const Panel& panel, const Runner& runner, double travelled) {
+namespace {
+
+// Where a runner is, before the dots near it have had their say.
+struct Placed {
+    RunnerPose pose;
+    int        stroke = -1;
+    bool       closed = false;
+    double     at     = 0; // px from the start of its stroke
+    double     len    = 0; // length of its stroke
+};
+
+double wrap(double v, double period) {
+    return v - std::floor(v / period) * period;
+}
+
+// How far along a line (0..1) a dot is that runs back and forth on it, `phase`
+// being 0 at the start of the way out, 1 at the end of it and 2 when it is back.
+double bounce(double phase) {
+    constexpr double tau = 2 * std::numbers::pi;
+    const double     q   = wrap(phase, 2.0);
+    const double     x   = q <= 1 ? q : 2 - q;
+    return std::clamp(x - kBounceEase / tau * std::sin(tau * x), 0.0, 1.0);
+}
+
+Placed place(const Panel& panel, const Runner& runner, double travelled) {
+    Placed out;
     if (runner.stroke < 0 || size_t(runner.stroke) >= panel.strokes.size())
-        return {};
+        return out;
     const Stroke& stroke = panel.strokes[size_t(runner.stroke)];
     const double  len    = strokeLength(stroke);
     if (len <= 0)
-        return {};
+        return out;
 
-    double at = runner.offset * len + travelled * runner.speed;
-    at -= std::floor(at / len) * len;
+    const double at = stroke.closed ? wrap(runner.offset * len + travelled * runner.speed, len)
+                                    : bounce(runner.offset + travelled * runner.speed / len) * len;
     const StrokePoint p = strokePointAt(stroke, at);
 
-    float fade = 1.f;
-    if (!stroke.closed) {
-        const double room = std::max(1.0, std::min(len / 4, 16 * runner.look.radius));
-        fade              = float(std::clamp(std::min(at, len - at) / room, 0.0, 1.0));
+    out.pose   = {p.pos, std::clamp(p.alpha * runner.look.alpha, 0.f, 1.f), 0.f};
+    out.stroke = runner.stroke;
+    out.closed = stroke.closed;
+    out.at     = at;
+    out.len    = len;
+    return out;
+}
+
+// 1 within `prox.near`, 0 from `prox.far` on, smooth in between.
+double nearness(double dist, const Proximity& prox) {
+    if (prox.far <= 0 || dist >= prox.far)
+        return 0;
+    if (dist <= prox.near)
+        return 1;
+    const double t = (prox.far - dist) / (prox.far - prox.near);
+    return t * t * (3 - 2 * t);
+}
+
+} // namespace
+
+RunnerPose runnerPose(const Panel& panel, const Runner& runner, double travelled) {
+    return place(panel, runner, travelled).pose;
+}
+
+std::vector<RunnerPose> runnerPoses(const Panel& panel, double travelled) {
+    std::vector<Placed> all;
+    all.reserve(panel.runners.size());
+    for (const Runner& runner : panel.runners)
+        all.push_back(place(panel, runner, travelled));
+
+    std::vector<RunnerPose> poses;
+    poses.reserve(all.size());
+    for (const Placed& p : all)
+        poses.push_back(p.pose);
+    if (panel.flare.radius <= 0)
+        return poses;
+
+    for (size_t i = 0; i < all.size(); ++i) {
+        const Placed& a = all[i];
+        if (!a.closed || a.pose.alpha <= 0)
+            continue;
+
+        // Each dot that is near adds its light, as far as it is visible itself.
+        double dark = 1.0;
+        for (size_t j = 0; j < all.size(); ++j) {
+            const Placed& b = all[j];
+            if (j == i || b.pose.alpha <= 0)
+                continue;
+
+            double lit = 0;
+            if (!b.closed) {
+                lit = nearness(std::hypot(a.pose.pos.x - b.pose.pos.x, a.pose.pos.y - b.pose.pos.y), panel.touch);
+            } else if (b.stroke == a.stroke) {
+                const double gap = std::fabs(a.at - b.at);
+                lit              = nearness(std::min(gap, a.len - gap), panel.merge);
+            }
+            dark *= 1.0 - lit * b.pose.alpha;
+        }
+        poses[i].glow = float(std::clamp(1.0 - dark, 0.0, 1.0));
     }
-    return {p.pos, std::clamp(p.alpha * runner.look.alpha * fade, 0.f, 1.f)};
+    return poses;
 }
 
 } // namespace smplhud

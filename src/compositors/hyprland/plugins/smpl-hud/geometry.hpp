@@ -188,18 +188,34 @@ struct Bead {
     float  alpha     = 1.f;
 };
 
-// A dot that travels along a stroke while its window has focus.
+// A dot that travels along a stroke while its window has focus: round and round
+// a closed stroke, back and forth on an open one.
 struct Runner {
     int    stroke = 0;   // index into Panel::strokes
-    double offset = 0;   // where it starts, as a fraction of the stroke
-    double speed  = 1;   // relative to the other runners
+    double offset = 0;   // where it starts, as a fraction of the stroke (of one way, on an open one)
+    double speed  = 1;   // relative to the other runners; a negative one runs the other way
     Bead   look;         // `pos` is unused
+};
+
+// How far apart two dots light each other up: fully within `near` px, not at
+// all from `far` px on, smoothly in between.
+struct Proximity {
+    double near = 0;
+    double far  = 0;
 };
 
 struct Panel {
     std::vector<Stroke> strokes; // strokes[0] is the closed outline round the window
     std::vector<Bead>   beads;   // dots that stay where they are
     std::vector<Runner> runners;
+
+    // A dot going round a closed stroke swells into `flare` (drawn over it) when
+    // another dot is near: one running on an open stroke (`touch`, measured in a
+    // straight line) or the other one going round (`merge`, measured along the
+    // stroke). A flare of radius 0 turns this off.
+    Bead      flare = {{}, 0.0, 0.0, 0.f, 1.f}; // no radius: none
+    Proximity touch;
+    Proximity merge;
 
     bool empty() const { return strokes.empty(); }
 };

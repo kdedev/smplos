@@ -55,7 +55,7 @@ struct SHudFrame {
     std::shared_ptr<const smplhud::Layout> layout;
     std::array<SHudPaint, 3>               paints; // indexed by smplhud::Paint
     std::optional<SHudSweep>               sweep;
-    std::vector<smplhud::RunnerPose>       runners; // one per layout->panel.runners; their opacity already includes the fade with the focus
+    std::vector<smplhud::RunnerPose>       runners; // one per layout->panel.runners; their opacity already includes the fade with the focus, their glow says how much of the flare goes over them
     float                                  alpha         = 1.F;
     float                                  roundingPower = 1.F;
     CBox                                   window;  // window box, monitor-local physical px

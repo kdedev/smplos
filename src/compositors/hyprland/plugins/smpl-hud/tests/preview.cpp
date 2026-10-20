@@ -156,10 +156,14 @@ int main(int argc, char** argv) {
     }
     for (const Bead& b : layout.panel.beads)
         drawImage(cv, bakeBead({lookOf(b), beadTone}), left + b.pos.x - beadSize(lookOf(b)) / 2.0, top + b.pos.y - beadSize(lookOf(b)) / 2.0, 1.f);
-    for (const Runner& r : layout.panel.runners) {
-        const RunnerPose pose = runnerPose(layout.panel, r, travel);
-        if (pose.alpha > 0.f)
-            drawImage(cv, bakeBead({lookOf(r.look), beadTone}), left + pose.pos.x - beadSize(lookOf(r.look)) / 2.0, top + pose.pos.y - beadSize(lookOf(r.look)) / 2.0, pose.alpha);
+    const std::vector<RunnerPose> poses = runnerPoses(layout.panel, travel);
+    auto drawBeadAt = [&](const Bead& bead, const RunnerPose& pose, float alpha) {
+        if (alpha > 0.f)
+            drawImage(cv, bakeBead({lookOf(bead), beadTone}), left + pose.pos.x - beadSize(lookOf(bead)) / 2.0, top + pose.pos.y - beadSize(lookOf(bead)) / 2.0, alpha);
+    };
+    for (size_t i = 0; i < poses.size(); ++i) {
+        drawBeadAt(layout.panel.runners[i].look, poses[i], poses[i].alpha);
+        drawBeadAt(layout.panel.flare, poses[i], poses[i].alpha * poses[i].glow);
     }
 
     // The window, a little see-through like the real ones.

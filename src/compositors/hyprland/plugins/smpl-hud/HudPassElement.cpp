@@ -184,15 +184,22 @@ namespace {
             drawBead(scope, frame, bead, bead.pos, frame.alpha * bead.alpha);
     }
 
-    // The dots that travel along the lines while the window has focus.
+    // The dots that travel along the lines while the window has focus. One that
+    // glows has the flare drawn over it, more and more opaque as the glow rises.
     void drawPanelDots(const SHudFrame& frame) {
-        const auto& runners = frame.layout->panel.runners;
+        const auto& panel   = frame.layout->panel;
+        const auto& runners = panel.runners;
         if (frame.runners.size() != runners.size())
             return;
 
         CTextureScope scope;
-        for (size_t i = 0; i < runners.size(); ++i)
-            drawBead(scope, frame, runners[i].look, frame.runners[i].pos, frame.alpha * frame.runners[i].alpha);
+        for (size_t i = 0; i < runners.size(); ++i) {
+            const auto& pose  = frame.runners[i];
+            const float alpha = frame.alpha * pose.alpha;
+            drawBead(scope, frame, runners[i].look, pose.pos, alpha);
+            if (pose.glow > 0.F)
+                drawBead(scope, frame, panel.flare, pose.pos, alpha * pose.glow);
+        }
     }
 
     // The travelling glow: a small texture, redrawn on the CPU only when the

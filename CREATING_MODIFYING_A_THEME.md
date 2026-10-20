@@ -193,11 +193,11 @@ unchanged. niri and other compositors ignore them.
 | `glow_color`, `glow_color_inactive` | accent at 69% alpha, same as active | Single color or gradient |
 | `border_animation` | `"false"` | `"true"` or `"false"` only |
 | `hud_frame` | `"false"` | `"true"` or `"false"` only; turns on the HUD frames the `smpl-hud` Hyprland plugin draws around windows |
-| `hud_style` | `"scifi"` | Name of the HUD look: `scifi` (outline, halos, corner brackets, edge tabs), `minimal` (outline and halos only) or `panel` (notched outline with a step, a ghost line and a cut corner, circuit traces ending in beads, and dots that run along the lines). Lowercase letters, digits, `-` and `_`; an unknown name shows a notification and draws nothing |
+| `hud_style` | `"scifi"` | Name of the HUD look: `scifi` (outline, halos, corner brackets, edge tabs), `minimal` (outline and halos only) or `panel` (notched outline with a step, a ghost line and a cut corner, circuit traces ending in beads, two dots circling the outline in opposite directions and a dot bouncing along each trace, the circling ones glowing as they near a bouncing dot or each other). Lowercase letters, digits, `-` and `_`; an unknown name shows a notification and draws nothing |
 | `hud_gap`, `hud_chamfer` | `"5"`, `"10"` | Non-negative integers: outline distance from the window and corner-cut size, in px. The notches of a `panel` are 9 px deep with a `hud_gap` of 13 or more and shrink below that |
 | `hud_line_width` | `"3"` | Number from 1 to 9.99: outline thickness in px; corner brackets and edge tabs follow it |
 | `hud_float_glow_range` | `"0"` | Non-negative integer. Floating windows glow brighter than tiled ones and their halo reaches at least this many px; `"0"` keeps the style's own reach (14 px for `scifi`) |
-| `hud_sweep` | `"false"` | `"true"` or `"false"` only; a soft glow drifts slowly along the focused window's outline, in the outline's own colors, and fades in and out as focus moves. In the `panel` style it also sets the dots running along the lines |
+| `hud_sweep` | `"false"` | `"true"` or `"false"` only; a soft glow drifts slowly along the focused window's outline, in the outline's own colors, and fades in and out as focus moves. In the `panel` style it also sets the dots moving along the lines |
 | `hud_sweep_speed`, `hud_sweep_length` | `"80"`, `"180"` | Integers: speed in px per second (10 to 400; the dots of a `panel` run 1.6 times as fast) and length along the line in px (40 to 600). Keep the speed low: it reads as light moving along the frame, not as a spinner (Neon: `"70"`, a lap takes tens of seconds) |
 
 Gradients use the same syntax as `border_active`: one or more `rgba(rrggbbaa)`
@@ -261,8 +261,11 @@ stops and an optional angle, e.g. `"rgba(00f0ffb0) rgba(2f7bff80) 45deg"`.
 - The `panel` style draws a fixed polyline outline instead of rings: chamfered
   corners, a notch and a step on the top edge, a raised line and a fading ghost
   line along the bottom, a bigger cut at the bottom left and three circuit traces
-  ending in beads. While a window has focus (and `hud_sweep = "true"`), dots run
-  along its lines. The window itself stays a chamfered rectangle (`rounding`,
+  ending in beads. While a window has focus (and `hud_sweep = "true"`), two dots
+  circle the outline in opposite directions and one dot bounces back and forth
+  along each trace, between the beads at its ends; a circling dot glows as it
+  nears a bouncing dot, and both glow as they near each other, as if about to
+  merge. The window itself stays a chamfered rectangle (`rounding`,
   `rounding_power`); the shape lives in the lines around it, and the bottom-left
   cut can only be as deep as the window's own corner cut, so raise `rounding` (and
   `hud_gap`) for a bigger one. It needs room: keep `hud_gap` at 13 or more for

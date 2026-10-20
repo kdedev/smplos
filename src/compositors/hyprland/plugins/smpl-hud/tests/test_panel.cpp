@@ -6,6 +6,7 @@
 #include <cmath>
 #include <cstdio>
 #include <limits>
+#include <numbers>
 #include <string>
 #include <vector>
 
@@ -248,6 +249,18 @@ void checkLayout(const Layout& lay, const Params& p) {
         CHECK(inside(b.pos.x - r, b.pos.y - r, b.pos.x + r, b.pos.y + r));
     }
 
+    // A dot, with the flare over it, stays inside the extents wherever it is on its line.
+    for (const Runner& run : lay.panel.runners) {
+        CHECK(run.stroke >= 0 && size_t(run.stroke) < lay.panel.strokes.size());
+        if (run.stroke < 0 || size_t(run.stroke) >= lay.panel.strokes.size())
+            continue;
+        const double r = std::max(beadSize(lookOf(run.look)), beadSize(lookOf(lay.panel.flare))) / 2.0;
+        eachSegment(lay.panel.strokes[size_t(run.stroke)], [&](const Vertex& a, const Vertex& b) {
+            for (const Vertex& v : {a, b})
+                CHECK(inside(v.x - r, v.y - r, v.x + r, v.y + r));
+        });
+    }
+
     if (g_failures != before)
         std::fprintf(stderr, "  ^ %s\n", label(p).c_str());
 }
@@ -375,13 +388,14 @@ void testBeadsAndRunners() {
         CHECK(b.reach > 0 && b.haloAlpha > 0 && b.haloAlpha <= 1 && b.alpha > 0);
     }
 
-    // Two dots on the outline, opposite each other, and one on each trace.
+    // Two dots on the outline, opposite each other and going opposite ways, and
+    // one on each trace.
     std::vector<int> perStroke(pn.strokes.size(), 0);
     for (const Runner& r : pn.runners) {
         CHECK(r.stroke >= 0 && size_t(r.stroke) < pn.strokes.size());
         if (r.stroke >= 0 && size_t(r.stroke) < perStroke.size())
             ++perStroke[size_t(r.stroke)];
-        CHECK(r.speed > 0 && r.offset >= 0 && r.offset < 1);
+        CHECK(r.speed != 0 && r.offset >= 0 && r.offset < 1);
         CHECK(r.look.radius > pn.beads.front().radius); // a travelling dot is a little bigger than a resting one
     }
     CHECK(perStroke[0] == 2);
@@ -389,12 +403,50 @@ void testBeadsAndRunners() {
         CHECK(perStroke[i] == 1);
     CHECK_NEAR(pn.runners[0].offset, 0.0, 1e-9);
     CHECK_NEAR(pn.runners[1].offset, 0.5, 1e-9);
+    CHECK(pn.runners[0].speed > 0 && pn.runners[1].speed < 0);
+
+    // The dots on the traces start in different places, so they do not all hit the same end together.
+    for (size_t i = 2; i < pn.runners.size(); ++i) {
+        CHECK(pn.runners[i].speed > 0);
+        for (size_t j = i + 1; j < pn.runners.size(); ++j)
+            CHECK(std::fabs(pn.runners[i].offset - pn.runners[j].offset) > 0.1);
+    }
+
+    // A dot going round swells into a bigger flare with a wider and brighter halo near other dots.
+    const Bead& dot = pn.runners[0].look;
+    CHECK(pn.flare.radius > dot.radius);
+    CHECK(pn.flare.reach > dot.reach);
+    CHECK(pn.flare.haloAlpha >= dot.haloAlpha && pn.flare.haloAlpha <= 1);
+    CHECK(pn.touch.near > 0 && pn.touch.far > pn.touch.near);
+    CHECK(pn.merge.near > 0 && pn.merge.far > pn.merge.near);
+    CHECK(pn.merge.far <= 0.35 * strokeLength(pn.strokes[0]) + 1e-9);
+}
+
+// How many times a dot goes round the middle of the window over one lap, counted
+// clockwise on the screen.
+double turns(const Panel& pn, const Runner& r, Vec2 mid, double lap) {
+    constexpr int steps = 4000;
+    double        sum   = 0;
+    Vec2          prev  = runnerPose(pn, r, 0).pos;
+    for (int i = 1; i <= steps; ++i) {
+        const Vec2   cur = runnerPose(pn, r, lap * i / steps).pos;
+        const double ax = prev.x - mid.x, ay = prev.y - mid.y, bx = cur.x - mid.x, by = cur.y - mid.y;
+        sum += std::atan2(ax * by - ay * bx, ax * bx + ay * by);
+        prev = cur;
+    }
+    return sum / (2 * std::numbers::pi);
+}
+
+double stepOf(const Panel& pn, const Runner& r, double t, double dt = 1.0) {
+    const RunnerPose a = runnerPose(pn, r, t), b = runnerPose(pn, r, t + dt);
+    return std::hypot(b.pos.x - a.pos.x, b.pos.y - a.pos.y);
 }
 
 void testRunnerPose() {
     const Layout lay = buildLayout(panelStyle(), params(900, 600));
     const Panel& pn  = lay.panel;
     CHECK(pn.runners.size() >= 3);
+    const Vec2 mid{450, 300};
 
     int  shown = 0, total = 0;
     bool hidden = false;
@@ -402,13 +454,14 @@ void testRunnerPose() {
         if (r.stroke < 0 || size_t(r.stroke) >= pn.strokes.size())
             continue;
         const Stroke& s   = pn.strokes[size_t(r.stroke)];
-        const double  len = strokeLength(s), lap = len / r.speed;
+        const double  len = strokeLength(s), lap = len / std::fabs(r.speed);
         CHECK(len > 0);
 
         for (double t = 0; t < 3 * lap; t += 5.7) {
             const RunnerPose pose = runnerPose(pn, r, t);
             CHECK(pose.alpha >= 0 && pose.alpha <= 1);
             CHECK(distToStroke(s, pose.pos) < 1e-6);
+            CHECK(pose.glow == 0); // that needs the other dots; see runnerPoses
             if (r.stroke == 0) {
                 ++total;
                 if (pose.alpha > 0)
@@ -418,31 +471,63 @@ void testRunnerPose() {
             }
         }
 
-        // After a lap it is where it was.
-        const RunnerPose a = runnerPose(pn, r, 37.0), b = runnerPose(pn, r, 37.0 + lap);
+        if (s.closed) {
+            // After a lap it is where it was, having gone once round the window, the way its speed says.
+            const RunnerPose a = runnerPose(pn, r, 37.0), b = runnerPose(pn, r, 37.0 + lap);
+            CHECK_NEAR(a.pos.x, b.pos.x, 1e-6);
+            CHECK_NEAR(a.pos.y, b.pos.y, 1e-6);
+            CHECK_NEAR(a.alpha, b.alpha, 1e-6);
+            CHECK_NEAR(turns(pn, r, mid, lap), r.speed > 0 ? 1.0 : -1.0, 1e-3);
+
+            // It moves along the line at its own speed.
+            for (double t = 0; t < lap; t += 11.3) {
+                const double step = stepOf(pn, r, t);
+                CHECK(step > 0 && step <= std::fabs(r.speed) + 1e-6);
+            }
+            continue;
+        }
+
+        // On an open line it goes back and forth, never fading, and is back where it was after there and back.
+        const RunnerPose a = runnerPose(pn, r, 37.0), b = runnerPose(pn, r, 37.0 + 2 * lap);
         CHECK_NEAR(a.pos.x, b.pos.x, 1e-6);
         CHECK_NEAR(a.pos.y, b.pos.y, 1e-6);
-        CHECK_NEAR(a.alpha, b.alpha, 1e-6);
+        for (double t = 0; t < 4 * lap; t += 7.9)
+            CHECK_NEAR(runnerPose(pn, r, t).alpha, 1, 1e-6);
 
-        // It moves along the line at its own speed, clockwise.
-        const RunnerPose c = runnerPose(pn, r, 100.0), d = runnerPose(pn, r, 100.0 + 1.0 / r.speed);
-        const double     step = std::hypot(d.pos.x - c.pos.x, d.pos.y - c.pos.y);
-        CHECK(step > 0 && step <= 1 + 1e-6);
-
-        // A dot on an open line fades out at its ends and shows fully half way along.
-        if (!s.closed) {
-            CHECK_NEAR(runnerPose(pn, r, (1.0 - r.offset) * lap).alpha, 0, 1e-6);
-            CHECK_NEAR(runnerPose(pn, r, (0.5 - r.offset) * lap).alpha, 1, 1e-6);
+        // It reaches both ends and turns round there.
+        const Vertex &first = s.pts.front(), &last = s.pts.back();
+        const double  toEnd = (1.0 - r.offset) * lap;
+        CHECK_NEAR(runnerPose(pn, r, toEnd).pos.x, last.x, 1e-6);
+        CHECK_NEAR(runnerPose(pn, r, toEnd).pos.y, last.y, 1e-6);
+        CHECK_NEAR(runnerPose(pn, r, toEnd + lap).pos.x, first.x, 1e-6);
+        CHECK_NEAR(runnerPose(pn, r, toEnd + lap).pos.y, first.y, 1e-6);
+        for (double d : {3.0, 17.0, 40.0}) {
+            CHECK_NEAR(runnerPose(pn, r, toEnd - d).pos.x, runnerPose(pn, r, toEnd + d).pos.x, 1e-6);
+            CHECK_NEAR(runnerPose(pn, r, toEnd - d).pos.y, runnerPose(pn, r, toEnd + d).pos.y, 1e-6);
         }
+
+        // It never runs faster than the ease allows.
+        for (double t = 0; t < 2 * lap; t += 3.1)
+            CHECK(stepOf(pn, r, t) <= (1 + kBounceEase) * r.speed + 1e-6);
     }
     CHECK(hidden); // on the outline the dots vanish where the line does
     CHECK(shown > total / 2);
 
-    // On a plain frame nothing is invisible.
+    // It slows down towards the ends: on the straight trace in the notch it covers
+    // less in a step up to the turn than in one half way along.
+    const Runner& notch = pn.runners[2];
+    const double  lap   = strokeLength(pn.strokes[size_t(notch.stroke)]) / notch.speed;
+    const double  turn  = (1.0 - notch.offset) * lap;
+    CHECK(stepOf(pn, notch, turn - 1.0) < 0.6 * stepOf(pn, notch, turn - lap / 2 - 0.5));
+
+    // On a plain frame nothing is invisible, and the two dots still go opposite ways.
     const Layout plain = buildLayout(panelStyle(), params(400, 300));
-    for (const Runner& r : plain.panel.runners)
+    CHECK(plain.panel.runners.size() == 2);
+    for (const Runner& r : plain.panel.runners) {
         for (double t = 0; t < 2000; t += 13)
             CHECK_NEAR(runnerPose(plain.panel, r, t).alpha, 1, 1e-6);
+        CHECK_NEAR(turns(plain.panel, r, {200, 150}, strokeLength(plain.panel.strokes[0]) / std::fabs(r.speed)), r.speed > 0 ? 1.0 : -1.0, 1e-3);
+    }
 
     // Nothing for a runner that points nowhere.
     Runner lost = pn.runners.front();
@@ -450,6 +535,226 @@ void testRunnerPose() {
     CHECK(runnerPose(pn, lost, 5).alpha == 0);
     lost.stroke = -1;
     CHECK(runnerPose(pn, lost, 5).alpha == 0);
+
+    Panel withLost = pn;
+    withLost.runners.push_back(lost);
+    const auto poses = runnerPoses(withLost, 5);
+    CHECK(poses.size() == withLost.runners.size());
+    if (poses.size() == withLost.runners.size()) {
+        CHECK(poses.back().alpha == 0 && poses.back().glow == 0);
+        for (size_t i = 0; i + 1 < poses.size(); ++i)
+            CHECK(poses[i].alpha == runnerPose(pn, pn.runners[i], 5).alpha);
+    }
+}
+
+Stroke lineOf(std::vector<Vertex> pts, bool closed) {
+    Stroke s;
+    s.pts    = std::move(pts);
+    s.closed = closed;
+    return s;
+}
+
+Runner runner(int stroke, double offset, double speed) {
+    Runner r;
+    r.stroke = stroke;
+    r.offset = offset;
+    r.speed  = speed;
+    return r;
+}
+
+// A square outline 400 px a side, 1600 px round, clockwise from its top left corner.
+Panel square() {
+    Panel pn;
+    pn.strokes.push_back(lineOf({{0, 0, 1.f}, {400, 0, 1.f}, {400, 400, 1.f}, {0, 400, 1.f}}, true));
+    pn.flare.radius = 4;
+    pn.touch        = {14, 90};
+    pn.merge        = {20, 200};
+    return pn;
+}
+
+// The glow is a float, so it is only as exact as that.
+constexpr double kGlowTol = 1e-6;
+
+// What the proximity ranges make of a distance.
+double lit(double dist, const Proximity& range) {
+    const double t = std::clamp((range.far - dist) / (range.far - range.near), 0.0, 1.0);
+    return t * t * (3 - 2 * t);
+}
+
+// A dot going round lights up when a dot on a trace is near it, the more the nearer it is.
+void testGlowNearTraceDots() {
+    Panel pn = square();
+    pn.strokes.push_back(lineOf({{50, -10, 1.f}, {350, -10, 1.f}}, false));
+    // The dot going round clockwise starts at the top left corner, the one going the other way
+    // at the bottom right; the third stands still half way along the trace: at (200, -10).
+    pn.runners = {runner(0, 0.0, 1.0), runner(0, 0.5, -1.0), runner(1, 0.5, 0.0)};
+
+    // Right under it, 10 px away.
+    auto poses = runnerPoses(pn, 200);
+    CHECK(poses.size() == 3);
+    CHECK_NEAR(poses[0].glow, 1, kGlowTol);
+    CHECK_NEAR(poses[1].glow, 0, kGlowTol); // the other one is far from everything
+    CHECK_NEAR(poses[2].glow, 0, kGlowTol); // dots on traces do not glow
+    CHECK_NEAR(poses[2].alpha, 1, 1e-9);
+
+    // Further off the glow is lower, and exactly half the way from 14 px to 90 px.
+    for (double dist : {20.0, 40.0, 52.0, 70.0, 89.0}) {
+        const double dx = std::sqrt(dist * dist - 100);
+        poses           = runnerPoses(pn, 200 + dx);
+        CHECK_NEAR(poses[0].glow, lit(dist, pn.touch), kGlowTol);
+        CHECK_NEAR(poses[1].glow, 0, kGlowTol);
+    }
+    CHECK_NEAR(lit(52, pn.touch), 0.5, 1e-9);
+
+    // Beyond 90 px there is none.
+    CHECK_NEAR(runnerPoses(pn, 0)[0].glow, 0, kGlowTol);
+    CHECK_NEAR(runnerPoses(pn, 300)[0].glow, 0, kGlowTol);
+
+    // It rises as the dot comes nearer and falls as it goes away again.
+    double last = -1;
+    bool   rose = true, fell = true;
+    for (double t = 100; t <= 200; t += 2.5) {
+        const double g = runnerPoses(pn, t)[0].glow;
+        rose           = rose && g >= last - 1e-12;
+        last           = g;
+    }
+    for (double t = 200; t <= 300; t += 2.5) {
+        const double g = runnerPoses(pn, t)[0].glow;
+        fell           = fell && g <= last + 1e-12;
+        last           = g;
+    }
+    CHECK(rose && fell);
+
+    // Without a flare nothing glows.
+    Panel off = pn;
+    off.flare.radius = 0;
+    for (const RunnerPose& p : runnerPoses(off, 200))
+        CHECK(p.glow == 0);
+
+    // A dot that cannot be seen lights nothing up, one that half shows lights it half.
+    pn.strokes[1].pts = {{50, -10, 0.5f}, {350, -10, 0.5f}};
+    CHECK_NEAR(runnerPoses(pn, 200)[0].glow, 0.5, kGlowTol);
+    pn.strokes[1].pts = {{50, -10, 0.f}, {350, -10, 0.f}};
+    CHECK_NEAR(runnerPoses(pn, 200)[0].glow, 0, kGlowTol);
+
+    // Two dots near it add up: two halves make three quarters.
+    pn.strokes[1].pts = {{50, -52, 1.f}, {350, -52, 1.f}};
+    pn.strokes.push_back(lineOf({{50, 52, 1.f}, {350, 52, 1.f}}, false));
+    pn.runners.push_back(runner(2, 0.5, 0.0));
+    poses = runnerPoses(pn, 200);
+    CHECK(poses.size() == 4);
+    CHECK_NEAR(poses[0].glow, 0.75, kGlowTol);
+}
+
+// The two dots going round light each other up as they near, measured along the line.
+void testGlowBetweenCirclers() {
+    Panel pn   = square();
+    pn.runners = {runner(0, 0.0, 1.0), runner(0, 0.5, -1.0)};
+
+    // They meet after 400 px, 800 px from where one started and where the other did.
+    auto poses = runnerPoses(pn, 400);
+    CHECK_NEAR(poses[0].glow, 1, kGlowTol);
+    CHECK_NEAR(poses[1].glow, 1, kGlowTol);
+
+    // 200 px apart along the line is as far as they light each other, 20 px as near.
+    CHECK_NEAR(runnerPoses(pn, 300)[0].glow, 0, kGlowTol);
+    CHECK_NEAR(runnerPoses(pn, 390)[0].glow, 1, kGlowTol);
+    for (double t : {310.0, 330.0, 350.0, 372.0}) {
+        poses = runnerPoses(pn, t);
+        CHECK_NEAR(poses[0].glow, lit(800 - 2 * t, pn.merge), kGlowTol);
+        CHECK_NEAR(poses[0].glow, poses[1].glow, kGlowTol);
+        CHECK(poses[0].glow > 0 && poses[0].glow < 1);
+    }
+
+    // They glow after they have passed each other as well, and again when they meet on the far side.
+    CHECK_NEAR(runnerPoses(pn, 430)[0].glow, lit(60, pn.merge), kGlowTol);
+    CHECK_NEAR(runnerPoses(pn, 1200)[0].glow, 1, kGlowTol);
+    CHECK_NEAR(runnerPoses(pn, 800)[0].glow, 0, kGlowTol);
+
+    // The distance is the short way round, across the end of the line.
+    pn.runners = {runner(0, 0.0, 0.0), runner(0, 1590.0 / 1600, 0.0)};
+    poses      = runnerPoses(pn, 0);
+    CHECK_NEAR(poses[0].glow, 1, kGlowTol);
+    CHECK_NEAR(poses[1].glow, 1, kGlowTol);
+    pn.runners = {runner(0, 0.0, 0.0), runner(0, 120.0 / 1600, 0.0)};
+    poses      = runnerPoses(pn, 0);
+    CHECK_NEAR(poses[0].glow, lit(120, pn.merge), kGlowTol);
+    pn.runners = {runner(0, 0.0, 0.0), runner(0, 1480.0 / 1600, 0.0)};
+    CHECK_NEAR(runnerPoses(pn, 0)[0].glow, lit(120, pn.merge), kGlowTol);
+
+    // One that cannot be seen does not draw the other on: the second dot sits 5 px on, where the line
+    // is gone. With the line there it would light the first up all the way.
+    pn.strokes[0].pts = {{0, 0, 1.f}, {200, 0, 1.f}, {205, 0, 0.f}, {400, 0, 0.f}, {400, 400, 1.f}, {0, 400, 1.f}};
+    pn.runners        = {runner(0, 200.0 / 1600, 0.0), runner(0, 205.0 / 1600, 0.0)};
+    poses             = runnerPoses(pn, 0);
+    CHECK_NEAR(poses[1].alpha, 0, 1e-9);
+    CHECK_NEAR(poses[0].glow, 0, kGlowTol);
+    pn.strokes[0].pts[2].alpha = 1.f;
+    CHECK_NEAR(runnerPoses(pn, 0)[0].glow, 1, kGlowTol);
+}
+
+// On the real layouts: the glow stays in range, belongs to the dots going round and
+// does what it should near the dots on the traces.
+void testGlowOnPanels() {
+    struct Case {
+        int   w, h;
+        float scale;
+        bool  floating;
+    };
+    for (const Case& c : {Case{900, 600, 1.f, false}, {1100, 640, 1.f, false}, {1920, 1080, 1.f, true}, {1920, 1080, 1.5f, false}, {3840, 2160, 2.f, false}, {400, 300, 1.f, false}}) {
+        const int    before = g_failures;
+        const Params p      = params(c.w, c.h, c.scale, c.floating);
+        const Layout lay    = buildLayout(panelStyle(), p);
+        const Panel& pn     = lay.panel;
+        const double lap    = strokeLength(pn.strokes[0]) / std::fabs(pn.runners[1].speed);
+
+        double maxGlow = 0, minGlow = 1;
+        int    nearTrace = 0;
+        for (double t = 0; t < 40 * lap; t += 2.9) {
+            const auto poses = runnerPoses(pn, t);
+            CHECK(poses.size() == pn.runners.size());
+            if (poses.size() != pn.runners.size())
+                return;
+
+            for (size_t i = 0; i < poses.size(); ++i) {
+                CHECK(poses[i].glow >= 0 && poses[i].glow <= 1);
+                CHECK_NEAR(poses[i].alpha, runnerPose(pn, pn.runners[i], t).alpha, 1e-6);
+                if (pn.runners[i].stroke != 0) {
+                    CHECK(poses[i].glow == 0);
+                    continue;
+                }
+                if (poses[i].alpha <= 0)
+                    continue;
+                maxGlow = std::max(maxGlow, double(poses[i].glow));
+                minGlow = std::min(minGlow, double(poses[i].glow));
+
+                // Within reach of the dot on a trace it is lit all the way.
+                for (size_t j = 0; j < poses.size(); ++j) {
+                    if (pn.runners[j].stroke == 0 || poses[j].alpha < 1)
+                        continue;
+                    if (std::hypot(poses[i].pos.x - poses[j].pos.x, poses[i].pos.y - poses[j].pos.y) <= pn.touch.near) {
+                        ++nearTrace;
+                        CHECK_NEAR(poses[i].glow, 1, 1e-6);
+                    }
+                }
+            }
+        }
+        CHECK(maxGlow > 0.99 && minGlow < 0.01); // it comes and goes
+        if (pn.strokes.size() > 1)
+            CHECK(nearTrace > 0);
+        if (g_failures != before)
+            std::fprintf(stderr, "  ^ %s\n", label(p).c_str());
+    }
+
+    // On a plain frame there are no traces, and the two dots light each other up in turn.
+    const Layout plain = buildLayout(panelStyle(), params(400, 300));
+    const double lap   = strokeLength(plain.panel.strokes[0]) / std::fabs(plain.panel.runners[1].speed);
+    for (double t = 0; t < 4 * lap; t += 3.3) {
+        const auto poses = runnerPoses(plain.panel, t);
+        CHECK(poses.size() == 2);
+        if (poses.size() == 2)
+            CHECK_NEAR(poses[0].glow, poses[1].glow, 1e-6);
+    }
 }
 
 void testKnobs() {
@@ -459,6 +764,7 @@ void testKnobs() {
     st.beadRadius = 0;
     Layout lay    = buildLayout(st, p);
     CHECK(lay.valid && lay.panel.beads.empty() && lay.panel.runners.empty());
+    CHECK(lay.panel.flare.radius == 0 && runnerPoses(lay.panel, 10).empty());
     CHECK(lay.panel.strokes.size() == 4); // the traces stay
 
     st             = panelStyle();
@@ -538,6 +844,9 @@ int main() {
     testClearOfWindow();
     testBeadsAndRunners();
     testRunnerPose();
+    testGlowNearTraceDots();
+    testGlowBetweenCirclers();
+    testGlowOnPanels();
     testKnobs();
     testFloating();
     testDeterministic();

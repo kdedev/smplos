@@ -3,7 +3,8 @@
 A Hyprland plugin that draws HUD window frames around every window, from the
 active theme: either a chamfered, glowing outline with corner brackets and edge
 tabs (the look of the `neon` theme), or a notched panel outline with circuit
-traces and dots that run along them (the look of `amber-hud`).
+traces, dots that circle the outline and dots that bounce along the traces (the
+look of `amber-hud`).
 
 It is a **window decoration inside the compositor's own render pass**. It moves,
 resizes, animates, fades and stacks together with its window, so it never lags
@@ -21,7 +22,7 @@ glow and shadow.
 | `geometry.{hpp,cpp}` | Compositor-free. The **style registry** (`kStyles[]`) and `buildLayout()`, which turns a style plus a window size into a list of concentric border rings and flat fills (ring styles) or a `Panel` of polylines and dots (panel styles), in physical pixels, and the centre line of the outline the travelling glow follows. |
 | `gradient.{hpp,cpp}` | Compositor-free. CPU port of Hyprland's `gradient.glsl`, so flat shapes (edge tabs, the lines of a panel) take the colour the border shader would paint at that point. Keep it in step with the shader. |
 | `sweep.{hpp,cpp}` | Compositor-free. The travelling glow: the outline's centre path (`buildPath` for a rounded rectangle or a polyline, `pointAt`), the sprite rasteriser (`renderSweep`), its bounds, and the speed, tick-rate and fade-in/out maths. |
-| `panel.{hpp,cpp}` | Compositor-free. The notched outline, traces and dots of a `Kind::Panel` style (`buildPanel`), and where each dot is once it has travelled so far (`runnerPose`). |
+| `panel.{hpp,cpp}` | Compositor-free. The notched outline, traces and dots of a `Kind::Panel` style (`buildPanel`), and where each dot is once it has travelled so far and how much it glows (`runnerPoses`). |
 | `stamp.{hpp,cpp}` | Compositor-free. Turns the lines and dots of a panel into small images the compositor can draw as textured quads: cuts a stroke into strips and tiles (`cutStroke`), bakes them (`bakeStrip`, `bakeTile`, `bakeBead`) and gives each a cache key. |
 | `theme.{hpp,cpp}` | Compositor-free. Reads the `$themeHud*` variables from the generated `theme.conf`. |
 | `HudDecoration.{hpp,cpp}` | `IHyprWindowDecoration` on every window: reports the HUD's extents, caches the layout, collects the window's live (animated) border and glow gradients and queues a pass element. Owns the one timer that advances the focused window's travelling glow and dots, and decides whose `border_animation` loops keep turning (see "Focus only"). |
@@ -43,7 +44,7 @@ Hyprland config reload, which `theme-set` triggers. Values are clamped.
 | `$themeHudChamfer` | `hud_chamfer` | `10` | 0 to 96 px minimum corner cut |
 | `$themeHudLineWidth` | `hud_line_width` | `3` | 1 to 16 px |
 | `$themeHudFloatGlowRange` | `hud_float_glow_range` | `0` | 0 to 64 px; floating windows' halo reaches at least this far |
-| `$themeHudSweep` | `hud_sweep` | `false` | `true` / `false`; a soft glow drifts along the focused window's outline, and the dots of a `panel` run along its lines |
+| `$themeHudSweep` | `hud_sweep` | `false` | `true` / `false`; a soft glow drifts along the focused window's outline, and the dots of a `panel` move along its lines |
 | `$themeHudSweepSpeed` | `hud_sweep_speed` | `80` | 10 to 400 px per second (the dots of a `panel` run 1.6 times as fast) |
 | `$themeHudSweepLength` | `hud_sweep_length` | `180` | 40 to 600 px along the line |
 
@@ -135,7 +136,7 @@ A style is one entry in `kStyles[]` in `geometry.cpp`; the fields are documented
 |-------|------|
 | `scifi` | Outline, halos on both sides, corner brackets, mid-edge tabs |
 | `minimal` | Outline and halos only |
-| `panel` | Notched outline with a step, a ghost line and a cut corner, circuit traces ending in beads, and dots that run along the lines (`amber-hud`) |
+| `panel` | Notched outline with a step, a ghost line and a cut corner, circuit traces ending in beads, two dots circling the outline in opposite directions and a dot bouncing along each trace; the circling dots glow as they near a bouncing dot or each other (`amber-hud`) |
 
 For the ring styles (`scifi`, `minimal`) the corner shape is not part of the
 style: the outline follows the window's own `rounding` and `rounding_power` at a
@@ -161,11 +162,28 @@ pixels), beads and runners, all in physical px from the window's top-left corner
   (the window plus the outline's clearance) is smaller than 480 × 160 logical px,
   or that has no room for the notches, gets a plain chamfered outline with two dots
   and no traces.
-- **Runners**: while the window has focus, dots run along the outline and the
-  traces, at `hud_sweep_speed` times the style's `runnerSpeed`, with their own
-  offsets and speeds, fading out where a line fades out. They stay as long as the
-  focused window's travelling glow does, which also decides the timer's pace and
-  the damage. The beads at the ends of the traces are always there.
+- **Runners**: while the window has focus, dots move along the outline and the
+  traces, at `hud_sweep_speed` times the style's `runnerSpeed`, each with its own
+  offset and speed. A runner on the closed outline goes round it (fading out
+  where the ghost line does), and the two of them go in opposite directions (a
+  negative `Runner::speed` runs the other way). A runner on a trace goes back and
+  forth between the beads at its ends, slowing down into each end and turning
+  there, and never fades. They stay as long as the focused window's travelling
+  glow does, which also decides the timer's pace and the damage. The beads at the
+  ends of the traces are always there. Where a dot is, is a pure function of how
+  far the dots have travelled (`runnerPoses`), which is what the tests and the
+  preview use.
+- **Glow.** A dot going round lights up as it nears a dot bouncing on a trace
+  (straight-line distance, `Panel::touch`: fully lit within 14 px, not at all from
+  70 px, at scale 1) and as it nears the other dot going round (distance along the
+  outline, `Panel::merge`: from a tenth of the outline's length away, but from
+  no less than 160 and no more than 400 px at scale 1 and never from more than
+  35% of the outline, and fully lit within a tenth of that), so the two seem
+  about to merge when they meet. `runnerPoses` returns the amount
+  (`RunnerPose::glow`, 0 to 1) and the compositor draws the flare, `Panel::flare`,
+  a bigger and brighter bead, over the dot with that much opacity. Dots on traces
+  do not glow, a dot that cannot be seen lights nothing and a half-visible one
+  lights half. A `flare` of radius 0 turns the glow off.
 - **How it is drawn.** The compositor can only draw textured quads, so `stamp.cpp`
   cuts every stroke into straight strips and small tiles where the line turns,
   and bakes each piece once: a strip is a 2-texel image stretched along its run
@@ -174,7 +192,9 @@ pixels), beads and runners, all in physical px from the window's top-left corner
   sprite. They are kept on the GPU in a cache shared by all windows (at most 768
   images; a full cache is emptied and refilled from the next frame), keyed on
   everything an image depends on, colours rounded to 5 bits a channel. Pieces never
-  overlap, and only the frame's damage is painted.
+  overlap, and only the frame's damage is painted. A dot that glows is drawn twice,
+  as its own bead and with the flare over it: the glow is only the flare's opacity,
+  so it costs one more quad and no image of its own for each value.
 - **`border_animation`.** A turning gradient recolours every piece at each step, so
   the cache bakes new images and the whole outline is repainted: keep it off in a
   panel theme, as `amber-hud` does, and let the dots and the travelling glow move

@@ -97,8 +97,10 @@ border_animation = "false"
 # compositor, so it moves with the window frame by frame. The top and bottom
 # edges step in and out, a ghost line fades out along the bottom, three circuit
 # traces end in beads, and the bottom left corner is cut off. Windows that are
-# too small for all of that get a plain chamfered outline. Dots run along the
-# outline and the traces; a soft ellipse of light drifts slowly around the
+# too small for all of that get a plain chamfered outline. Two dots circle the
+# outline in opposite directions and one bounces along each trace; a circling
+# dot glows as it nears a bouncing one, and both glow as they near each other,
+# as if about to merge. A soft ellipse of light drifts slowly around the
 # focused window's outline (about 60 px/s, the dots 1.6 times as fast), fading
 # in and out as focus comes and goes. Both are small cached sprites, repainted
 # ~20 times a second only where they move, and only while the window is visible.
