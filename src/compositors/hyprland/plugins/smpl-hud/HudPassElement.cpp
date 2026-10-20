@@ -181,10 +181,6 @@ namespace {
             }
         }
 
-        // A glyph style shows its dots as characters (drawGlyphs).
-        if (panel.glyphs.on())
-            return;
-
         for (const auto& bead : panel.beads)
             drawBead(scope, frame, bead, bead.pos, frame.alpha * bead.alpha);
     }
@@ -194,7 +190,7 @@ namespace {
     void drawPanelDots(const SHudFrame& frame) {
         const auto& panel   = frame.layout->panel;
         const auto& runners = panel.runners;
-        if (panel.glyphs.on() || frame.runners.size() != runners.size())
+        if (runners.empty() || frame.runners.size() != runners.size())
             return;
 
         CTextureScope scope;
@@ -212,9 +208,9 @@ namespace {
     constexpr int kGlyphToneLevels = 7;
 
     // The characters of a glyph style, each in the colours of the line where it
-    // stands, on a dark plate that dims the line behind it. One that is hot has
-    // the same character drawn over it in the bright colour (without a plate), as
-    // strongly as it is hot; the glow of the two adds up.
+    // stands (on a dark plate that dims the line behind it, if the style has one).
+    // One that is hot has the same character drawn over it in the bright colour
+    // (without a plate), as strongly as it is hot; the glow of the two adds up.
     void drawGlyphs(const SHudFrame& frame) {
         const auto& face = frame.layout->panel.glyphs;
         const auto  size = smplhud::glyphSize(face);
@@ -250,9 +246,8 @@ namespace {
 
     // The travelling glow: a small texture, redrawn on the CPU only when the
     // glow has moved or changed colour, laid over the line under its centre.
-    void drawSweep(const SHudFrame& frame) {
-        const auto& sweep = *frame.sweep;
-        if (!sweep.path || !sweep.cache)
+    void drawSweep(const SHudFrame& frame, const SHudSweep& sweep) {
+        if (!sweep.path || !sweep.cache || sweep.intensity * frame.alpha < 0.002F)
             return;
 
         const auto box = smplhud::sweepBounds(*sweep.path, sweep.at, sweep.shape, sweep.texel, sweep.limit);
@@ -375,8 +370,8 @@ std::vector<UP<IPassElement>> CHudPassElement::draw() {
     if (!layout.panel.empty())
         drawPanelLines(m_frame);
 
-    if (m_frame.sweep)
-        drawSweep(m_frame);
+    for (const auto& sweep : m_frame.sweeps)
+        drawSweep(m_frame, sweep);
 
     if (!layout.panel.empty()) {
         drawPanelDots(m_frame);

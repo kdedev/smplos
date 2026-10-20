@@ -167,7 +167,7 @@ Most themes never need overrides. Use `term_N` only when a terminal slot should 
 
 - **Decoration**: `rounding`, `app_rounding` (optional), `blur_size`, `blur_passes`, `opacity_active`, `opacity_inactive`, `app_background_opacity`, `term_opacity_active`, `term_opacity_inactive`, `popup_opacity`, `messenger_opacity`, `browser_opacity`
 - **Layout**: `gaps_in`, `gaps_out`, `border_size`, `border_active` (optional), `border_inactive` (optional)
-- **Effects** (optional, Hyprland only): `rounding_power`, `shadow_range`, `shadow_render_power`, `shadow_color`, `shadow_color_inactive`, `glow`, `glow_range`, `glow_render_power`, `glow_color`, `glow_color_inactive`, `border_animation`, `hud_frame`, `hud_style`, `hud_gap`, `hud_chamfer`, `hud_line_width`, `hud_float_glow_range`, `hud_sweep`, `hud_sweep_speed`, `hud_sweep_length`
+- **Effects** (optional, Hyprland only): `rounding_power`, `shadow_range`, `shadow_render_power`, `shadow_color`, `shadow_color_inactive`, `glow`, `glow_range`, `glow_render_power`, `glow_color`, `glow_color_inactive`, `border_animation`, `hud_frame`, `hud_hide_border`, `hud_style`, `hud_gap`, `hud_chamfer`, `hud_line_width`, `hud_float_glow_range`, `hud_sweep`, `hud_sweep_speed`, `hud_sweep_length`
 - **App selectors**: `app_theme_nvim`, `app_theme_vscode`
 
 Example:
@@ -193,12 +193,13 @@ unchanged. niri and other compositors ignore them.
 | `glow_color`, `glow_color_inactive` | accent at 69% alpha, same as active | Single color or gradient |
 | `border_animation` | `"false"` | `"true"` or `"false"` only |
 | `hud_frame` | `"false"` | `"true"` or `"false"` only; turns on the HUD frames the `smpl-hud` Hyprland plugin draws around windows |
-| `hud_style` | `"scifi"` | Name of the HUD look: `scifi` (outline, halos, corner brackets, edge tabs), `minimal` (outline and halos only), `panel` (notched outline with a step, a ghost line and a cut corner, circuit traces ending in beads, two dots circling the outline in opposite directions and a dot bouncing along each trace, the circling ones glowing as they near a bouncing dot or each other) or `matrix` (the `panel` with Matrix characters instead of dots: streams of them rain along the lines and the beads pulse). Lowercase letters, digits, `-` and `_`; an unknown name shows a notification and draws nothing |
+| `hud_hide_border` | `"false"` | `"true"` or `"false"` only, and needs `hud_frame = "true"`; hides Hyprland's own border so the frame's outline is the only line (Hyprland gets a border size of 0; `border_size` stays what compositors without the frame draw) |
+| `hud_style` | `"scifi"` | Name of the HUD look: `scifi` (outline, halos, corner brackets, edge tabs), `minimal` (outline and halos only), `panel` (notched outline with a step, a ghost line and a cut corner, circuit traces ending in beads, two dots circling the outline in opposite directions and a dot bouncing along each trace, the circling ones glowing as they near a bouncing dot or each other) or `matrix` (the same outline as one line with its glow, Matrix characters falling down both sides in two columns, and glows drifting along the top and the bottom). Lowercase letters, digits, `-` and `_`; an unknown name shows a notification and draws nothing |
 | `hud_gap`, `hud_chamfer` | `"5"`, `"10"` | Non-negative integers: outline distance from the window and corner-cut size, in px. The notches of a `panel` or `matrix` frame are 9 px deep with a `hud_gap` of 13 or more and shrink below that |
 | `hud_line_width` | `"3"` | Number from 1 to 9.99: outline thickness in px; corner brackets and edge tabs follow it |
 | `hud_float_glow_range` | `"0"` | Non-negative integer. Floating windows glow brighter than tiled ones and their halo reaches at least this many px; `"0"` keeps the style's own reach (14 px for `scifi`) |
-| `hud_sweep` | `"false"` | `"true"` or `"false"` only; a soft glow drifts slowly along the focused window's outline, in the outline's own colors, and fades in and out as focus moves. In the `panel` and `matrix` styles it also sets the dots or characters moving along the lines |
-| `hud_sweep_speed`, `hud_sweep_length` | `"80"`, `"180"` | Integers: speed in px per second (10 to 400; the dots of a `panel` and the characters of a `matrix` run 1.6 times as fast) and length along the line in px (40 to 600). Keep the speed low: it reads as light moving along the frame, not as a spinner (Neon: `"70"`, a lap takes tens of seconds) |
+| `hud_sweep` | `"false"` | `"true"` or `"false"` only; a soft glow drifts slowly along the focused window's outline, in the outline's own colors, and fades in and out as focus moves. In the `panel` style it also sets the dots moving along the lines, in the `matrix` style the falling characters and the drifting glows |
+| `hud_sweep_speed`, `hud_sweep_length` | `"80"`, `"180"` | Integers: speed in px per second (10 to 400; the dots of a `panel` run 1.6 times as fast and the characters of a `matrix` fall twice as fast) and length along the line in px (40 to 600; the longest a glow of a `matrix` gets, which also decides how many fit on an edge). Keep the speed low: it reads as light moving along the frame, not as a spinner (Neon: `"70"`, a lap takes tens of seconds) |
 
 Gradients use the same syntax as `border_active`: one or more `rgba(rrggbbaa)`
 stops and an optional angle, e.g. `"rgba(00f0ffb0) rgba(2f7bff80) 45deg"`.
@@ -229,7 +230,8 @@ stops and an optional angle, e.g. `"rgba(00f0ffb0) rgba(2f7bff80) 45deg"`.
   follows its window with no lag. It reads these keys from the generated
   `~/.config/hypr/theme.conf` and applies a change on the next Hyprland config
   reload (`theme-set` triggers one). Neighbouring tiled outlines sit
-  `2 * (gaps_in + border_size) - 2 * hud_gap` apart. Keep that larger than
+  `2 * (gaps_in + border) - 2 * hud_gap` apart, where `border` is `border_size`,
+  or 0 with `hud_hide_border`. Keep that larger than
   `hud_line_width` or their lines touch, and at least `hud_line_width + 13` if
   their halos (about 6 px beyond each line are clearly visible) should stay
   separate; widen `gaps_in` to get there (Neon: `gaps_in = "18"` leaves 28 px).
@@ -277,21 +279,25 @@ stops and an optional angle, e.g. `"rgba(00f0ffb0) rgba(2f7bff80) 45deg"`.
   warm near-black backgrounds at 0.85 opacity, `rounding = "42"` with
   `rounding_power = "1.0"`, `gaps_in = "24"`, `hud_gap = "15"` (outlines 22 px
   apart), `hud_line_width = "2"`, an amber gradient frame, and an orange glow.
-- The `matrix` style is the `panel` outline with Matrix characters where the
-  panel has dots, and the same room requirements (`hud_gap` of 13 or more, a
-  frame of at least 480 × 160 logical px, `border_animation = "false"`). A
-  character stands every few px along the outline and the traces on a soft dark
-  plate, so the line breaks behind it. The bead at the end of each trace is a
-  character that pulses slowly and changes with every breath. While a window has
-  focus (and `hud_sweep = "true"`, which drives everything that moves), two
-  streams of characters rain around the outline in opposite directions and one
-  runs back and forth along each trace, each a bright head with a fading tail,
-  longer and brighter near a bead or the other stream; a window without focus
-  keeps only its dim beads. `matrix-hud/colors.toml` is a complete example: the
-  Matrix text, accent and status colors on a near-black green background at 0.85
-  opacity, the layout of `amber-hud`, a frame that shades from mint white
-  through green to teal and a deeper emerald-to-aqua glow so the two layers
-  stay apart.
+- The `matrix` style keeps the `panel`'s outline and nothing else of its line
+  work: **one line with its glow**, and the same room requirements for the
+  notches (`hud_gap` of 13 or more, a frame of at least 480 × 160 logical px).
+  Set `hud_hide_border = "true"` so Hyprland's own border is not a second line,
+  and turn Hyprland's glow and shadow off (`glow = "false"`, `shadow_range = "0"`;
+  `1` still draws a thin ring); the plugin's halo, tinted by `glow_color`, is then
+  the only glow, and `hud_float_glow_range` widens it on floating windows. Matrix
+  characters fall down the left and right edges, top to bottom, in two columns on
+  each side, one either side of the line inside its glow, each fall a bright head
+  with a fading tail and a slight glow of its own. Along the top and the bottom up
+  to two ellipses of light per edge drift slowly to and fro and pulse, also inside
+  the glow. Only the focused window moves, and `hud_sweep = "true"` drives all of
+  it (`"false"` leaves the outline and its halo); keep `border_animation = "false"`.
+  The characters' columns need about 18 px between neighbouring outlines
+  (`gaps_in = "24"` and `hud_gap = "15"` with the border hidden), and without the
+  plugin the theme has no border line at all. `matrix-hud/colors.toml` is a
+  complete example: the Matrix text, accent and status colors on a near-black
+  green background at 0.85 opacity, a frame that shades from mint white through
+  green to teal and a deeper emerald-to-aqua glow so the two layers stay apart.
 
 ## 4) Generate theme files
 

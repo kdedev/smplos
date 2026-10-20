@@ -40,6 +40,7 @@ HUD = (
     ("hud_sweep", "hud_sweep_flag", "themeHudSweep"),
     ("hud_sweep_speed", "hud_sweep_speed", "themeHudSweepSpeed"),
     ("hud_sweep_length", "hud_sweep_length", "themeHudSweepLength"),
+    ("hud_hide_border", "hud_hide_border_flag", "themeHudHideBorder"),
 )
 EFFECT_KEYS = tuple(key for key, _, _ in EFFECTS + HUD)
 EFFECT_VARS = tuple(var for _, _, var in EFFECTS + HUD)
@@ -65,6 +66,7 @@ CLASSIC = {
     "themeHudSweep": "0",
     "themeHudSweepSpeed": "80",
     "themeHudSweepLength": "180",
+    "themeHudHideBorder": "0",
 }
 
 # Evaluates the real looknfeel.lua (and theme.lua) against a recording hl stub.
@@ -99,6 +101,7 @@ for _, section in ipairs({"shadow", "glow"}) do
     end
 end
 print("value\tborder\t" .. show(config.general.col.active_border))
+print("value\tborder_size\t" .. show(config.general.border_size))
 '''
 
 
@@ -214,6 +217,9 @@ class StockThemeEffectTests(unittest.TestCase):
         self.assertEqual(variables["themeGlowRange"], "12")
         self.assertEqual(variables["themeHudFloatGlowRange"], "24")
         self.assertEqual(variables["themeHudLineWidth"], "3")
+        # Hyprland keeps its own border: the frame stands on top of it.
+        self.assertEqual(variables["themeHudHideBorder"], "0")
+        self.assertEqual(variables["themeBorderSize"], read_palette(THEMES / "neon/colors.toml")["border_size"])
         # Wide gaps: the neighbours' outlines are far enough apart for their halos to
         # stay separate (the theme guide: at least hud_line_width + 13 px).
         apart = 2 * (int(variables["themeGapsIn"]) + int(variables["themeBorderSize"])) - 2 * int(variables["themeHudGap"])
@@ -277,6 +283,9 @@ class StockThemeEffectTests(unittest.TestCase):
         self.assertEqual(variables["themeGlow"], "1")
         # The notches need the outline at least 13 px off the window.
         self.assertGreaterEqual(int(variables["themeHudGap"]), 13)
+        # Hyprland keeps its own border: the frame stands on top of it.
+        self.assertEqual(variables["themeHudHideBorder"], "0")
+        self.assertEqual(variables["themeBorderSize"], palette["border_size"])
         apart = 2 * (int(variables["themeGapsIn"]) + int(variables["themeBorderSize"])) - 2 * int(variables["themeHudGap"])
         self.assertGreaterEqual(apart, int(variables["themeHudLineWidth"]) + 13)
         # The dots and the travelling glow are the animation; a turning border gradient
@@ -319,18 +328,26 @@ class StockThemeEffectTests(unittest.TestCase):
         for key in ("foreground", "fg_dim", "muted", "accent", "accent_alt", "danger", "success", "warning", "info"):
             self.assertEqual(palette[key], stock_matrix[key], key)
         self.assertNotEqual(palette["background"], stock_matrix["background"])
-        # The notched outline with Matrix characters instead of dots, around octagonal windows.
+        # One notched outline and its glow, around octagonal windows. Hyprland's own border,
+        # glow and shadow are off, so the plugin's outline and halo are all there is.
         self.assertEqual(variables["themeHudFrame"], "1")
         self.assertEqual(variables["themeHudStyle"], "matrix")
         self.assertEqual(variables["themeRoundingPower"], "1.0")
         self.assertEqual(variables["themeRounding"], "42")
-        self.assertEqual(variables["themeGlow"], "1")
+        self.assertEqual(variables["themeHudHideBorder"], "1")
+        self.assertEqual(variables["themeBorderSize"], "0")
+        self.assertEqual(palette["border_size"], "2")  # the width compositors without the frame draw
+        self.assertEqual(variables["themeGlow"], "0")
+        self.assertEqual(variables["themeShadowRange"], "0")  # a range of 1 still draws a thin ring
         # The notches need the outline at least 13 px off the window.
         self.assertGreaterEqual(int(variables["themeHudGap"]), 13)
+        # Without Hyprland's border the windows are 2 * gaps_in apart and the outlines
+        # stand hud_gap off them: that is the room two neighbours' halos share.
         apart = 2 * (int(variables["themeGapsIn"]) + int(variables["themeBorderSize"])) - 2 * int(variables["themeHudGap"])
         self.assertGreaterEqual(apart, int(variables["themeHudLineWidth"]) + 13)
-        # The characters and the travelling glow are the animation, and every one of
-        # them is driven by the sweep: without it the plugin shows only still beads.
+        self.assertEqual(apart, 18)
+        # The falling characters and the drifting glows are the animation, and the
+        # sweep drives both: without it the plugin shows only the still outline.
         self.assertEqual(variables["themeBorderAnimation"], "0")
         self.assertEqual(variables["themeHudSweep"], "1")
         self.assertTrue(40 <= int(variables["themeHudSweepSpeed"]) <= 100)
@@ -473,6 +490,7 @@ class RuntimeEffectTests(unittest.TestCase):
                     values["glow.color_inactive"], lua_color(variables["themeGlowColorInactive"]),
                 )
                 self.assertEqual(values["border"], lua_color(variables["activeBorderColor"]))
+                self.assertEqual(values["border_size"], variables["themeBorderSize"])
                 self.assertEqual(
                     animations["borderangle"]["enabled"],
                     "true" if variables["themeBorderAnimation"] == "1" else "false",
@@ -583,19 +601,58 @@ class EffectGenerationTests(unittest.TestCase):
         variables = self.variables()
         self.assertEqual(
             [variables[var] for _, _, var in HUD],
-            ["0", "scifi", "5", "10", "3", "0", "0", "80", "180"],
+            ["0", "scifi", "5", "10", "3", "0", "0", "80", "180", "0"],
         )
         result = self.generate(
             'hud_frame = "true"\nhud_style = "minimal"\nhud_gap = "6"\n'
             'hud_chamfer = "0"\nhud_line_width = "2.5"\nhud_float_glow_range = "14"\n'
             'hud_sweep = "true"\nhud_sweep_speed = "120"\nhud_sweep_length = "240"\n'
+            'hud_hide_border = "true"\n'
         )
         self.assertEqual(result.returncode, 0, result.stderr)
         variables = self.variables()
         self.assertEqual(
             [variables[var] for _, _, var in HUD],
-            ["1", "minimal", "6", "0", "2.5", "14", "1", "120", "240"],
+            ["1", "minimal", "6", "0", "2.5", "14", "1", "120", "240", "1"],
         )
+
+    def test_hidden_border_gives_hyprland_no_border_but_keeps_the_configured_width(self):
+        configured = read_palette(self.palette)["border_size"]
+        self.assertNotEqual(configured, "0")
+        for extra, hyprland, niri in (
+            ("", configured, configured),
+            ('hud_frame = "true"\n', configured, configured),
+            ('hud_frame = "true"\nhud_hide_border = "false"\n', configured, configured),
+            ('hud_frame = "true"\nhud_hide_border = "true"\n', "0", configured),
+        ):
+            with self.subTest(extra=extra):
+                result = self.generate(extra)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(self.variables()["themeBorderSize"], hyprland)
+                niri_theme = (self.theme / "niri-theme.kdl").read_text()
+                self.assertEqual(re.findall(r"focus-ring \{\s*width (\d+)", niri_theme), [niri])
+
+    def test_hidden_border_needs_the_frame(self):
+        for extra in (
+            'hud_hide_border = "true"\n',
+            'hud_frame = "false"\nhud_hide_border = "true"\n',
+        ):
+            with self.subTest(extra=extra):
+                result = self.generate(extra)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("fixture: hud_hide_border needs hud_frame = true", result.stderr)
+                self.assertFalse((self.theme / "hyprland.conf").exists())
+
+    def test_border_size_defaults_to_two_when_a_theme_sets_none(self):
+        self.original = re.sub(r'(?m)^border_size\s*=.*\n', "", self.original)
+        self.assertNotRegex(self.original, r"(?m)^border_size\s*=")
+        for extra, hyprland in (("", "2"), ('hud_frame = "true"\nhud_hide_border = "true"\n', "0")):
+            with self.subTest(extra=extra):
+                result = self.generate(extra)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(self.variables()["themeBorderSize"], hyprland)
+                niri_theme = (self.theme / "niri-theme.kdl").read_text()
+                self.assertEqual(re.findall(r"focus-ring \{\s*width (\d+)", niri_theme), ["2"])
 
     def test_hud_sweep_numbers_accept_integers_inside_the_plugins_range(self):
         for key, var, values in (
@@ -709,7 +766,7 @@ class EffectGenerationTests(unittest.TestCase):
                 self.assertEqual(result.returncode, 0, result.stderr)
 
     def test_flags_must_be_true_or_false(self):
-        for key in ("glow", "border_animation", "hud_frame", "hud_sweep"):
+        for key in ("glow", "border_animation", "hud_frame", "hud_sweep", "hud_hide_border"):
             for value in ("maybe", "yes", "1", "True"):
                 with self.subTest(key=key, value=value):
                     result = self.generate(f'{key} = "{value}"\n')

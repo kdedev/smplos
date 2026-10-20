@@ -18,6 +18,7 @@ struct Theme {
     bool        sweep          = false; // $themeHudSweep, a glow travelling slowly along the line
     double      sweepSpeed     = 80;    // $themeHudSweepSpeed, logical px per second
     double      sweepLength    = 180;   // $themeHudSweepLength, logical px along the line
+    bool        hideBorder     = false; // $themeHudHideBorder, Hyprland's own border is off so the frame is the only line
 
     bool operator==(const Theme&) const = default;
 };

@@ -4,8 +4,9 @@ A Hyprland plugin that draws HUD window frames around every window, from the
 active theme: either a chamfered, glowing outline with corner brackets and edge
 tabs (the look of the `neon` theme), or a notched panel outline with circuit
 traces, dots that circle the outline and dots that bounce along the traces (the
-look of `amber-hud`), or that panel with Matrix characters instead of dots
-(the look of `matrix-hud`).
+look of `amber-hud`), or that notched outline alone, with Matrix characters
+falling down its sides and slow glows drifting along its top and bottom (the look
+of `matrix-hud`).
 
 It is a **window decoration inside the compositor's own render pass**. It moves,
 resizes, animates, fades and stacks together with its window, so it never lags
@@ -14,7 +15,9 @@ cannot make anything unclickable. A separate overlay process had both problems.
 
 Without `hud_frame = "true"` in the theme it draws nothing, and without the plugin
 a theme only loses the frames: windows keep Hyprland's own cut corners, border,
-glow and shadow.
+glow and shadow. The exception is a theme that hides Hyprland's border so that the
+frame is the only line (`hud_hide_border`, as `matrix-hud` does): without the plugin
+it has no border line at all.
 
 ## Source layout
 
@@ -22,13 +25,13 @@ glow and shadow.
 |------|------|
 | `geometry.{hpp,cpp}` | Compositor-free. The **style registry** (`kStyles[]`) and `buildLayout()`, which turns a style plus a window size into a list of concentric border rings and flat fills (ring styles) or a `Panel` of polylines and dots (panel styles), in physical pixels, and the centre line of the outline the travelling glow follows. |
 | `gradient.{hpp,cpp}` | Compositor-free. CPU port of Hyprland's `gradient.glsl`, so flat shapes (edge tabs, the lines of a panel) take the colour the border shader would paint at that point. Keep it in step with the shader. |
-| `sweep.{hpp,cpp}` | Compositor-free. The travelling glow: the outline's centre path (`buildPath` for a rounded rectangle or a polyline, `pointAt`), the sprite rasteriser (`renderSweep`), its bounds, and the speed, tick-rate and fade-in/out maths. |
-| `panel.{hpp,cpp}` | Compositor-free. The notched outline, traces and dots of a `Kind::Panel` style (`buildPanel`), where each dot is once it has travelled so far and how much it glows (`runnerPoses`), and, for a glyph style, where the characters stand (`placeGlyphs`) and which are lit and how brightly (`glyphDraws`, `glyphChanges`). |
+| `sweep.{hpp,cpp}` | Compositor-free. The travelling glow, which is also what a lamp of the `matrix` style is drawn with: the outline's centre path (`buildPath` for a rounded rectangle or a polyline, `pointAt`), the sprite rasteriser (`renderSweep`), its bounds, and the speed, tick-rate and fade-in/out maths. |
+| `panel.{hpp,cpp}` | Compositor-free. The notched outline of a `Kind::Panel` style (`buildPanel`) and, for `amber-hud`, its traces and dots: where each dot is once it has travelled so far and how much it glows (`runnerPoses`). For the `matrix` style, the columns the characters fall in (`RainLane`), which characters are lit and how brightly (`glyphDraws`, `glyphChanges`), and where each lamp is, how long and how strong (`lampPose`). |
 | `glyph.{hpp,cpp}` | Compositor-free. The characters of the `matrix` style: sixty half-width katakana, digits and signs, each a few strokes on a 4 × 6 grid, so no font is needed. |
 | `stamp.{hpp,cpp}` | Compositor-free. Turns the lines, dots and characters of a panel into small images the compositor can draw as textured quads: cuts a stroke into strips and tiles (`cutStroke`), bakes them (`bakeStrip`, `bakeTile`, `bakeBead`, `bakeGlyph`) and gives each a cache key. |
 | `theme.{hpp,cpp}` | Compositor-free. Reads the `$themeHud*` variables from the generated `theme.conf`. |
-| `HudDecoration.{hpp,cpp}` | `IHyprWindowDecoration` on every window: reports the HUD's extents, caches the layout, collects the window's live (animated) border and glow gradients and queues a pass element. Owns the one timer that advances the focused window's travelling glow and dots, and decides whose `border_animation` loops keep turning (see "Focus only"). |
-| `HudPassElement.{hpp,cpp}` | Draws the layout with the compositor's border shader and plain rects, or the panel's cached images, then the travelling glow's cached sprite and the dots or characters. |
+| `HudDecoration.{hpp,cpp}` | `IHyprWindowDecoration` on every window: reports the HUD's extents, caches the layout, collects the window's live (animated) border and glow gradients and queues a pass element. Owns the one timer that advances the focused window's travelling glow, dots, lamps and falling characters, and decides whose `border_animation` loops keep turning (see "Focus only"). |
+| `HudPassElement.{hpp,cpp}` | Draws the layout with the compositor's border shader and plain rects, or the panel's cached images, then the travelling glow's (or each lamp's) cached sprite and the dots or characters. |
 | `main.cpp` | Plugin entry points: ABI check, event listeners (window open, active window, fullscreen, config reload, tick), cleanup. |
 | `tests/` | Unit tests for the compositor-free parts, and `preview.cpp`, which renders a panel, a matrix frame or the character set to a PPM image so a look can be judged without a compositor. |
 
@@ -41,14 +44,15 @@ Hyprland config reload, which `theme-set` triggers. Values are clamped.
 | Variable | `colors.toml` key | Default | Range |
 |----------|-------------------|---------|-------|
 | `$themeHudFrame` | `hud_frame` | `false` | `true` / `false` |
+| `$themeHudHideBorder` | `hud_hide_border` | `false` | `true` / `false`; the theme generator gives Hyprland's own border size 0 so that the frame's line is the only one (it needs `hud_frame`, and the plugin then frames a window although it has no border; see Limits) |
 | `$themeHudStyle` | `hud_style` | `scifi` | a registered style name (`scifi`, `minimal`, `panel`, `matrix`); an unknown one shows a notification and draws nothing |
 | `$themeHudGap` | `hud_gap` | `5` | 0 to 64 px between window edge and outline |
 | `$themeHudChamfer` | `hud_chamfer` | `10` | 0 to 96 px minimum corner cut |
 | `$themeHudLineWidth` | `hud_line_width` | `3` | 1 to 16 px |
 | `$themeHudFloatGlowRange` | `hud_float_glow_range` | `0` | 0 to 64 px; floating windows' halo reaches at least this far |
-| `$themeHudSweep` | `hud_sweep` | `false` | `true` / `false`; a soft glow drifts along the focused window's outline, and the dots of a `panel` or the characters of a `matrix` move along its lines |
-| `$themeHudSweepSpeed` | `hud_sweep_speed` | `80` | 10 to 400 px per second (the dots of a `panel` and the characters of a `matrix` run 1.6 times as fast) |
-| `$themeHudSweepLength` | `hud_sweep_length` | `180` | 40 to 600 px along the line |
+| `$themeHudSweep` | `hud_sweep` | `false` | `true` / `false`; a soft glow drifts along the focused window's outline, the dots of a `panel` move along its lines, and the characters of a `matrix` fall and its lamps drift along its top and bottom; `false` keeps all of them still, so a `matrix` shows only its outline and halo |
+| `$themeHudSweepSpeed` | `hud_sweep_speed` | `80` | 10 to 400 px per second (the dots of a `panel` run 1.6 times as fast, the characters of a `matrix` fall twice as fast) |
+| `$themeHudSweepLength` | `hud_sweep_length` | `180` | 40 to 600 px along the line; for a `matrix`, the longest a lamp gets, which also decides how many fit on an edge |
 
 Frame and glow colours are not keys of their own: the plugin paints with each
 window's own border gradient (`border_active` / `border_inactive`) and glow gradient
@@ -61,9 +65,10 @@ keys interact with `gaps_in`, `rounding` and `rounding_power`.
 Every window gets the frame, but only the focused window moves. Two things follow
 the focus, both in `HudDecoration.cpp`:
 
-- **The travelling glow** (below) drifts along the focused window's outline. When
-  focus moves it fades out on the old window and in on the new one, half a second
-  each.
+- **The travelling glow** (below) drifts along the focused window's outline, and
+  with it the dots of a `panel`, and the lamps and falling characters of a `matrix`,
+  move. When focus moves it fades out on the old window and in on the new one, half
+  a second each.
 - **`border_animation`'s rotation.** The theme's looping `borderangle`, `glowangle`
   and `shadowangle` animations make Hyprland turn the border, glow and shadow
   gradients forever, on every window, by starting the next lap whenever one ends.
@@ -89,6 +94,9 @@ half a second when a window gets focus and out when it loses it. Every window ha
 its own place on its line, so a glow reappears where that window's last one faded,
 and two windows never start in step. It is meant to be almost subliminal: the
 default 80 px/s takes a typical window tens of seconds for a lap.
+
+A `matrix` has no glow going round its outline. Its lamps (below) are the same
+sprite, one for each lamp, on a track of their own.
 
 It is built to cost very little:
 
@@ -139,7 +147,7 @@ A style is one entry in `kStyles[]` in `geometry.cpp`; the fields are documented
 | `scifi` | Outline, halos on both sides, corner brackets, mid-edge tabs |
 | `minimal` | Outline and halos only |
 | `panel` | Notched outline with a step, a ghost line and a cut corner, circuit traces ending in beads, two dots circling the outline in opposite directions and a dot bouncing along each trace; the circling dots glow as they near a bouncing dot or each other (`amber-hud`) |
-| `matrix` | The `panel` with Matrix characters where it has dots: a character every few pixels along the lines on a dark plate, slowly pulsing characters at the ends of the traces, and glowing streams of characters raining round the outline in opposite directions and along each trace (`matrix-hud`) |
+| `matrix` | The `panel`'s outline alone, as one line with its glow: Matrix characters fall down both sides in two columns, one on each side of the line inside its glow, and a few slow glows (lamps) pulse and drift to and fro along the top and the bottom (`matrix-hud`) |
 
 For the ring styles (`scifi`, `minimal`) the corner shape is not part of the
 style: the outline follows the window's own `rounding` and `rounding_power` at a
@@ -153,7 +161,9 @@ entry in `kStyles[]`.
 
 A style with `kind = Kind::Panel` is not made of rings. `buildPanel()` (`panel.cpp`)
 gives a `Panel`: strokes (polylines of straight and 45° runs, snapped to whole
-pixels), beads and runners, all in physical px from the window's top-left corner.
+pixels), beads and runners (`amber-hud`), and the columns of characters and the
+track of the lamps (`matrix-hud`), all in physical px from the window's top-left
+corner.
 
 - **The outline** (`strokes[0]`, closed) stands `hud_gap` off the window. It has
   chamfered corners, a notch and a step on the top edge, a raised line and a ghost
@@ -161,10 +171,11 @@ pixels), beads and runners, all in physical px from the window's top-left corner
   The notches are 9 px deep with `hud_gap` 13 or more, shrink below that and are
   gone under 7. The bottom-left cut is limited by the window's own corner cut
   (`rounding`), so a window with a larger `rounding` gets a deeper one.
-- **Three traces** run beyond the outline and end in beads. A window whose frame
+- **Three traces** run beyond the outline and end in beads (a style with a
+  `traceOffset` of 0, like `matrix`, has none). A window whose frame
   (the window plus the outline's clearance) is smaller than 480 × 160 logical px,
-  or that has no room for the notches, gets a plain chamfered outline with two dots
-  and no traces.
+  or that has no room for the notches, gets a plain chamfered outline (with two dots
+  in `amber-hud`) and no traces.
 - **Runners**: while the window has focus, dots move along the outline and the
   traces, at `hud_sweep_speed` times the style's `runnerSpeed`, each with its own
   offset and speed. A runner on the closed outline goes round it (fading out
@@ -208,41 +219,79 @@ pixels), beads and runners, all in physical px from the window's top-left corner
 
 ### The `matrix` style
 
-A `matrix` style is a `Kind::Panel` style with `glyphHeight` above 0: the same
-outline, traces and runners as the `panel` style, with characters where the panel
-has dots. `placeGlyphs()` (`panel.cpp`) fills `Panel::glyphs` (a `GlyphFace`:
-character height, stroke weight, halo, pitch, pulse period and plate opacity,
-derived from the style and the scale) and the slots, a `GlyphSlot` every
-`glyphPitch` px along the lines.
+A `matrix` style is a `Kind::Panel` style with `glyphHeight` and `lamps` above 0
+and no beads, runners or traces (`beadRadius` and `traceOffset` are 0): the
+`panel`'s outline as one line with its glow, and light that moves inside that
+glow. `buildPanel()` adds to the `Panel` a `GlyphFace` (character height, stroke
+weight, glow reach, pitch, fall speed and plate opacity, derived from the style
+and the scale), the columns the characters fall in (`placeRain()`,
+`Panel::lanes`) and the track and lamps of the top and bottom edges
+(`placeLamps()`, `Panel::track` and `Panel::lamps`).
 
+- **One line.** The theme sets `hud_hide_border = "true"`, so Hyprland's own
+  border is not drawn (the generator gives it a size of 0), and turns its glow and
+  shadow off (`glow = "false"`, `shadow_range = "0"`). The outline and its halo
+  (`haloAlpha`, `haloReach`) are then the window's only line and glow, and
+  `hud_float_glow_range` widens the halo on floating windows. The plugin still
+  frames such a window unless it opts out itself (fullscreen, `decorate` off or a
+  `border_size 0` rule, as the JetBrains and picture-in-picture windows have); see
+  Limits.
 - **Characters.** `glyph.cpp` holds sixty half-width katakana, digits and signs,
   each a few straight strokes on a 4 × 6 grid, mirrored like the film's. Drawing
   them from strokes, not from a font, keeps the HUD free of a font or text
   library and every machine rendering the same glyph; `stamp.cpp` bakes them with
   the same bright core and soft halo as the lines.
-- **Which are lit.** `glyphDraws()` is a pure function of the clock, the runners'
-  poses, how far the window has focus (`intensity`, 0 to 1) and a per-window
-  seed, so the tests and `make preview` can ask for any moment. A bead is a
-  character that breathes (`Style::glyphPeriod`), changes into another one as each
-  breath begins, rests at 55% brightness without focus and lights up when a runner
-  on a trace reaches it. A runner leaves a trail of characters: eight behind one
-  going round, three on each side of one running back and forth, longer and bigger
-  where it glows, the nearest ones overdrawn in the Bright colour and the head
-  changing character about seven times a second. One character in eight along the
-  lines also lights up and fades again by itself, and all of them change
-  character every few seconds. At intensity 0 only the beads are lit.
-- **Plate.** Each character is baked on a soft dark rounded plate
-  (`Style::glyphKnock` is its opacity) that adds alpha only, so the line breaks
-  behind a character instead of striking through it. The Bright overdraw has no
-  plate of its own.
+- **Columns.** Only the straight runs of the two sides get characters, none on the
+  top or the bottom (`placeLanes()`): two columns on each side, in the glow either
+  side of the line. The inner one is centred in the gap between the line and the
+  window (if the characters fit there, else it is left out); the outer one is as
+  far from the line on the other side, and half a pitch lower, so that the two do
+  not line up. A column begins and ends a pitch short of its straight run, and one
+  of fewer than three characters is dropped (the compact outline of a small window
+  has short sides). They depend on the style and the scale, never on the window's
+  size. The outer column reaches out into the gap between two frames and clears
+  the neighbour's line by only a couple of pixels at the 18 px `matrix-hud` leaves
+  between the lines, so do not narrow that gap (see Limits).
+- **Rain.** `glyphDraws()` is a pure function of the clock, how far the window has
+  focus (`intensity`, 0 to 1) and a per-window seed, so the tests and `make preview`
+  can ask for any moment. Characters stay where they are and only their look
+  changes. Each column has one to three falls (one for every twenty characters),
+  and a fall is a bright head that goes down a row at a time, never up, and a tail
+  of seven to twelve characters behind it that dim with every row. It fades in at
+  the top of the column and out at the bottom, runs off the end, and after a pause
+  begins again at the top; every fall has its own speed, tail and pause. The
+  nearest rows are overdrawn in the Bright colour, the head changes character about
+  seven times a second, and every character changes now and then by itself.
+  Characters that no fall lights are not drawn, and at intensity 0 none are.
+- **Lamps.** The glows along the top and the bottom are up to two ellipses on each
+  edge (`placeLamps()`, `lampPose()`), as many as fit in the edge at one and a half
+  times `hud_sweep_length` each, none if the edge is shorter than one. Each goes to
+  and fro between the ends of its edge, slowing down into each end like a dot on a
+  trace, pulses every four to six seconds between 35% and full strength while its
+  length swells and shrinks by an eighth, and every one has its own length, speed,
+  direction and pulse. The track they follow (`Panel::track`) is the outline with
+  its two sides dark, so that no glow runs where the characters fall.
 - **How it is drawn.** A lit character is one textured quad from the shared stamp
-  cache, keyed on the glyph, its alpha and heat step (32 and 8 of them), size,
-  colours and plate; the characters are the most numerous images, which is why the
-  cache holds 2048. They never move: they light up, change and fade where they
-  stand, `glyphChanges()` lists what differs between two moments, and only those
-  characters' boxes are damaged at each tick of the timer that also drives the
-  travelling glow. A theme without `hud_sweep` gets no motion at all, only the
-  still beads.
+  cache, keyed on the glyph, its alpha and heat step (32 and 8 of them), size and
+  colours; the characters are the most numerous images, which is why the cache
+  holds 2048. (A style with a `glyphKnock` above 0 also bakes a dark plate behind
+  each character that dims the line it stands on; `matrix` has none, because its
+  characters stand beside the line and not on it.) A lamp is the travelling glow's
+  sprite, with a cache of its own and its own length and strength. Characters never
+  move: they light up, change and fade where they stand. `glyphChanges()` lists
+  what differs between two moments, and at each step of the one shared timer only
+  those characters' boxes are damaged, and the boxes a lamp leaves and enters.
+- **Focus and cost.** Only the focused window moves, fading in and out over half a
+  second like the travelling glow; the others keep their outline and halo. The
+  timer steps at the pace of the fastest motion (the characters fall twice as fast
+  as `hud_sweep_speed`) and backs off to a slow poll when nothing could be seen
+  moving. With `hud_sweep = "false"` there is no timer, no lamps and no
+  characters, only the outline and its halo. Keep `border_animation` off in a
+  `matrix` theme, as `matrix-hud` does: a turning gradient would repaint the whole
+  outline at every step (see the `panel` style). In a
+  software-rendered nested compositor (no GPU, so far costlier than a real
+  session) three windows took about 4% of one core with the frames moving, against
+  0.7% without the plugin.
 - **Preview.** `build/preview matrix 900 560 1 1 0 700 3.0 matrix 1 3 > matrix.ppm`
   draws a focused frame three seconds into its run, and
   `build/preview glyphs 4 matrix > glyphs.ppm` every character.
@@ -254,8 +303,10 @@ To add a look:
 1. Add an entry to `kStyles[]`. The name is lowercase letters, digits, `-` and `_`
    (what the theme generator accepts) and unique. Setting `bracketLen` / `tabLen`
    to `0` drops the corner brackets / edge tabs, and a `Kind::Panel` style with
-   `glyphHeight` above 0 draws characters instead of dots (`glyphPitch`,
-   `glyphPeriod`, `glyphKnock`).
+   `glyphHeight` above 0 draws characters falling in columns along the straight
+   sides (`glyphPitch`, `glyphFall`, `glyphGlow`, `glyphKnock`) and, with `lamps`
+   above 0, glows drifting along the top and the bottom (`beadRadius` and
+   `traceOffset` at 0 leave out the dots and the traces).
 2. `make test`. The tests walk `allStyles()`, so the new style is checked for a
    valid name, shapes that stay inside the extents the compositor was told about,
    and concentric rings without editing them. Add a test for anything particular
@@ -316,12 +367,19 @@ session you work in, and load a build by path with
 - No frame on fullscreen windows, borderless windows (`border_size = 0`,
   `noborder` rules), X11 override-redirect windows (menus, tooltips) and windows
   under 40 physical px. Layer surfaces (bars, launchers) and popups are not
-  windows and get none.
+  windows and get none. A theme that hides Hyprland's own border
+  (`hud_hide_border`) gives every window a border size of 0, so there a window
+  counts as borderless only if it opts out itself: fullscreen, `decorate` off or a
+  `border_size 0` rule.
 - The frame is drawn under the window, so it only shows in the margin around it
   and in its cut corners, never over its content.
 - It needs room: tiled neighbours' outlines are
   `2 * (gaps_in + border_size) - 2 * hud_gap` apart (see the theme guide), and
-  with small gaps the lines and halos touch.
+  with small gaps the lines and halos touch. With `hud_hide_border` the border
+  size here is 0, which is why `matrix-hud` has 18 px between the lines where
+  `amber-hud` has 22, and its two columns of characters need those 18.
+- Without the plugin, a theme with `hud_hide_border` has no border line at all
+  (the others keep Hyprland's own border).
 - A `panel` or `matrix` is a frame, not a window shape: the window itself stays a uniformly
   chamfered rectangle (`rounding`, `rounding_power`), and the notches, the step and
   the bottom-left cut are lines drawn in the margin around it.

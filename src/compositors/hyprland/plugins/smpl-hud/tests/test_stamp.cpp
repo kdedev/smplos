@@ -711,7 +711,7 @@ void testGlyphFaceSpec() {
     // Only what the baker uses tells one face from another.
     GlyphFace spaced = face;
     spaced.pitch     = 30;
-    spaced.period    = 9;
+    spaced.fall      = 9;
     CHECK(keyOf(glyphSpecOf(spaced, 7, colours)) == keyOf(spec));
 
     GlyphFace taller = face, bolder = face, brighter = face;

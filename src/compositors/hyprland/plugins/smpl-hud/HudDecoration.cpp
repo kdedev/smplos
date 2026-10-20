@@ -31,9 +31,10 @@ namespace {
     std::vector<CHudDecoration*> g_decorations;
     PHLWINDOWREF                 g_focus; // the window last given focus
 
-    // One timer moves the travelling glow of the focused window and fades out
-    // the one that lost focus. It runs only while the theme asks for one, and
-    // while nothing could be seen moving it backs off to a slow poll.
+    // One timer moves the travelling glow of the focused window, or its lamps
+    // and falling characters, and fades out those of the one that lost focus.
+    // It runs only while the theme asks for them, and while nothing could be
+    // seen moving it backs off to a slow poll.
     SP<CEventLoopTimer>                 g_sweepTimer;
     Time::steady_tp                     g_sweepLast;
     bool                                g_sweepIdle = true; // on the slow poll
@@ -44,11 +45,12 @@ namespace {
     constexpr int                       kSweepWaitSteps = 8;    // how long a focused glow waits for its first draw
 
     // The speed, in logical px a second, of the fastest thing the HUD moves:
-    // the glow, or the dots of a panel, which run ahead of it. It sets how
-    // often the timer steps.
+    // the glow, the dots of a panel, which run ahead of it, or the characters
+    // that fall. It sets how often the timer steps.
     double motionSpeed() {
-        const double dots = g_settings.style ? g_settings.style->runnerSpeed : 1.0;
-        return g_settings.theme.sweepSpeed * std::max(1.0, dots);
+        const auto*  style   = g_settings.style;
+        const double fastest = style ? std::max({1.0, double(style->runnerSpeed), double(style->glyphFall)}) : 1.0;
+        return g_settings.theme.sweepSpeed * fastest;
     }
 
     void sweepTick(SP<CEventLoopTimer> self, void*) {
@@ -142,6 +144,20 @@ namespace {
     // the fullscreen event arrives.
     bool fullscreen(const PHLWINDOW& window) {
         return Fullscreen::controller()->getFullscreenModes(window).internal == Fullscreen::FSMODE_FULLSCREEN;
+    }
+
+    // Whether the window gets a frame: when it has a border to replace. A theme
+    // that hides Hyprland's border (so the frame is the only line) has none left
+    // to ask, so there only the window's own opt-outs count: fullscreen,
+    // decorations off and a border size rule of 0.
+    bool framed(const PHLWINDOW& window) {
+        if (window->getRealBorderSize() >= 1)
+            return true;
+        if (!g_settings.theme.hideBorder)
+            return false;
+
+        const auto& rules = window->m_ruleApplicator;
+        return rules->decorate().valueOrDefault() && !fullscreen(window) && rules->borderSize().valueOr(1) >= 1;
     }
 
     // Only the focused window's gradients turn. A loop runs lap after lap, each
@@ -279,16 +295,21 @@ namespace {
         }
     }
 
-    // The characters of a glyph style, `level` of the way into the fade with the
-    // focus, once the dots have travelled `travelled` and `clock` seconds have
-    // passed. Nothing of a window is left to draw but the characters at rest
-    // while it has no focus.
+    // The falling characters of a glyph style, `level` of the way into the fade
+    // with the focus, once the columns have fallen `travelled` and `clock`
+    // seconds have passed. None is lit while the window has no focus.
     std::vector<smplhud::GlyphDraw> glyphsAt(const smplhud::Panel& panel, double travelled, double clock, double level, unsigned seed) {
         if (!panel.glyphs.on())
             return {};
 
-        const double intensity = smplhud::sweepIntensity(level);
-        return smplhud::glyphDraws(panel, intensity > 0 ? smplhud::runnerPoses(panel, travelled) : std::vector<smplhud::RunnerPose>{}, clock, intensity, seed);
+        return smplhud::glyphDraws(panel, travelled, clock, smplhud::sweepIntensity(level), seed);
+    }
+
+    // The shape of the glow of a lamp in `pose`: the theme's `shape`, longer or
+    // shorter by the pose's length.
+    smplhud::SweepShape lampShape(smplhud::SweepShape shape, const smplhud::LampPose& pose) {
+        shape.halfLength *= pose.length;
+        return shape;
     }
 
     // Adds to `region` the boxes, in global logical px, of the characters
@@ -498,9 +519,11 @@ void CHudDecoration::buildSweep(float scale) {
     if (m_sweep.path || !m_layout)
         return;
 
-    // A panel's glow runs along its outline
+    // A panel's glow runs along its outline; the lamps of a lamp style run along
+    // their track, which is that outline with the sides of the window masked.
     const auto& layout = *m_layout;
-    auto        path   = std::make_shared<const smplhud::Path>(layout.panel.empty() ? smplhud::buildPath(layout.centre) : smplhud::buildPath(layout.panel.strokes.front().pts));
+    const auto& panel  = layout.panel;
+    auto        path   = std::make_shared<const smplhud::Path>(panel.empty() ? smplhud::buildPath(layout.centre) : smplhud::buildPath(panel.track.empty() ? panel.strokes.front().pts : panel.track));
     if (!path->valid())
         return;
 
@@ -517,12 +540,14 @@ void CHudDecoration::buildSweep(float scale) {
     m_sweep.texel = smplhud::sweepTexel(scale);
     m_sweep.scale = scale;
     m_sweep.cache.reset();
+    m_lamps.assign(panel.lamps.size(), {});
     m_sweep.path = std::move(path);
 }
 
 void CHudDecoration::dropSweep() {
     m_sweep.path.reset();
     m_sweep.cache.reset();
+    m_lamps.clear();
     m_sweepLevel = 0;
 }
 
@@ -553,7 +578,7 @@ CHudDecoration::SSweepStep CHudDecoration::advanceSweep(double seconds) {
         return {};
 
     const auto window = m_window.lock();
-    if (!g_settings.sweeping() || !validMapped(window) || window->getRealBorderSize() < 1)
+    if (!g_settings.sweeping() || !validMapped(window) || !framed(window))
         return {};
 
     const auto monitor = window->m_monitor.lock();
@@ -563,59 +588,85 @@ CHudDecoration::SSweepStep CHudDecoration::advanceSweep(double seconds) {
         return {};
     }
 
-    if (!m_sweep.path) // the first draw builds it; stay quick for a little while to start on time
+    if (!m_sweep.path || !m_layout) // the first draw builds it; stay quick for a little while to start on time
         return {.moved = m_focused && m_waiting++ < kSweepWaitSteps};
 
-    m_sweepLevel = smplhud::sweepFade(m_sweepLevel, m_focused, seconds, kSweepFade);
+    const double levelBefore = m_sweepLevel;
+    m_sweepLevel             = smplhud::sweepFade(m_sweepLevel, m_focused, seconds, kSweepFade);
 
+    // A lamp style has lamps on its track, not a glow going round the outline.
+    const auto&  panel  = m_layout->panel;
     const auto&  path   = *m_sweep.path;
+    const bool   lamps  = !panel.track.empty();
     const double before = m_sweep.phase * path.length;
-    m_sweep.phase       = smplhud::sweepAdvance(m_sweep.phase, seconds, g_settings.theme.sweepSpeed, m_sweep.scale, path.length);
-    const double after  = m_sweep.phase * path.length;
+    if (!lamps)
+        m_sweep.phase = smplhud::sweepAdvance(m_sweep.phase, seconds, g_settings.theme.sweepSpeed, m_sweep.scale, path.length);
+    const double after = m_sweep.phase * path.length;
 
     const double dotsBefore = m_dotPos;
     m_dotPos += seconds * g_settings.theme.sweepSpeed * g_settings.style->runnerSpeed * m_sweep.scale;
     m_clock += seconds;
 
-    // The glow leaves one box and enters another, and so does each dot or, in a
-    // glyph style, each character that changes; nothing else repaints.
+    // The glow leaves one box and enters another, and so does each dot, lamp or
+    // character that changes; nothing else repaints.
     const CBox origin = windowBoxGlobal(window);
     CRegion    region;
-    for (const double at : {before, after}) {
-        const auto box = smplhud::sweepBounds(path, at, m_sweep.shape, m_sweep.texel, m_sweep.limit);
+    const auto addGlow = [&](double at, const smplhud::SweepShape& shape) {
+        const auto box = smplhud::sweepBounds(path, at, shape, m_sweep.texel, m_sweep.limit);
         if (box.w <= 0 || box.h <= 0)
-            continue;
+            return;
 
         CBox logical = {origin.x + box.x / m_sweep.scale, origin.y + box.y / m_sweep.scale, box.w / m_sweep.scale, box.h / m_sweep.scale};
         region.add(CRegion(logical.expand(2)));
+    };
+
+    if (lamps) {
+        // A lamp is redrawn when it has gone a step further, pulsed a step, or
+        // while the lamps fade in or out.
+        const bool fadeStep = m_sweepLevel != levelBefore;
+        for (size_t i = 0; i < m_lamps.size(); ++i) {
+            const auto pose = smplhud::lampPose(panel, i, m_dotPos, m_clock, m_seed);
+            if (pose == m_lamps[i].pose && !fadeStep)
+                continue;
+
+            addGlow(m_lamps[i].pose.at, lampShape(m_sweep.shape, m_lamps[i].pose));
+            addGlow(pose.at, lampShape(m_sweep.shape, pose));
+            m_lamps[i].pose = pose;
+        }
+    } else {
+        for (const double at : {before, after})
+            addGlow(at, m_sweep.shape);
     }
 
-    if (m_layout && m_layout->panel.glyphs.on()) {
-        auto now = glyphsAt(m_layout->panel, m_dotPos, m_clock, m_sweepLevel, m_seed);
-        addGlyphBoxes(region, m_layout->panel, smplhud::glyphChanges(m_glyphs, now), origin, m_sweep.scale);
+    if (panel.glyphs.on()) {
+        auto now = glyphsAt(panel, m_dotPos, m_clock, m_sweepLevel, m_seed);
+        addGlyphBoxes(region, panel, smplhud::glyphChanges(m_glyphs, now), origin, m_sweep.scale);
         m_glyphs = std::move(now);
-    } else if (m_layout) {
-        addRunnerBoxes(region, m_layout->panel, dotsBefore, origin, m_sweep.scale);
-        addRunnerBoxes(region, m_layout->panel, m_dotPos, origin, m_sweep.scale);
     }
 
+    if (!panel.runners.empty()) {
+        addRunnerBoxes(region, panel, dotsBefore, origin, m_sweep.scale);
+        addRunnerBoxes(region, panel, m_dotPos, origin, m_sweep.scale);
+    }
+
+    // Steps are fine enough to be several to a step of a lamp or a row of
+    // characters, so most change nothing; the timer must still go on as often
+    // while something is moving.
     SSweepStep step;
     step.fading = m_sweepLevel > 0 && m_sweepLevel < 1;
+    step.moved  = !lamps || !m_lamps.empty() || !panel.lanes.empty();
 
     if (!m_focused && m_sweepLevel <= 0)
         dropSweep(); // faded out; the damage below repaints without it
 
-    if (region.empty())
-        return step;
-
-    g_pHyprRenderer->damageRegion(region);
-    step.moved = true;
+    if (!region.empty())
+        g_pHyprRenderer->damageRegion(region);
     return step;
 }
 
 void CHudDecoration::draw(PHLMONITOR monitor, const float& a) {
     const auto window = m_window.lock();
-    if (!g_settings.active() || !monitor || !validMapped(window) || window->getRealBorderSize() < 1)
+    if (!g_settings.active() || !monitor || !validMapped(window) || !framed(window))
         return;
 
     const float scale    = monitor->m_scale;
@@ -650,11 +701,13 @@ void CHudDecoration::draw(PHLMONITOR monitor, const float& a) {
         params.lineWidth      = theme.lineWidth;
         params.chamfer        = theme.chamfer;
         params.floatGlowRange = theme.floatGlowRange;
+        params.sweepLength    = theme.sweepLength;
 
         m_layout    = std::make_shared<const smplhud::Layout>(smplhud::buildLayout(*g_settings.style, params));
         m_layoutKey = key;
         m_sweep.path.reset(); // the path follows the layout
-        m_glyphs.clear();     // and so do the places of the characters
+        m_lamps.clear();      // and so do the lamps on it
+        m_glyphs.clear();     // and the places of the characters
     }
 
     if (!m_layout->valid)
@@ -689,23 +742,34 @@ void CHudDecoration::draw(PHLMONITOR monitor, const float& a) {
     frame.bounds              = grown(local, m_extents, 2);
 
     const float intensity = float(smplhud::sweepIntensity(m_sweepLevel));
-    const bool  glyphs    = m_layout->panel.glyphs.on();
+    const auto& panel     = m_layout->panel;
     if (m_sweep.path && intensity > 0.002F) {
-        if (!m_sweep.cache)
-            m_sweep.cache = std::make_shared<SHudSweepCache>();
-        frame.sweep = SHudSweep{m_sweep.path, m_sweep.shape, m_sweep.limit, m_sweep.texel, m_sweep.phase * m_sweep.path->length, m_sweep.cache, intensity};
+        if (!panel.track.empty()) {
+            // The lamps, each in the pose it is in now and with a glow of its own.
+            for (size_t i = 0; i < m_lamps.size(); ++i) {
+                auto& lamp = m_lamps[i];
+                lamp.pose  = smplhud::lampPose(panel, i, m_dotPos, m_clock, m_seed);
+                if (!lamp.cache)
+                    lamp.cache = std::make_shared<SHudSweepCache>();
+                frame.sweeps.push_back(SHudSweep{m_sweep.path, lampShape(m_sweep.shape, lamp.pose), m_sweep.limit, m_sweep.texel, lamp.pose.at, lamp.cache, intensity * lamp.pose.strength});
+            }
+        } else {
+            if (!m_sweep.cache)
+                m_sweep.cache = std::make_shared<SHudSweepCache>();
+            frame.sweeps.push_back(SHudSweep{m_sweep.path, m_sweep.shape, m_sweep.limit, m_sweep.texel, m_sweep.phase * m_sweep.path->length, m_sweep.cache, intensity});
+        }
 
-        if (!glyphs) {
-            frame.runners = smplhud::runnerPoses(m_layout->panel, m_dotPos);
+        if (!panel.runners.empty()) {
+            frame.runners = smplhud::runnerPoses(panel, m_dotPos);
             for (auto& pose : frame.runners)
                 pose.alpha *= intensity;
         }
     }
 
-    // The characters are there at rest too, and are worked out from the same
-    // state the steps of the timer compare with.
-    if (glyphs) {
-        frame.glyphs = glyphsAt(m_layout->panel, m_dotPos, m_clock, m_sweepLevel, m_seed);
+    // The characters are worked out from the same state the steps of the timer
+    // compare with. None is lit while the window has no focus.
+    if (panel.glyphs.on()) {
+        frame.glyphs = glyphsAt(panel, m_dotPos, m_clock, m_sweepLevel, m_seed);
         m_glyphs     = frame.glyphs;
     }
 

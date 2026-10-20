@@ -37,15 +37,15 @@ struct SHudSweepCache {
     SP<Render::ITexture>                 texture;
 };
 
-// The travelling glow of one window at one moment.
+// One travelling glow of one window at one moment.
 struct SHudSweep {
     std::shared_ptr<const smplhud::Path> path;
     smplhud::SweepShape                  shape;
     smplhud::IBox                        limit; // window-relative physical px the glow must stay inside
     int                                  texel = 1;
     double                               at    = 0; // distance along the path, physical px
-    std::shared_ptr<SHudSweepCache>      cache;
-    float                                intensity = 1.F; // fades the glow in and out; never part of the cached image
+    std::shared_ptr<SHudSweepCache>      cache;   // the glow's own: two glows never share one
+    float                                intensity = 1.F; // fades the glow in and out, and a lamp's pulse; never part of the cached image
 };
 
 // Everything one frame of one window's HUD needs. It is copied out of the
@@ -54,9 +54,9 @@ struct SHudSweep {
 struct SHudFrame {
     std::shared_ptr<const smplhud::Layout> layout;
     std::array<SHudPaint, 3>               paints; // indexed by smplhud::Paint
-    std::optional<SHudSweep>               sweep;
+    std::vector<SHudSweep>                 sweeps; // one glow going round the line, or the lamps of a lamp style
     std::vector<smplhud::RunnerPose>       runners; // one per layout->panel.runners; their opacity already includes the fade with the focus, their glow says how much of the flare goes over them
-    std::vector<smplhud::GlyphDraw>        glyphs;  // the characters of a glyph style, which take the place of the dots; empty for every other style
+    std::vector<smplhud::GlyphDraw>        glyphs;  // the falling characters of a glyph style
     float                                  alpha         = 1.F;
     float                                  roundingPower = 1.F;
     CBox                                   window;  // window box, monitor-local physical px

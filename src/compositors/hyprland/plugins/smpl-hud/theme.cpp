@@ -74,6 +74,8 @@ void apply(Theme& t, std::string_view key, std::string_view value) {
         parseNumber(value, 10, 400, t.sweepSpeed);
     else if (key == "themeHudSweepLength")
         parseNumber(value, 40, 600, t.sweepLength);
+    else if (key == "themeHudHideBorder")
+        parseBool(value, t.hideBorder);
 }
 
 } // namespace

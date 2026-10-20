@@ -83,7 +83,7 @@ generate_theme() {
   # Optional Hyprland window effects (shadow tint, inner glow, animated gradient
   # angle). Every default reproduces the classic look, so a theme that sets none
   # of these renders exactly as before. Flags become 0/1 for hyprlang and Lua.
-  for flag in glow border_animation hud_frame hud_sweep; do
+  for flag in glow border_animation hud_frame hud_sweep hud_hide_border; do
     pairs[$flag]="${pairs[$flag]-false}"
     if [[ "${pairs[$flag]}" != true && "${pairs[$flag]}" != false ]]; then
       echo "ERROR: $name: $flag must be true or false" >&2
@@ -91,6 +91,16 @@ generate_theme() {
     fi
     pairs[${flag}_flag]=$([[ "${pairs[$flag]}" == true ]] && echo 1 || echo 0)
   done
+  # hud_hide_border drops Hyprland's own border so the HUD frame is the only
+  # line: Hyprland is given border size 0 (its window box grows by that width)
+  # while border_size stays the configured width for compositors without the
+  # frame. Without the frame there would be no line at all.
+  if [[ "${pairs[hud_hide_border]}" == true && "${pairs[hud_frame]}" != true ]]; then
+    echo "ERROR: $name: hud_hide_border needs hud_frame = true" >&2
+    return 1
+  fi
+  pairs[border_size]="${pairs[border_size]:-2}"
+  pairs[hypr_border_size]=$([[ "${pairs[hud_hide_border]}" == true ]] && echo 0 || echo "${pairs[border_size]}")
   # Window corner shape. rounding_power 2 is a circle (Hyprland's default);
   # 1 turns "rounding" into straight 45 degree cuts with legs of rounding / 2 - 1.
   pairs[rounding_power]="${pairs[rounding_power]-2.0}"
@@ -171,7 +181,7 @@ generate_theme() {
   done
 
   # Decoration defaults (applied only if theme didn't set them)
-  for pair in "rounding:10" "gaps_in:2" "gaps_out:4" "border_size:2" "blur_size:6" "blur_passes:3" "opacity_active:1.0" "opacity_inactive:1.0" "popup_opacity:0.60" "messenger_opacity:0.85" "browser_opacity:1.0"; do
+  for pair in "rounding:10" "gaps_in:2" "gaps_out:4" "blur_size:6" "blur_passes:3" "opacity_active:1.0" "opacity_inactive:1.0" "popup_opacity:0.60" "messenger_opacity:0.85" "browser_opacity:1.0"; do
     local dkey="${pair%%:*}" dval="${pair#*:}"
     if ! grep -q "{{ ${dkey} }}" "$sed_script"; then
       printf 's|{{ %s }}|%s|g\n' "$dkey" "$dval" >> "$sed_script"

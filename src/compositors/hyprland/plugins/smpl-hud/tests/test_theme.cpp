@@ -16,6 +16,7 @@ void testDefaults() {
     CHECK(!t.sweep);
     CHECK_NEAR(t.sweepSpeed, 80, 1e-9);
     CHECK_NEAR(t.sweepLength, 180, 1e-9);
+    CHECK(!t.hideBorder);
     CHECK(t == Theme{});
 }
 
@@ -29,7 +30,8 @@ void testNeonBlock() {
                                "$themeHudStyle = scifi\n"
                                "$themeHudSweep = 1\n"
                                "$themeHudSweepSpeed = 70\n"
-                               "$themeHudSweepLength = 200\n");
+                               "$themeHudSweepLength = 200\n"
+                               "$themeHudHideBorder = 1\n");
     CHECK(t.frame);
     CHECK_NEAR(t.gap, 6, 1e-9);
     CHECK_NEAR(t.lineWidth, 3, 1e-9);
@@ -39,6 +41,7 @@ void testNeonBlock() {
     CHECK(t.sweep);
     CHECK_NEAR(t.sweepSpeed, 70, 1e-9);
     CHECK_NEAR(t.sweepLength, 200, 1e-9);
+    CHECK(t.hideBorder);
 }
 
 void testLaterLinesWinAndWhitespace() {
@@ -69,6 +72,15 @@ void testBooleans() {
     CHECK(!parseTheme("$themeHudSweep = 1\n$themeHudSweep = off").sweep);
     CHECK(parseTheme("$themeHudSweep = 1\n$themeHudSweep = maybe").sweep);
     CHECK(!parseTheme("$themeHudSweep = maybe").sweep);
+
+    // The hidden-border flag parses like the others and is not the same as the frame flag.
+    for (const char* on : {"1", "true", "yes", "on"})
+        CHECK(parseTheme(std::string("$themeHudHideBorder = ") + on).hideBorder);
+    CHECK(!parseTheme("$themeHudHideBorder = 1\n$themeHudHideBorder = off").hideBorder);
+    CHECK(parseTheme("$themeHudHideBorder = 1\n$themeHudHideBorder = maybe").hideBorder);
+    CHECK(!parseTheme("$themeHudHideBorder = maybe").hideBorder);
+    CHECK(!parseTheme("$themeHudHideBorder = 1").frame);
+    CHECK(!parseTheme("$themeHudFrame = 1").hideBorder);
 }
 
 void testClamping() {
@@ -110,8 +122,9 @@ void testFractionalAndStyle() {
 }
 
 void testIgnoresUnrelatedLines() {
-    const Theme t = parseTheme("windowrule = float\n$themeHudFrameX = 1\nmisc:foo = 1\n$noequals\n");
+    const Theme t = parseTheme("windowrule = float\n$themeHudFrameX = 1\nmisc:foo = 1\n$noequals\n$themeHudHideBorderX = 1\n");
     CHECK(!t.frame);
+    CHECK(!t.hideBorder);
 }
 
 } // namespace

@@ -28,7 +28,8 @@ struct SHudSettings {
         return theme.frame && style;
     }
 
-    // Whether the glow that travels along the line is on.
+    // Whether the glow that travels along the line is on. It is the switch for
+    // all motion of the HUD: the dots, the lamps and the falling characters too.
     bool sweeping() const {
         return active() && theme.sweep && style->sweepAlpha > 0;
     }
@@ -108,6 +109,7 @@ class CHudDecoration : public IHyprWindowDecoration {
 
     // The travelling glow. The path is built from the layout, so it goes when
     // the layout does; the phase is a fraction of the path and survives that.
+    // A lamp style has no glow going round: its path is the track of its lamps.
     struct SSweep {
         std::shared_ptr<const smplhud::Path> path; // null while off, or before the first draw
         smplhud::SweepShape                  shape;
@@ -118,6 +120,13 @@ class CHudDecoration : public IHyprWindowDecoration {
         std::shared_ptr<SHudSweepCache>      cache;
     };
 
+    // One lamp of a lamp style: where it was last drawn or stepped to, which is
+    // what the next step is compared with, and the image of its glow.
+    struct SLamp {
+        smplhud::LampPose               pose;
+        std::shared_ptr<SHudSweepCache> cache;
+    };
+
     void buildSweep(float scale);
     void setFocused(bool focused, bool force);
 
@@ -126,11 +135,12 @@ class CHudDecoration : public IHyprWindowDecoration {
     std::shared_ptr<const smplhud::Layout> m_layout;
     SLayoutKey                             m_layoutKey;
     SSweep                                 m_sweep;
+    std::vector<SLamp>                     m_lamps;     // one per layout->panel.lamps
     bool                                   m_focused    = false;
     double                                 m_sweepLevel = 0; // how far the glow has faded in, [0, 1]
-    double                                 m_dotPos     = 0; // how far the runner dots have travelled at speed 1, physical px; it outlives the glow so the dots go on where they were
-    double                                 m_clock      = 0; // seconds the characters of a glyph style have been running, which stops with the glow
-    unsigned                               m_seed       = 0; // gives this window's characters a rhythm of their own
+    double                                 m_dotPos     = 0; // how far the runner dots, the lamps and the falling characters have travelled at speed 1, physical px; it outlives the glow so they go on where they were
+    double                                 m_clock      = 0; // seconds the lamps and characters of a lamp or glyph style have been running, which stops with the glow
+    unsigned                               m_seed       = 0; // gives this window's lamps and characters a rhythm of their own
     std::vector<smplhud::GlyphDraw>        m_glyphs;         // the characters as last drawn or stepped to: what the next step is compared with
     int                                    m_waiting    = 0; // steps spent waiting for the first draw to build the path
 };

@@ -153,8 +153,7 @@ Palette paletteOf(const std::string& name, float whiten) {
 }
 
 // What the pass element does for a character: the character in the colour of
-// the line on its dark plate and, as hot as it is, the same one over it in the
-// bright colour.
+// the line and, as hot as it is, the same one over it in the bright colour.
 void drawGlyphs(Canvas& cv, const GlyphFace& face, const std::vector<GlyphDraw>& draws, const Palette& pal, int ox, int oy) {
     const GlyphSize size = glyphSize(face);
     const Tone      line = makeTone(pal.line, pal.glow, 7), bright = makeTone(pal.bright, pal.glow, 7);
@@ -286,25 +285,36 @@ int main(int argc, char** argv) {
             drawImage(cv, bakeBead({lookOf(b), beadTone}), left + b.pos.x - beadSize(lookOf(b)) / 2.0, top + b.pos.y - beadSize(lookOf(b)) / 2.0, 1.f);
     }
 
-    // The travelling glow, where the theme would have it for this travel.
+    // The travelling glow, where the theme would have it for this travel: round
+    // the outline, or for a lamp style the lamps along the top and the bottom edge.
     if (style->sweepAlpha > 0 && intensity > 0 && !layout.panel.strokes.empty()) {
-        const Path path = buildPath(layout.panel.strokes.front().pts);
+        const bool lamps = !layout.panel.lamps.empty();
+        const Path path  = buildPath(lamps ? layout.panel.track : layout.panel.strokes.front().pts);
         if (path.valid()) {
-            const int    texel = sweepTexel(scale);
-            const double halfLength = 180 * scale / 2;
-            const int    l = int(std::ceil(layout.extents.left * scale)), t = int(std::ceil(layout.extents.top * scale));
-            const int    r = int(std::ceil(layout.extents.right * scale)), b = int(std::ceil(layout.extents.bottom * scale));
-            const IBox   limit = {-l, -t, width + l + r, height + t + b};
-            const SweepShape shape = {halfLength, layout.centre.reachOut, layout.centre.reachIn, style->sweepWhiten, style->sweepAlpha};
-            const double at = std::fmod(travel / std::max(double(style->runnerSpeed), 1e-9), path.length);
-            drawSprite(cv, renderSweep(path, at, shape, {line.r, line.g, line.b, 1.f}, texel, limit), left, top, float(intensity));
+            const int  texel = sweepTexel(scale);
+            const int  l = int(std::ceil(layout.extents.left * scale)), t = int(std::ceil(layout.extents.top * scale));
+            const int  r = int(std::ceil(layout.extents.right * scale)), b = int(std::ceil(layout.extents.bottom * scale));
+            const IBox limit = {-l, -t, width + l + r, height + t + b};
+
+            const auto drawGlow = [&](double at, double length, double strength) {
+                const SweepShape shape = {180 * scale / 2 * length, layout.centre.reachOut, layout.centre.reachIn, style->sweepWhiten, style->sweepAlpha};
+                drawSprite(cv, renderSweep(path, at, shape, {line.r, line.g, line.b, 1.f}, texel, limit), left, top, float(intensity * strength));
+            };
+            if (lamps) {
+                for (size_t i = 0; i < layout.panel.lamps.size(); ++i) {
+                    const LampPose pose = lampPose(layout.panel, i, travel, clock, seed);
+                    drawGlow(pose.at, pose.length, pose.strength);
+                }
+            } else {
+                drawGlow(std::fmod(travel / std::max(double(style->runnerSpeed), 1e-9), path.length), 1.0, 1.0);
+            }
         }
     }
 
-    const std::vector<RunnerPose> poses = intensity > 0 ? runnerPoses(layout.panel, travel) : std::vector<RunnerPose>{};
     if (glyphMode) {
-        drawGlyphs(cv, layout.panel.glyphs, glyphDraws(layout.panel, poses, clock, intensity, seed), pal, left, top);
+        drawGlyphs(cv, layout.panel.glyphs, glyphDraws(layout.panel, travel, clock, intensity, seed), pal, left, top);
     } else {
+        const std::vector<RunnerPose> poses = intensity > 0 ? runnerPoses(layout.panel, travel) : std::vector<RunnerPose>{};
         auto drawBeadAt = [&](const Bead& bead, const RunnerPose& pose, float alpha) {
             if (alpha > 0.f)
                 drawImage(cv, bakeBead({lookOf(bead), beadTone}), left + pose.pos.x - beadSize(lookOf(bead)) / 2.0, top + pose.pos.y - beadSize(lookOf(bead)) / 2.0, alpha);
