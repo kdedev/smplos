@@ -97,6 +97,8 @@ void apply(Theme& t, std::string_view key, std::string_view value) {
         parseNumber(value, 0, 1, t.edgeOpacity);
     else if (key == "themeHudUnderglow")
         parseNumber(value, 0, 1, t.underglow);
+    else if (key == "themeHudScanner")
+        parseNumber(value, 0, 160, t.scanner);
     else if (key == "themeHudGlyphColor") {
         if (Rgb8 colour; parseColour(value, colour))
             t.glyphColour = colour;

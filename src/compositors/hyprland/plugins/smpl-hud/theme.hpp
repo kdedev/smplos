@@ -30,6 +30,7 @@ struct Theme {
     double      sideOpacity    = 1;     // $themeHudSideOpacity, 0..1: how visible the outline of a panel style is down its left and right sides; 1 draws them like the rest
     double      edgeOpacity    = 1;     // $themeHudEdgeOpacity, 0..1: the same along its top and bottom edge
     double      underglow      = 0;     // $themeHudUnderglow, 0..1: a glow along the top and bottom edge that seems to shine from under the window; 0 has none
+    double      scanner        = 0;     // $themeHudScanner, logical px: the width of the radar in the bottom right corner of each window; 0 has none, anything else is drawn at 24 to 160 (scannerWidthOf)
     std::optional<Rgb8> glyphColour;    // $themeHudGlyphColor, `rgb(rrggbb)`: the colour of the characters of a glyph style; `none` or absent leaves them the colours of the line
 
     bool operator==(const Theme&) const = default;

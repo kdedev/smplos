@@ -43,3 +43,4 @@ $themeHudGlyphColor = {{ hud_glyph_color }}
 $themeHudSideOpacity = {{ hud_side_opacity }}
 $themeHudEdgeOpacity = {{ hud_edge_opacity }}
 $themeHudUnderglow = {{ hud_underglow }}
+$themeHudScanner = {{ hud_scanner }}

@@ -7,7 +7,9 @@ traces, dots that circle the outline and dots that bounce along the traces (the
 look of `amber-hud`), or a plain outline right at the window's edge, with three
 columns of Matrix characters falling beside each of its sides, each further one
 smaller, dimmer and softer, as if it were further away, and slow green glows
-drifting along its top and bottom (the look of `matrix-hud`).
+drifting along its top and bottom (the look of `matrix-hud`). Any of them can add
+a small animated scanner, like the radar of a space game, in the bottom right
+corner of every window (`hud_scanner`, which `amber-hud` uses).
 
 It is a **window decoration inside the compositor's own render pass**. It moves,
 resizes, animates, fades and stacks together with its window, so it never lags
@@ -32,8 +34,10 @@ it has no border line at all.
 | `stamp.{hpp,cpp}` | Compositor-free. Turns the lines, dots and characters of a panel into small images the compositor can draw as textured quads: cuts a stroke into strips and tiles (`cutStroke`), bakes them (`bakeStrip`, `bakeTile`, `bakeBead`, `bakeGlyph`) and gives each a cache key. |
 | `place.{hpp,cpp}` | Compositor-free. `fitWithFrame()`: where the box of a floating window has to go so that its whole frame stays inside a monitor's usable area. It moves the box in from the edges and shrinks it only when it cannot fit. `parseFitRequest()` reads the window address out of a `hyprctl smplhud fit` request. The compositor side is `placeHudWindow()` and `runHudCommand()` (see "Floating windows"). |
 | `theme.{hpp,cpp}` | Compositor-free. Reads the `$themeHud*` variables from the generated `theme.conf`. |
+| `scanner.{hpp,cpp}` | Compositor-free. The scanner of a window (`hud_scanner`): its size and layout (`scannerSize`, `scannerLayout`), what a frame depends on (`ScannerSpec`, which the compositor side compares to know when to repaint) and the rasteriser (`renderScanner`): the rings, the ship, the sweeping arm and the contacts, as one premultiplied RGBA image. |
 | `HudDecoration.{hpp,cpp}` | `IHyprWindowDecoration` on every window: reports the HUD's extents, caches the layout, collects the window's live (animated) border and glow gradients and queues a pass element. Owns the one timer that advances the focused window's travelling glow, dots, lamps and falling characters, and decides whose `border_animation` loops keep turning (see "Focus only"). Also keeps floating windows' frames on screen (see "Floating windows"). |
-| `HudPassElement.{hpp,cpp}` | Draws the layout with the compositor's border shader and plain rects, or the panel's cached images, then the travelling glow's (or each lamp's) cached sprite and the dots or characters. |
+| `ScannerDecoration.{hpp,cpp}` | A second `IHyprWindowDecoration` on every window, on the layer over the window, which reserves no room: the scanner (see "The scanner"). Owns its own timer, which advances the focused window's scanner, fades it between focus and rest and steps it aside from the pointer. |
+| `HudPassElement.{hpp,cpp}` | Draws the layout with the compositor's border shader and plain rects, or the panel's cached images, then the travelling glow's (or each lamp's) cached sprite and the dots or characters. Its second element draws a scanner's cached image. |
 | `main.cpp` | Plugin entry points: ABI check, event listeners (window open, floating, moved to another workspace, active window, fullscreen, config reload, tick), the `hyprctl smplhud` command, cleanup. |
 | `tests/` | Unit tests for the compositor-free parts, and `preview.cpp`, which renders a panel, a matrix frame or the character set to a PPM image so a look can be judged without a compositor. |
 
@@ -59,6 +63,7 @@ Hyprland config reload, which `theme-set` triggers. Values are clamped.
 | `$themeHudSideOpacity` | `hud_side_opacity` | `1` | 0 to 1; how visible the outline of a `panel` or `matrix` is down its left and right sides, its halo beside it with it, and the corners fade between that and the top and the bottom edge's (`hud_edge_opacity`). A theme whose characters fall there dims it so that they stand out: `0.1` leaves it almost unseen, `0` none at all, `1` as strong as the rest. The ring styles ignore it; not a number, it is ignored |
 | `$themeHudEdgeOpacity` | `hud_edge_opacity` | `1` | 0 to 1; the same along the top and the bottom edge of a `panel` or `matrix` outline: `1` is the full line, `0.1` as dark as the sides of `matrix-hud`, `0` none at all (the lamps of a `matrix`, which have a track of their own, and the underglow are not dimmed by it). The ring styles ignore it; not a number, it is ignored |
 | `$themeHudUnderglow` | `hud_underglow` | `0` | 0 to 1; how bright a glow is along the window's own top and bottom edge that fades out away from the window, so that the light seems to come from under it. It has no line, reaches as far out as the outline's halo, dies away towards the corners and is as still as the outline. `0` has none; the ring styles ignore it; not a number, it is ignored |
+| `$themeHudScanner` | `hud_scanner` | `0` | `0` or 24 to 160 px; how wide the scanner in the bottom right corner of every framed window is (three quarters as high), or `0` for none. See "The scanner"; not a number, it is ignored |
 
 Frame and glow colours are not keys of their own: the plugin paints with each
 window's own border gradient (`border_active` / `border_inactive`) and glow gradient
@@ -70,8 +75,8 @@ keys interact with `gaps_in`, `rounding` and `rounding_power`.
 
 ## Focus only
 
-Every window gets the frame, but only the focused window moves. Two things follow
-the focus, both in `HudDecoration.cpp`:
+Every window gets the frame, but only the focused window moves. Three things follow
+the focus, the first two in `HudDecoration.cpp`, the third in `ScannerDecoration.cpp`:
 
 - **The travelling glow** (below) drifts along the focused window's outline, and
   with it the dots of a `panel`, and the lamps and falling characters of a `matrix`,
@@ -88,9 +93,14 @@ the focus, both in `HudDecoration.cpp`:
   fullscreen (a maximised window keeps its border and keeps turning). With
   `hud_frame` off, or with the plugin unloaded, Hyprland's own loops return on
   every window.
+- **The scanner** (see "The scanner") sweeps and drifts only in the focused window.
+  The others show it where it stopped, at 40 % of its strength, and it comes up to
+  full and goes back down in half a second as focus moves.
 
-Neither adds a theme key: `hud_sweep` and `border_animation` stay the switches, and
-the cost no longer grows with the number of windows.
+None of them adds a theme key beyond the one that turns the scanner on:
+`hud_sweep` and `border_animation` stay the switches of the first two, `hud_scanner`
+alone decides the scanner (`hud_sweep = "false"` does not still it), and the cost no
+longer grows with the number of windows.
 
 ## Floating windows
 
@@ -474,6 +484,54 @@ To add a look:
 4. Select it from a theme with `hud_style = "<name>"`, and add it to the
    `hud_style` rows in `README.md` and `CREATING_MODIFYING_A_THEME.md`.
 
+## The scanner
+
+With `hud_scanner` above 0 every framed window gets a small scanner in its bottom
+right corner: a flat disc seen at a slant, like the radar of a space game, with
+three rings inside a brighter rim, a bright arrow for the ship in the middle, an
+arm that sweeps round and lights the contacts it passes (up to four small markers
+that float above or below the disc on thin stalks and drift across it). It is
+`hud_scanner` px wide and three quarters of that high; `amber-hud` has 48.
+
+- **A picture, not geometry.** `renderScanner()` (`scanner.cpp`) makes the whole
+  frame on the CPU from its `ScannerSpec` alone (size, frame of the clock, seed
+  and three colours rounded to 5 bits a channel), so a frame is always the same,
+  `tests/test_scanner.cpp` can check it, and the image is kept and uploaded again
+  only when the spec changes. The seed puts the scanners of different windows out
+  of step with each other.
+- **Colours.** The rim, rings and stalks take the colour of the window's `Line`
+  paint where the scanner is, the ship, arm and markers its `Bright` paint and the
+  halo its `Glow` paint, so it follows the theme, the focus fade and
+  `border_animation`'s rotation like the frame does. While those animate the
+  scanner is repainted with them.
+- **Where.** It stands in the corner of the window, `max(6, 0.3 * rounding + 2)`
+  logical px in from both edges, clear of the rounding of the corner. It is a
+  decoration on the layer over the window (`DECORATION_LAYER_OVER`), drawn right
+  after the window's own picture, so it lies on the window's content; windows
+  above it and popups still cover it. It reserves no room around the window and
+  takes no input.
+- **Where not.** Windows without a frame, fullscreen windows, and windows less
+  than five times as wide, or as high, as the scanner have none. A window on a
+  screen that is off, or on a locked session, advances nothing.
+- **Focus.** Only the scanner of the focused window moves. The others stand where
+  they stopped at 40 % of their strength, and moving the focus fades one down and
+  the other up over half a second.
+- **The pointer.** The scanner lies over the window's content, so it gives way:
+  while the pointer is within three quarters of the scanner's width of it, it
+  fades out in 0.15 s, and when the pointer has gone it fades back in over 0.6 s,
+  slowly so that a pointer passing by does not make it flicker. Nothing is drawn or
+  repainted while it is out of the way. It steps aside for the pointer only, not
+  for the keyboard: a status line in the corner of a terminal is under it (turn it
+  off with `hud_scanner = 0` if that is in the way).
+- **Cost.** One timer (`ScannerDecoration.cpp`) runs only while the theme has a
+  scanner. It steps 30 times a second while a scanner moves or fades and polls ten
+  times a second otherwise, which is also how it sees the pointer come near.
+  Rendering costs about as much as the rain of `matrix-hud` while a window is
+  focused and nothing otherwise.
+- **Preview.** `build/preview scanner 6 amber 48 1 0 0 8 3 0.4 > scanner.ppm`
+  draws a 48 px scanner at 6 times its size, eight moments 0.4 s apart over a dark,
+  a grey and a light window, to judge the look without a compositor.
+
 ## ABI and delivery
 
 A Hyprland plugin only loads into the exact Hyprland build it was compiled against;
@@ -501,7 +559,7 @@ safe mode, which does not load the user config and with it the `autostart` loade
 ```bash
 make            # build/smpl-hud.so against the installed Hyprland
 make test       # unit tests; plain g++, no Hyprland headers, runs anywhere
-make preview    # build/preview: draws a panel or matrix style as a PPM image, no compositor needed
+make preview    # build/preview: draws a panel or matrix style, or the scanner, as a PPM image, no compositor needed
 make clean
 ```
 
@@ -539,7 +597,10 @@ session you work in, and load a build by path with
 - A `panel` or `matrix` is a frame, not a window shape: the window itself stays a uniformly
   chamfered rectangle (`rounding`, `rounding_power`), and the notches, the step and
   the bottom-left cut are lines drawn in the margin around it.
-- A theme change applies on the next config reload, not instantly.
+- The scanner lies over the window's content (see "The scanner"), so it can hide
+  what is in the bottom right corner of a window, such as a status line or the
+  last button of a toolbar. It steps aside for the pointer, not for the keyboard,
+  and a window is only given one when it is at least five times its size.
 - A floating window is kept on screen only when it is placed (see "Floating
   windows"): a client with a minimum size the monitor cannot hold, or a window you
   drag out by hand, can still show less than its whole frame.

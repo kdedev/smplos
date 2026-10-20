@@ -7,6 +7,7 @@
 //   make preview
 //   build/preview [style] [width] [height] [scale] [zoom] [floating] [travelled] [clock] [palette] [intensity] [seed] [gap] [side] [edge] [underglow] > panel.ppm
 //   build/preview glyphs [zoom] [palette] > glyphs.ppm
+//   build/preview scanner [zoom] [palette] [width] [scale] [clock] [seed] [frames] [backgrounds] [step] > scanner.ppm
 //
 // width and height are the window in physical px; `travelled` is how far the dots and the rain have run
 // and `clock` how long the lamps of a glyph style have been running, in seconds;
@@ -15,12 +16,15 @@
 // the outline is down its left and right sides and along its top and bottom (`hud_side_opacity` and
 // `hud_edge_opacity`, 0 to 1, 1 if not given); `underglow` is how bright the glow is along the top and the
 // bottom (`hud_underglow`, 0 to 1, 0 if not given). `glyphs`
-// draws every character of the matrix style, twelve to a row, in the order of the table.
+// draws every character of the matrix style, twelve to a row, in the order of the table. `scanner` draws the
+// scanner of a window (`hud_scanner`) `width` logical px wide, `frames` times in a row, `step` seconds apart from
+// `clock` on, once for each of up to 3 backgrounds (a dark window, a grey one and a light one).
 
 #include "../geometry.hpp"
 #include "../glyph.hpp"
 #include "../gradient.hpp"
 #include "../panel.hpp"
+#include "../scanner.hpp"
 #include "../stamp.hpp"
 #include "../sweep.hpp"
 
@@ -267,12 +271,56 @@ int sheet(int zoom, const std::string& palette) {
     return 0;
 }
 
+// The scanner of a window over the kinds of content it can end up on, one row of moments for each.
+int scannerSheet(int argc, char** argv) {
+    const int         zoom       = argc > 2 ? std::max(1, std::atoi(argv[2])) : 6;
+    const std::string palette    = argc > 3 ? argv[3] : "amber";
+    const double      width      = argc > 4 ? std::atof(argv[4]) : 48;
+    const double      scale      = argc > 5 ? std::atof(argv[5]) : 1;
+    const double      clock      = argc > 6 ? std::atof(argv[6]) : 0;
+    const unsigned    seed       = argc > 7 ? unsigned(std::atoi(argv[7])) : 0;
+    const int         frames     = argc > 8 ? std::clamp(std::atoi(argv[8]), 1, 16) : 6;
+    const int         grounds    = argc > 9 ? std::clamp(std::atoi(argv[9]), 1, 3) : 2;
+    const double      step       = argc > 10 ? std::atof(argv[10]) : 0.5;
+
+    const Style* style = styleFor("panel");
+    if (!style)
+        return 1;
+
+    const ScannerSize size = scannerSize(width, scale);
+    if (size.w <= 0)
+        return 1;
+
+    const Palette        pal = paletteOf(palette, style->brightWhiten);
+    const ScannerPalette colours{pal.line, pal.bright, pal.glow};
+
+    const int margin = 6;
+    Canvas    cv(frames * (size.w + margin) + margin, grounds * (size.h + margin) + margin);
+
+    const float ground[3][4] = {{0.07f, 0.08f, 0.10f, 1.f}, {0.34f, 0.35f, 0.38f, 1.f}, {0.82f, 0.82f, 0.80f, 1.f}};
+    for (int row = 0; row < grounds; ++row) {
+        for (int y = row * (size.h + margin); y < (row + 1) * (size.h + margin) + margin && y < cv.h; ++y)
+            for (int x = 0; x < cv.w; ++x)
+                cv.over(x, y, ground[row]);
+
+        for (int i = 0; i < frames; ++i) {
+            const Image img = renderScanner(scannerSpecOf(size, clock + i * step, seed, colours));
+            drawImage(cv, img, margin + i * (size.w + margin), margin + row * (size.h + margin), 1.f);
+        }
+    }
+
+    writePpm(cv, zoom);
+    return 0;
+}
+
 } // namespace
 
 int main(int argc, char** argv) {
     const char* name = argc > 1 ? argv[1] : "panel";
     if (std::string(name) == "glyphs")
         return sheet(argc > 2 ? std::max(1, std::atoi(argv[2])) : 4, argc > 3 ? argv[3] : "matrix");
+    if (std::string(name) == "scanner")
+        return scannerSheet(argc, argv);
 
     const int         width    = argc > 2 ? std::atoi(argv[2]) : 900;
     const int         height   = argc > 3 ? std::atoi(argv[3]) : 560;

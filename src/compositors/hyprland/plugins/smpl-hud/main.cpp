@@ -13,6 +13,7 @@
 
 #include "HudDecoration.hpp"
 #include "HudPassElement.hpp"
+#include "ScannerDecoration.hpp"
 #include "globals.hpp"
 #include "theme.hpp"
 
@@ -25,14 +26,19 @@ namespace {
     std::vector<CHyprSignalListener> g_listeners;
     SP<SHyprCtlCommand>              g_command;
 
+    // The frame, and the scanner that goes with it, are one decoration each.
     void decorate(const PHLWINDOW& window) {
         if (!window || !window->m_isMapped)
             return;
 
-        if (std::ranges::any_of(window->m_windowDecorations, [](const auto& deco) { return deco->getDisplayName() == kHudDisplayName; }))
-            return;
+        const auto has = [&](const char* name) {
+            return std::ranges::any_of(window->m_windowDecorations, [name](const auto& deco) { return deco->getDisplayName() == name; });
+        };
 
-        HyprlandAPI::addWindowDecoration(PHANDLE, window, makeUnique<CHudDecoration>(window));
+        if (!has(kHudDisplayName))
+            HyprlandAPI::addWindowDecoration(PHANDLE, window, makeUnique<CHudDecoration>(window));
+        if (!has(kScannerDisplayName))
+            HyprlandAPI::addWindowDecoration(PHANDLE, window, makeUnique<CHudScanner>(window));
     }
 
     void reloadTheme() {
@@ -89,9 +95,11 @@ APICALL EXPORT void PLUGIN_EXIT() {
         HyprlandAPI::unregisterHyprCtlCommand(PHANDLE, std::exchange(g_command, nullptr));
     g_listeners.clear();
     stopHudSweep();
+    stopHudScanners();
     stopHudPlacement();
     restoreHudLoops();
     damageAllHuds();
     g_pHyprRenderer->m_renderPass.removeAllOfType(CHudPassElement::kPassName);
+    g_pHyprRenderer->m_renderPass.removeAllOfType(CScannerPassElement::kPassName);
     clearHudStamps();
 }

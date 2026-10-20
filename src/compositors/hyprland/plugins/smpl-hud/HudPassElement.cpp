@@ -433,3 +433,61 @@ bool CHudPassElement::needsPrecomputeBlur() {
 std::optional<CBox> CHudPassElement::boundingBox() {
     return m_frame.bounds;
 }
+
+CScannerPassElement::CScannerPassElement(SScannerFrame frame) : m_frame(std::move(frame)) {
+    ;
+}
+
+std::vector<UP<IPassElement>> CScannerPassElement::draw() {
+    const auto& frame = m_frame;
+    if (!frame.cache || frame.size.w <= 0 || frame.size.h <= 0 || frame.alpha < 0.002F)
+        return {};
+
+    g_pHyprRenderer->blend(true);
+    g_pHyprOpenGL->scissor(nullptr);
+
+    // The picture is premultiplied RGBA and goes only where the damage says.
+    const CTextureScope scope;
+    CRegion             damage = scope.damageIn(outward(frame.box));
+    if (damage.empty())
+        return {};
+
+    // The colours the frame has where the scanner stands.
+    const double x      = frame.box.x + frame.box.width / 2 - frame.window.x;
+    const double y      = frame.box.y + frame.box.height / 2 - frame.window.y;
+    const auto   colour = [&](smplhud::Paint paint) { return paintAt(frame.paints[size_t(paint)], frame.sampleBox, x, y); };
+    const auto   line   = colour(smplhud::Paint::Line);
+    const auto   spec   = smplhud::scannerSpecOf(frame.size, frame.clock, frame.seed, {line, colour(smplhud::Paint::Bright), colour(smplhud::Paint::Glow)});
+
+    auto& cache = *frame.cache;
+    if (!cache.texture || !(cache.spec == spec)) {
+        cache.texture.reset();
+
+        auto image = smplhud::renderScanner(spec);
+        if (image.empty())
+            return {};
+
+        cache.texture = g_pHyprRenderer->createTexture(DRM_FORMAT_ABGR8888, image.rgba.data(), uint32_t(image.w) * 4, {double(image.w), double(image.h)});
+        cache.spec    = spec;
+    }
+
+    if (!cache.texture || !cache.texture->ok())
+        return {};
+
+    // Like the line it is a part of, it is as opaque as the line is where it stands.
+    scope.draw(cache.texture, frame.box, damage, frame.alpha * line.a);
+    g_pHyprOpenGL->scissor(nullptr);
+    return {};
+}
+
+bool CScannerPassElement::needsLiveBlur() {
+    return false;
+}
+
+bool CScannerPassElement::needsPrecomputeBlur() {
+    return false;
+}
+
+std::optional<CBox> CScannerPassElement::boundingBox() {
+    return m_frame.bounds;
+}

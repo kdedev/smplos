@@ -17,9 +17,9 @@ else
 EXTRA_FLAGS :=
 endif
 
-LIB_SRC    := geometry.cpp gradient.cpp theme.cpp sweep.cpp stamp.cpp glyph.cpp panel.cpp place.cpp
-PLUGIN_SRC := $(LIB_SRC) HudDecoration.cpp HudPassElement.cpp main.cpp
-TESTS      := test_geometry test_gradient test_theme test_sweep test_stamp test_glyph test_panel test_place
+LIB_SRC    := geometry.cpp gradient.cpp theme.cpp sweep.cpp stamp.cpp glyph.cpp panel.cpp place.cpp scanner.cpp
+PLUGIN_SRC := $(LIB_SRC) HudDecoration.cpp ScannerDecoration.cpp HudPassElement.cpp main.cpp
+TESTS      := test_geometry test_gradient test_theme test_sweep test_stamp test_glyph test_panel test_place test_scanner
 
 CXXFLAGS ?= -O2
 PLUGIN_CXXFLAGS := $(CXXFLAGS) -shared -fPIC -std=c++2b -Wall -Wextra

@@ -2,13 +2,16 @@
 
 #define WLR_USE_UNSTABLE
 
+#include <array>
 #include <cstdint>
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
 #include <hyprland/src/render/decorations/IHyprWindowDecoration.hpp>
 
+#include "HudPassElement.hpp"
 #include "geometry.hpp"
 #include "panel.hpp"
 #include "sweep.hpp"
@@ -84,6 +87,34 @@ void stopHudPlacement();
 // it is never empty, or the compositor answers "unknown request".
 std::string runHudCommand(const std::string& request);
 
+// What a decoration that goes with the frame, the scanner, takes from it, so
+// that it stands where the frame stands and is lit like it.
+
+// Whether the window has a frame, and whether it is fullscreen, when nothing is
+// drawn over it.
+bool hudFramed(const PHLWINDOW& window);
+bool hudFullscreen(const PHLWINDOW& window);
+
+// The window box in global logical px, and in logical px relative to `monitor`:
+// the live animated geometry the frame and the window itself are drawn with.
+CBox hudWindowBoxGlobal(const PHLWINDOW& window);
+CBox hudWindowBoxLocal(const PHLWINDOW& window, const PHLMONITOR& monitor);
+
+// How opaque something that goes with the frame is, given the `a` the
+// compositor hands a decoration: the window's own opacity is not the frame's,
+// fades (workspace switches, open and close) still are.
+float hudFadeOf(const PHLWINDOW& window, float a);
+
+// The colours of a window's frame as it is drawn now, and the box they are
+// spread over.
+struct SHudColours {
+    std::array<SHudPaint, 3> paints;    // indexed by smplhud::Paint
+    smplhud::IBox            sampleBox; // window-relative physical px
+};
+
+// None while the window has no frame to take them from.
+std::optional<SHudColours> hudColoursOf(const PHLWINDOW& window);
+
 // A window decoration that paints the HUD in the compositor's own render pass,
 // with the window's live animated geometry, so it can never lag behind it and
 // sits in the right place in the window stack. It takes no input.
@@ -104,6 +135,14 @@ class CHudDecoration : public IHyprWindowDecoration {
 
     void reposition();
     void damageIfAnimated();
+
+    // The colours of the frame this decoration drew last, and the box they are
+    // spread over; none before the first frame, or while it cannot be drawn.
+    std::optional<SHudColours> colours() const;
+
+    PHLWINDOW window() const {
+        return m_window.lock();
+    }
 
     // Tells the window whether it is the focused one (`focused` is the
     // compositor's focused window, null if none). Only the focused window has

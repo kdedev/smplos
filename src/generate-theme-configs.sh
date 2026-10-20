@@ -168,6 +168,15 @@ generate_theme() {
       return 1
     fi
   done
+  # The scanner in the corner of each window: its width in px, 0 for none or 24 to 160. A plain
+  # integer, normalised so a value like 048 is never read as octal.
+  pairs[hud_scanner]="${pairs[hud_scanner]-0}"
+  if [[ ! "${pairs[hud_scanner]}" =~ ^[0-9]{1,4}$ ]] \
+    || (( 10#${pairs[hud_scanner]} != 0 && (10#${pairs[hud_scanner]} < 24 || 10#${pairs[hud_scanner]} > 160) )); then
+    echo "ERROR: $name: hud_scanner must be 0 (none) or an integer from 24 to 160" >&2
+    return 1
+  fi
+  pairs[hud_scanner]=$((10#${pairs[hud_scanner]}))
   local accent_hex="${pairs[accent]:-}"
   pairs[shadow_range]="${pairs[shadow_range]:-2}"
   pairs[shadow_render_power]="${pairs[shadow_render_power]:-3}"

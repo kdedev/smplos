@@ -4,6 +4,7 @@
 #include <array>
 #include <chrono>
 #include <cmath>
+#include <optional>
 #include <span>
 #include <vector>
 
@@ -22,6 +23,7 @@
 #include <hyprland/src/render/decorations/DecorationPositioner.hpp>
 
 #include "HudPassElement.hpp"
+#include "ScannerDecoration.hpp"
 #include "globals.hpp"
 #include "place.hpp"
 #include "stamp.hpp"
@@ -281,6 +283,27 @@ namespace {
         return out;
     }
 
+    // The colours of a window's frame as it is now, mid-fade or not: the
+    // border gradient for the line, the glow gradient for the glow (the line's
+    // where the theme has none) and the line's, lightened, for what is bright.
+    // None while the window has no border colour yet.
+    std::optional<std::array<SHudPaint, 3>> paintsOf(const PHLWINDOW& window) {
+        std::array<SHudPaint, 3> paints;
+
+        auto& line = paints[size_t(Paint::Line)];
+        line       = animatedPaint(window->m_realBorderColor, window->m_realBorderColorPrevious, window->m_borderAngleAnimationProgress, window->m_borderFadeAnimationProgress);
+        if (line.to.m_colorsOkLabA.empty())
+            return std::nullopt;
+
+        auto& glow = paints[size_t(Paint::Glow)];
+        glow       = animatedPaint(window->m_realGlowColor, window->m_realGlowColorPrevious, window->m_glowAngleAnimationProgress, window->m_glowFadeAnimationProgress);
+        if (!visible(glow.to))
+            glow = line;
+
+        paints[size_t(Paint::Bright)] = whitened(line, g_settings.style->brightWhiten);
+        return paints;
+    }
+
     // The colour a theme gives the characters of a glyph style, and the same
     // `amount` lighter for the ones that are hot.
     SHudGlyphColour glyphColourOf(const smplhud::Rgb8& colour, float amount) {
@@ -345,6 +368,35 @@ namespace {
 
 const SHudSettings& hudSettings() {
     return g_settings;
+}
+
+bool hudFramed(const PHLWINDOW& window) {
+    return framed(window);
+}
+
+bool hudFullscreen(const PHLWINDOW& window) {
+    return fullscreen(window);
+}
+
+CBox hudWindowBoxGlobal(const PHLWINDOW& window) {
+    return windowBoxGlobal(window);
+}
+
+CBox hudWindowBoxLocal(const PHLWINDOW& window, const PHLMONITOR& monitor) {
+    return windowBoxLocal(window, monitor);
+}
+
+float hudFadeOf(const PHLWINDOW& window, float a) {
+    const float windowOpacity = window->m_ruleApplicator->opaque().valueOrDefault() ? 1.F : window->alphaValue(Desktop::View::WINDOW_ALPHA_ACTIVE);
+    return std::clamp(a / std::max(windowOpacity, 0.001F), 0.F, 1.F);
+}
+
+std::optional<SHudColours> hudColoursOf(const PHLWINDOW& window) {
+    for (const auto* deco : g_decorations) {
+        if (deco->window() == window)
+            return deco->colours();
+    }
+    return std::nullopt;
 }
 
 void placeHudWindow(const PHLWINDOW& window) {
@@ -415,6 +467,7 @@ std::string runHudCommand(const std::string& request) {
 void setHudTheme(const smplhud::Theme& theme) {
     for (auto* deco : g_decorations)
         deco->damageEntire();
+    damageAllScanners();
 
     const auto previousExtents = g_extents;
 
@@ -430,6 +483,7 @@ void setHudTheme(const smplhud::Theme& theme) {
         deco->reposition();
     for (auto* deco : g_decorations)
         deco->damageEntire();
+    damageAllScanners();
 
     // Windows that are open were placed for another frame, or for none. A
     // reload that keeps the frame must not undo where the user put a window.
@@ -439,6 +493,7 @@ void setHudTheme(const smplhud::Theme& theme) {
     }
 
     syncHudSweep();
+    syncHudScanners();
 
     // Focus-only motion is the HUD's: without a HUD the compositor's loops are left alone.
     if (g_settings.active())
@@ -468,6 +523,7 @@ void syncHudFocus(bool force) {
 
     for (auto* deco : g_decorations)
         deco->syncFocus(focused, force);
+    syncScannerFocus(focused);
 }
 
 void restoreHudLoops() {
@@ -497,11 +553,13 @@ void restoreHudLoops() {
 void damageAnimatedHuds() {
     for (auto* deco : g_decorations)
         deco->damageIfAnimated();
+    damageAnimatedScanners();
 }
 
 void damageAllHuds() {
     for (auto* deco : g_decorations)
         deco->damageEntire();
+    damageAllScanners();
 }
 
 CHudDecoration::CHudDecoration(PHLWINDOW window) : IHyprWindowDecoration(window), m_window(window) {
@@ -605,6 +663,18 @@ void CHudDecoration::damageIfAnimated() {
     }
 
     g_pHyprRenderer->damageRegion(region);
+}
+
+std::optional<SHudColours> CHudDecoration::colours() const {
+    const auto window = m_window.lock();
+    if (!g_settings.active() || !validMapped(window) || !m_layout || !m_layout->valid)
+        return std::nullopt;
+
+    const auto paints = paintsOf(window);
+    if (!paints)
+        return std::nullopt;
+
+    return SHudColours{*paints, m_layout->sampleBox};
 }
 
 void CHudDecoration::buildSweep(float scale) {
@@ -816,27 +886,18 @@ void CHudDecoration::draw(PHLMONITOR monitor, const float& a) {
     SHudFrame frame;
     frame.layout = m_layout;
 
-    auto& line = frame.paints[size_t(Paint::Line)];
-    line       = animatedPaint(window->m_realBorderColor, window->m_realBorderColorPrevious, window->m_borderAngleAnimationProgress, window->m_borderFadeAnimationProgress);
-    if (line.to.m_colorsOkLabA.empty())
+    const auto paints = paintsOf(window);
+    if (!paints)
         return;
+    frame.paints = *paints;
 
-    auto& glow = frame.paints[size_t(Paint::Glow)];
-    glow       = animatedPaint(window->m_realGlowColor, window->m_realGlowColorPrevious, window->m_glowAngleAnimationProgress, window->m_glowFadeAnimationProgress);
-    if (!visible(glow.to))
-        glow = line;
-
-    frame.paints[size_t(Paint::Bright)] = whitened(line, g_settings.style->brightWhiten);
     if (const auto& own = g_settings.theme.glyphColour)
         frame.glyphColour = glyphColourOf(*own, g_settings.style->brightWhiten);
 
-    // The window's own opacity is not the HUD's; fades (workspace switches,
-    // open/close) still are.
-    const float windowOpacity = window->m_ruleApplicator->opaque().valueOrDefault() ? 1.F : window->alphaValue(Desktop::View::WINDOW_ALPHA_ACTIVE);
-    frame.alpha               = std::clamp(a / std::max(windowOpacity, 0.001F), 0.F, 1.F);
-    frame.roundingPower       = key.roundingPower;
-    frame.window              = physical;
-    frame.bounds              = grown(local, m_extents, 2);
+    frame.alpha         = hudFadeOf(window, a);
+    frame.roundingPower = key.roundingPower;
+    frame.window        = physical;
+    frame.bounds        = grown(local, m_extents, 2);
 
     const float intensity = float(smplhud::sweepIntensity(m_sweepLevel));
     const auto& panel     = m_layout->panel;

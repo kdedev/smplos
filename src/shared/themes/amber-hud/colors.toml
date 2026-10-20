@@ -104,6 +104,11 @@ border_animation = "false"
 # focused window's outline (about 60 px/s, the dots 1.6 times as fast), fading
 # in and out as focus comes and goes. Both are small cached sprites, repainted
 # ~20 times a second only where they move, and only while the window is visible.
+# The scanner is a flat disc of rings in the bottom right corner of each window,
+# like the radar of a space game: a small ship at its heart, an arm that sweeps
+# round and lights up the contacts it passes. hud_scanner is its width in px
+# (0 for none, otherwise 24 to 160); it is drawn in the colours of the frame and
+# moves only in the focused window.
 # hud_gap is how far the outline stands off the window: the notches need at least 13.
 hud_frame = "true"
 hud_style = "panel"
@@ -114,6 +119,7 @@ hud_float_glow_range = "14"
 hud_sweep = "true"
 hud_sweep_speed = "60"
 hud_sweep_length = "180"
+hud_scanner = "48"
 
 # -- App Theme Selectors --
 app_theme_nvim = "amber"

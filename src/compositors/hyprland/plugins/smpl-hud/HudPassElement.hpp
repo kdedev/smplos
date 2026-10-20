@@ -14,6 +14,7 @@
 #include "geometry.hpp"
 #include "gradient.hpp"
 #include "panel.hpp"
+#include "scanner.hpp"
 #include "sweep.hpp"
 
 // The colours one shape kind (smplhud::Paint) is drawn with, mid-fade or not.
@@ -98,4 +99,50 @@ class CHudPassElement : public IPassElement {
 
   private:
     SHudFrame m_frame;
+};
+
+// The scanner image uploaded to the GPU, kept for as long as the spec it was
+// drawn for stays the same: a frozen scanner is drawn from it again and again.
+struct SScannerCache {
+    smplhud::ScannerSpec spec;
+    SP<Render::ITexture> texture;
+};
+
+// Everything one frame of the scanner of one window needs. Like a frame of the
+// HUD it is copied out of the window when the pass element is queued.
+struct SScannerFrame {
+    std::array<SHudPaint, 3>       paints;    // indexed by smplhud::Paint
+    smplhud::IBox                  sampleBox; // window-relative physical px: what the paints are spread over
+    CBox                           window;    // window box, monitor-local physical px
+    CBox                           box;       // where the scanner goes, monitor-local physical px
+    CBox                           bounds;    // everything it can touch, monitor-local logical px
+    smplhud::ScannerSize           size;
+    double                         clock = 0; // seconds it has been running
+    uint32_t                       seed  = 0;
+    float                          alpha = 1.F;
+    std::shared_ptr<SScannerCache> cache;     // the scanner's own: two scanners never share one
+};
+
+class CScannerPassElement : public IPassElement {
+  public:
+    explicit CScannerPassElement(SScannerFrame frame);
+    ~CScannerPassElement() override = default;
+
+    std::vector<UP<IPassElement>> draw() override;
+    bool                          needsLiveBlur() override;
+    bool                          needsPrecomputeBlur() override;
+    std::optional<CBox>           boundingBox() override;
+
+    const char* passName() override {
+        return kPassName;
+    }
+
+    ePassElementType type() override {
+        return EK_CUSTOM;
+    }
+
+    static constexpr const char* kPassName = "CSmplHudScannerPassElement";
+
+  private:
+    SScannerFrame m_frame;
 };

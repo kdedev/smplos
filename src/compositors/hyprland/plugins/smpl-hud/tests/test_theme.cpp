@@ -20,6 +20,7 @@ void testDefaults() {
     CHECK_NEAR(t.sideOpacity, 1, 1e-9);
     CHECK_NEAR(t.edgeOpacity, 1, 1e-9);
     CHECK_NEAR(t.underglow, 0, 1e-9);
+    CHECK_NEAR(t.scanner, 0, 1e-9);
     CHECK(!t.glyphColour);
     CHECK(t == Theme{});
 }
@@ -39,6 +40,7 @@ void testNeonBlock() {
                                "$themeHudSideOpacity = 0.15\n"
                                "$themeHudEdgeOpacity = 0.1\n"
                                "$themeHudUnderglow = 0.3\n"
+                               "$themeHudScanner = 48\n"
                                "$themeHudGlyphColor = rgb(46ff3c)\n");
     CHECK(t.frame);
     CHECK_NEAR(t.gap, 6, 1e-9);
@@ -53,6 +55,7 @@ void testNeonBlock() {
     CHECK_NEAR(t.sideOpacity, 0.15, 1e-9);
     CHECK_NEAR(t.edgeOpacity, 0.1, 1e-9);
     CHECK_NEAR(t.underglow, 0.3, 1e-9);
+    CHECK_NEAR(t.scanner, 48, 1e-9);
     const Rgb8 green{0x46, 0xff, 0x3c};
     CHECK(t.glyphColour == green);
 }
@@ -136,13 +139,14 @@ void testFractionalAndStyle() {
 
 void testIgnoresUnrelatedLines() {
     const Theme t = parseTheme("windowrule = float\n$themeHudFrameX = 1\nmisc:foo = 1\n$noequals\n$themeHudHideBorderX = 1\n$themeHudGlyphColorX = rgb(ffffff)\n$themeHudSideOpacityX = 0.5\n"
-                               "$themeHudEdgeOpacityX = 0.5\n$themeHudUnderglowX = 0.5\n");
+                               "$themeHudEdgeOpacityX = 0.5\n$themeHudUnderglowX = 0.5\n$themeHudScannerX = 48\n");
     CHECK(!t.frame);
     CHECK(!t.hideBorder);
     CHECK(!t.glyphColour);
     CHECK_NEAR(t.sideOpacity, 1, 1e-9);
     CHECK_NEAR(t.edgeOpacity, 1, 1e-9);
     CHECK_NEAR(t.underglow, 0, 1e-9);
+    CHECK_NEAR(t.scanner, 0, 1e-9);
 }
 
 // A setting that is a fraction, 0 to 1, as it is written, and `fallback` when nothing says otherwise.
@@ -190,6 +194,34 @@ void testFractionsAreIndependent() {
     CHECK_NEAR(u.edgeOpacity, 1, 1e-9);
 }
 
+// The width of the scanner in the corner of each window, as it is written. A width is read like the
+// other numbers; what is drawn for it (24 at least, 160 at most) is up to scanner.hpp.
+void testScanner() {
+    const auto read = [](const std::string& text) { return parseTheme(text).scanner; };
+
+    CHECK_NEAR(read("$themeHudScanner = 48"), 48, 1e-9);
+    CHECK_NEAR(read("  $themeHudScanner=96   # wide"), 96, 1e-9);
+    CHECK_NEAR(read("$themeHudScanner = 0"), 0, 1e-9);
+    CHECK_NEAR(read("$themeHudScanner = 48\n$themeHudScanner = 64"), 64, 1e-9);
+    CHECK_NEAR(read("$themeHudScanner = 48\n$themeHudScanner = 0"), 0, 1e-9);
+
+    // More or less than it can be is as much as it can be.
+    CHECK_NEAR(read("$themeHudScanner = 500"), 160, 1e-9);
+    CHECK_NEAR(read("$themeHudScanner = -20"), 0, 1e-9);
+
+    // Anything but a number leaves what was there.
+    for (const char* bad : {"", "big", "48px", "nan", "inf", "-inf", "50%"}) {
+        CHECK_NEAR(read(std::string("$themeHudScanner = ") + bad), 0, 1e-9);
+        CHECK_NEAR(read(std::string("$themeHudScanner = 48\n$themeHudScanner = ") + bad), 48, 1e-9);
+    }
+
+    // It is a setting of its own: setting it turns nothing else on and changes no other setting.
+    Theme same;
+    same.scanner = 48;
+    CHECK(parseTheme("$themeHudScanner = 48") == same);
+    CHECK(parseTheme("$themeHudFrame = 1\n$themeHudUnderglow = 0.3").scanner == 0);
+}
+
 void testGlyphColour() {
     const Rgb8 black{0, 0, 0}, mixed{0xff, 0xa0, 0x01}, matrix{0x1f, 0xe8, 0x6a};
     CHECK(parseTheme("$themeHudGlyphColor = rgb(000000)").glyphColour == black);
@@ -227,5 +259,6 @@ int main() {
     testEdgeOpacity();
     testUnderglow();
     testFractionsAreIndependent();
+    testScanner();
     return finish("test_theme");
 }

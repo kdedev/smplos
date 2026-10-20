@@ -46,6 +46,7 @@ HUD = (
     ("hud_side_opacity", "hud_side_opacity", "themeHudSideOpacity"),
     ("hud_edge_opacity", "hud_edge_opacity", "themeHudEdgeOpacity"),
     ("hud_underglow", "hud_underglow", "themeHudUnderglow"),
+    ("hud_scanner", "hud_scanner", "themeHudScanner"),
 )
 # The HUD keys that are a fraction from 0 to 1, with the variable each is written to and the value it
 # has when a theme does not set it.
@@ -83,6 +84,7 @@ CLASSIC = {
     "themeHudSideOpacity": "1",
     "themeHudEdgeOpacity": "1",
     "themeHudUnderglow": "0",
+    "themeHudScanner": "0",
 }
 
 # Evaluates the real looknfeel.lua (and theme.lua) against a recording hl stub.
@@ -436,6 +438,18 @@ class StockThemeEffectTests(unittest.TestCase):
                 self.assertEqual(variables["themeHudEdgeOpacity"], "1")
                 self.assertEqual(variables["themeHudUnderglow"], "0")
 
+    def test_amber_hud_draws_a_scanner_in_the_corner_of_its_windows_and_no_other_theme_does(self):
+        for theme in stock_themes():
+            variables = hypr_vars((theme / "hyprland.conf").read_text())
+            with self.subTest(theme=theme.name):
+                if theme.name == "amber-hud":
+                    # Wide enough to read as a radar, small enough to leave the window its corner.
+                    self.assertTrue(24 <= int(variables["themeHudScanner"]) <= 96, variables["themeHudScanner"])
+                    # Only the frame is drawn by the plugin, so only a frame can carry a scanner.
+                    self.assertEqual(variables["themeHudFrame"], "1")
+                else:
+                    self.assertEqual(variables["themeHudScanner"], "0")
+
     def test_matrix_hud_is_translucent_unlike_opaque_matrix(self):
         matrix, hud = (
             hypr_vars((THEMES / name / "hyprland.conf").read_text()) for name in ("matrix", "matrix-hud")
@@ -665,7 +679,7 @@ class EffectGenerationTests(unittest.TestCase):
         variables = self.variables()
         self.assertEqual(
             [variables[var] for _, _, var in HUD],
-            ["0", "scifi", "5", "10", "3", "0", "0", "80", "180", "0", "none", "1", "1", "0"],
+            ["0", "scifi", "5", "10", "3", "0", "0", "80", "180", "0", "none", "1", "1", "0", "0"],
         )
         result = self.generate(
             'hud_frame = "true"\nhud_style = "minimal"\nhud_gap = "6"\n'
@@ -673,12 +687,13 @@ class EffectGenerationTests(unittest.TestCase):
             'hud_sweep = "true"\nhud_sweep_speed = "120"\nhud_sweep_length = "240"\n'
             'hud_hide_border = "true"\nhud_glyph_color = "rgb(3cff28)"\n'
             'hud_side_opacity = "0.1"\nhud_edge_opacity = "0.2"\nhud_underglow = "0.3"\n'
+            'hud_scanner = "64"\n'
         )
         self.assertEqual(result.returncode, 0, result.stderr)
         variables = self.variables()
         self.assertEqual(
             [variables[var] for _, _, var in HUD],
-            ["1", "minimal", "6", "0", "2.5", "14", "1", "120", "240", "1", "rgb(3cff28)", "0.1", "0.2", "0.3"],
+            ["1", "minimal", "6", "0", "2.5", "14", "1", "120", "240", "1", "rgb(3cff28)", "0.1", "0.2", "0.3", "64"],
         )
 
     def test_hidden_border_gives_hyprland_no_border_but_keeps_the_configured_width(self):
@@ -745,6 +760,34 @@ class EffectGenerationTests(unittest.TestCase):
                         f"fixture: {key} must be an integer from {low} to {high}", result.stderr,
                     )
                     self.assertFalse((self.theme / "hyprland.conf").exists())
+
+    def test_hud_scanner_accepts_none_or_a_width_the_plugin_draws(self):
+        for value, expected in (
+            ("0", "0"), ("24", "24"), ("48", "48"), ("160", "160"), ("048", "48"), ("0024", "24"), ("00", "0"),
+        ):
+            with self.subTest(value=value):
+                result = self.generate(f'hud_scanner = "{value}"\n')
+                self.assertEqual(result.returncode, 0, result.stderr)
+                # Normalised, so a leading zero can never reach the plugin as octal.
+                self.assertEqual(self.variables()["themeHudScanner"], expected)
+
+    def test_hud_scanner_rejects_everything_else(self):
+        for value in ("1", "7", "23", "161", "999", "1000", "-5", "2.5", "big", "", "0x20", "1e2", " 48", "48 ", "00000"):
+            with self.subTest(value=value):
+                result = self.generate(f'hud_scanner = "{value}"\n')
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn(
+                    "fixture: hud_scanner must be 0 (none) or an integer from 24 to 160", result.stderr,
+                )
+                self.assertFalse((self.theme / "hyprland.conf").exists())
+
+    def test_hud_scanner_is_never_left_as_a_placeholder(self):
+        # The sed expansion skips an empty value, so an unset key must still be written as 0.
+        result = self.generate()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        text = (self.theme / "hyprland.conf").read_text()
+        self.assertNotIn("{{", text)
+        self.assertEqual(self.variables()["themeHudScanner"], "0")
 
     def test_hud_glyph_color_accepts_rgb_and_none(self):
         for value in ("none", "rgb(3cff28)", "rgb(3CFF28)", "rgb(000000)", "rgb(ffffff)"):
