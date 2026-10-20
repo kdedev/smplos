@@ -194,13 +194,13 @@ unchanged. niri and other compositors ignore them.
 | `border_animation` | `"false"` | `"true"` or `"false"` only |
 | `hud_frame` | `"false"` | `"true"` or `"false"` only; turns on the HUD frames the `smpl-hud` Hyprland plugin draws around windows |
 | `hud_hide_border` | `"false"` | `"true"` or `"false"` only, and needs `hud_frame = "true"`; hides Hyprland's own border so the frame's outline is the only line (Hyprland gets a border size of 0; `border_size` stays what compositors without the frame draw) |
-| `hud_style` | `"scifi"` | Name of the HUD look: `scifi` (outline, halos, corner brackets, edge tabs), `minimal` (outline and halos only), `panel` (notched outline with a step, a ghost line and a cut corner, circuit traces ending in beads, two dots circling the outline in opposite directions and a dot bouncing along each trace, the circling ones glowing as they near a bouncing dot or each other) or `matrix` (the same outline as one line with its glow, Matrix characters falling down both sides in two columns, and glows drifting along the top and the bottom). Lowercase letters, digits, `-` and `_`; an unknown name shows a notification and draws nothing |
-| `hud_gap`, `hud_chamfer` | `"5"`, `"10"` | Non-negative integers: outline distance from the window and corner-cut size, in px. The notches of a `panel` or `matrix` frame are 9 px deep with a `hud_gap` of 13 or more and shrink below that |
+| `hud_style` | `"scifi"` | Name of the HUD look: `scifi` (outline, halos, corner brackets, edge tabs), `minimal` (outline and halos only), `panel` (notched outline with a step, a ghost line and a cut corner, circuit traces ending in beads, two dots circling the outline in opposite directions and a dot bouncing along each trace, the circling ones glowing as they near a bouncing dot or each other) or `matrix` (the same outline as one line with its glow, Matrix characters falling beside both sides in two columns on each, and glows drifting along the top and the bottom). Lowercase letters, digits, `-` and `_`; an unknown name shows a notification and draws nothing |
+| `hud_gap`, `hud_chamfer` | `"5"`, `"10"` | Non-negative integers: outline distance from the window and corner-cut size, in px. The notches of a `panel` or `matrix` frame are 9 px deep with a `hud_gap` of 13 or more, shrink below that and are gone under 7 (`matrix-hud` uses `"3"`: a plain outline right at the window's edge) |
 | `hud_line_width` | `"3"` | Number from 1 to 9.99: outline thickness in px; corner brackets and edge tabs follow it |
 | `hud_float_glow_range` | `"0"` | Non-negative integer. Floating windows glow brighter than tiled ones and their halo reaches at least this many px; `"0"` keeps the style's own reach (14 px for `scifi`) |
 | `hud_sweep` | `"false"` | `"true"` or `"false"` only; a soft glow drifts slowly along the focused window's outline, in the outline's own colors, and fades in and out as focus moves. In the `panel` style it also sets the dots moving along the lines, in the `matrix` style the falling characters and the drifting glows |
 | `hud_sweep_speed`, `hud_sweep_length` | `"80"`, `"180"` | Integers: speed in px per second (10 to 400; the dots of a `panel` run 1.6 times as fast and the characters of a `matrix` fall 0.6 times as fast) and length along the line in px (40 to 600; the longest a glow of a `matrix` gets, which also decides how many fit on an edge). Keep the speed low: it reads as light moving along the frame, not as a spinner (Neon: `"70"`, a lap takes tens of seconds) |
-| `hud_glyph_color` | `"none"` | `"rgb(rrggbb)"` (hex digits, no `#`) or `"none"`: the colour of the characters of a glyph style such as `matrix`, for the falling rain, with its heads and its glow derived from it (the heads are the same colour lightened). `"none"` gives them the colours of the outline and its glow. `matrix-hud` uses `"rgb(3cff28)"`, hue 114°, a yellower green than its teal outline, like the film's code. Styles without characters ignore it |
+| `hud_glyph_color` | `"none"` | `"rgb(rrggbb)"` (hex digits, no `#`) or `"none"`: the colour of the characters of a glyph style such as `matrix`, for the falling rain, and of its lamps, with the heads and the glow of the characters derived from it (the heads are the same colour lightened). `"none"` gives them the colours of the outline and its glow. `matrix-hud` uses `"rgb(3cff28)"`, hue 114°, a yellower green than its teal outline, like the film's code. Styles without characters ignore it |
 
 Gradients use the same syntax as `border_active`: one or more `rgba(rrggbbaa)`
 stops and an optional angle, e.g. `"rgba(00f0ffb0) rgba(2f7bff80) 45deg"`.
@@ -290,32 +290,40 @@ stops and an optional angle, e.g. `"rgba(00f0ffb0) rgba(2f7bff80) 45deg"`.
   `rounding_power = "1.0"`, `gaps_in = "24"`, `hud_gap = "15"` (outlines 22 px
   apart), `hud_line_width = "2"`, an amber gradient frame, and an orange glow.
 - The `matrix` style keeps the `panel`'s outline and nothing else of its line
-  work: **one line with its glow**, and the same room requirements for the
-  notches (`hud_gap` of 13 or more, a frame of at least 480 × 160 logical px).
-  Set `hud_hide_border = "true"` so Hyprland's own border is not a second line,
-  and turn Hyprland's glow and shadow off (`glow = "false"`, `shadow_range = "0"`;
-  `1` still draws a thin ring); the plugin's halo, tinted by `glow_color`, is then
-  the only glow, and `hud_float_glow_range` widens it on floating windows. Matrix
-  characters fall down the left and right edges, top to bottom, in two columns on
-  each side, one either side of the line inside its glow. Each fall is one bright
-  head that glides smoothly down, keeping its shape for four or five rows before
-  it turns into another, with a fading tail of other characters behind it (a
-  random length each time) and a slight glow of its own; the characters come in
-  three sizes and a range of brightness. They fall as slowly as the lamps drift,
-  so that they stay at the edge of the eye. `hud_glyph_color` gives the characters
-  a colour of their own (`rgb(rrggbb)`; the heads are it lightened), as `matrix-hud`
-  does with a green of hue 114° (`"rgb(3cff28)"`), yellower than its teal outline,
-  like the film's code; without it they take the outline's and the glow's colours.
-  Along the top and the bottom up
-  to two ellipses of light per edge drift slowly to and fro and pulse, also inside
-  the glow. Only the focused window moves, and `hud_sweep = "true"` drives all of
-  it (`"false"` leaves the outline and its halo); keep `border_animation = "false"`.
-  The characters' columns need about 18 px between neighbouring outlines
-  (`gaps_in = "24"` and `hud_gap = "15"` with the border hidden), and without the
-  plugin the theme has no border line at all. `matrix-hud/colors.toml` is a
-  complete example: the Matrix text, accent and status colors on a near-black
-  green background at 0.85 opacity, a frame that shades from mint white through
-  green to teal and a deeper emerald-to-aqua glow so the two layers stay apart.
+  work: **one line with its glow**. Give it a small `hud_gap` (`matrix-hud` uses
+  `"3"`, as close as a 2 px line gets) so that the outline hugs the window and is
+  a plain chamfered one; from 13 the notches of the `panel` come back (in a frame
+  of at least 480 × 160 logical px). Set `hud_hide_border = "true"` so Hyprland's
+  own border is not a second line, and turn Hyprland's glow and shadow off
+  (`glow = "false"`, `shadow_range = "0"`; `1` still draws a thin ring); the
+  plugin's halo, tinted by `glow_color`, is then the only glow, and
+  `hud_float_glow_range` widens it on floating windows. Matrix characters fall
+  down the left and right edges, top to bottom, in two columns on each side, both
+  outside the line and inside its glow: the first right beside the line, the
+  second beside the first, half as tall and two thirds as bright, which makes it
+  look further away. Each fall is one bright head that glides smoothly down,
+  keeping its shape for four or five rows before it turns into another, with a
+  fading tail of other characters behind it (a random length each time) and a
+  slight glow of its own; the characters come in three sizes and a range of
+  brightness. They fall as slowly as the lamps drift, so that they stay at the
+  edge of the eye. `hud_glyph_color` gives the characters and the lamps a colour
+  of their own (`rgb(rrggbb)`; the heads are it lightened), as `matrix-hud` does
+  with a green of hue 114° (`"rgb(3cff28)"`), yellower than its teal outline, like
+  the film's code; without it they take the outline's and the glow's colours.
+  Along the top and the bottom up to two ellipses of light per edge (the lamps)
+  drift slowly to and fro and pulse, also inside the glow, in the colour of the
+  characters. Only the focused window moves, and `hud_sweep = "true"` drives all
+  of it (`"false"` leaves the outline and its halo); keep
+  `border_animation = "false"`. The two columns reach about 21 px from the
+  line, so they need room: the outlines of neighbouring windows have to be at
+  least about 42 px apart (`2 * gaps_in - 2 * hud_gap` with the border hidden;
+  `matrix-hud`: `gaps_in = "28"` leaves 50 px) and the screen's edge about 24 px
+  from the window (`gaps_out`; `matrix-hud`: `"34"`). To drop the second column
+  edit `glyphRows` of the style in the plugin. Without the plugin the theme has no
+  border line at all. `matrix-hud/colors.toml` is a complete example: the Matrix
+  text, accent and status colors on a near-black green background at 0.85
+  opacity, a frame that shades from mint white through green to teal and a
+  deeper emerald-to-aqua glow so the two layers stay apart.
 
 ## 4) Generate theme files
 

@@ -5,12 +5,13 @@
 // colours are a fixed amber, or a fixed green with the palette "matrix".
 //
 //   make preview
-//   build/preview [style] [width] [height] [scale] [zoom] [floating] [travelled] [clock] [palette] [intensity] [seed] > panel.ppm
+//   build/preview [style] [width] [height] [scale] [zoom] [floating] [travelled] [clock] [palette] [intensity] [seed] [gap] > panel.ppm
 //   build/preview glyphs [zoom] [palette] > glyphs.ppm
 //
 // width and height are the window in physical px; `travelled` is how far the dots and the rain have run
 // and `clock` how long the lamps of a glyph style have been running, in seconds;
-// `intensity` is how far the window has faded into focus, 0 to 1. `glyphs` draws every
+// `intensity` is how far the window has faded into focus, 0 to 1; `gap` is how far the outline
+// stands off the window (`hud_gap`, 15 if not given; the Matrix HUD has 3). `glyphs` draws every
 // character of the matrix style, twelve to a row, in the order of the table.
 
 #include "../geometry.hpp"
@@ -174,21 +175,25 @@ GlyphTones glyphTonesOf(const Palette& pal) {
     return {makeTone(body, halo, 7), makeTone(hot, halo, 7)};
 }
 
-// What the pass element does for a character: the character in the size it was given, in the colours of the line
-// and, as hot as it is, the same one over it in the bright colour.
-void drawGlyphs(Canvas& cv, const GlyphFace& base, const std::vector<GlyphDraw>& draws, const Palette& pal, int ox, int oy) {
-    GlyphFace faces[kGlyphSizes];
-    GlyphSize sizes[kGlyphSizes];
-    for (int i = 0; i < kGlyphSizes; ++i) {
-        faces[i] = glyphFaceOf(base, i);
-        sizes[i] = glyphSize(faces[i]);
+// What the pass element does for a character: the character in the size it was given and the face of its column,
+// in the colours of the line and, as hot as it is, the same one over it in the bright colour.
+void drawGlyphs(Canvas& cv, const Panel& panel, const std::vector<GlyphDraw>& draws, const Palette& pal, int ox, int oy) {
+    GlyphFace faces[2][kGlyphSizes];
+    GlyphSize sizes[2][kGlyphSizes];
+    for (int column = 0; column < 2; ++column) {
+        const GlyphFace& base = column > 0 && panel.farGlyphs.on() ? panel.farGlyphs : panel.glyphs;
+        for (int i = 0; i < kGlyphSizes; ++i) {
+            faces[column][i] = glyphFaceOf(base, i);
+            sizes[column][i] = glyphSize(faces[column][i]);
+        }
     }
 
     const GlyphTones tones = glyphTonesOf(pal);
     for (const GlyphDraw& g : draws) {
-        const int        which = std::clamp(g.size, 0, kGlyphSizes - 1);
-        const GlyphFace& face  = faces[which];
-        const double     x = ox + g.x - sizes[which].w / 2.0, y = oy + g.y - sizes[which].h / 2.0;
+        const int        column = std::clamp(g.column, 0, 1);
+        const int        which  = std::clamp(g.size, 0, kGlyphSizes - 1);
+        const GlyphFace& face   = faces[column][which];
+        const double     x = ox + g.x - sizes[column][which].w / 2.0, y = oy + g.y - sizes[column][which].h / 2.0;
         const float      lit = float(g.alpha) / kGlyphAlphaSteps;
         drawImage(cv, bakeGlyph(glyphSpecOf(face, g.glyph, tones.line)), x, y, lit);
         if (g.heat > 0) {
@@ -210,7 +215,7 @@ void writePpm(const Canvas& cv, int zoom) {
     }
 }
 
-Params paramsFor(int width, int height, float scale, bool floating) {
+Params paramsFor(int width, int height, float scale, bool floating, double gap = 15) {
     Params p;
     p.width          = width;
     p.height         = height;
@@ -218,7 +223,7 @@ Params paramsFor(int width, int height, float scale, bool floating) {
     p.cut            = int(std::lround(21 * scale));
     p.roundingPower  = 1.f;
     p.floating       = floating;
-    p.gap            = 15;
+    p.gap            = gap;
     p.lineWidth      = 2;
     p.chamfer        = 10;
     p.floatGlowRange = 14;
@@ -272,6 +277,7 @@ int main(int argc, char** argv) {
     const std::string palette  = argc > 9 ? argv[9] : "amber";
     const double      level    = argc > 10 ? std::clamp(std::atof(argv[10]), 0.0, 1.0) : 1.0;
     const unsigned    seed     = argc > 11 ? unsigned(std::atoi(argv[11])) : 0;
+    const double      gap      = argc > 12 ? std::atof(argv[12]) : 15;
 
     const Style* style = styleFor(name);
     if (!style) {
@@ -279,7 +285,7 @@ int main(int argc, char** argv) {
         return 1;
     }
 
-    const Params p = paramsFor(width, height, scale, floating);
+    const Params p = paramsFor(width, height, scale, floating, gap);
 
     const Layout layout = buildLayout(*style, p);
     if (!layout.valid) {
@@ -342,7 +348,7 @@ int main(int argc, char** argv) {
     }
 
     if (glyphMode) {
-        drawGlyphs(cv, layout.panel.glyphs, glyphDraws(layout.panel, travel, intensity, seed), pal, left, top);
+        drawGlyphs(cv, layout.panel, glyphDraws(layout.panel, travel, intensity, seed), pal, left, top);
     } else {
         const std::vector<RunnerPose> poses = intensity > 0 ? runnerPoses(layout.panel, travel) : std::vector<RunnerPose>{};
         auto drawBeadAt = [&](const Bead& bead, const RunnerPose& pose, float alpha) {

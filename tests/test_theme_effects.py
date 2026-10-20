@@ -331,7 +331,7 @@ class StockThemeEffectTests(unittest.TestCase):
         for key in ("foreground", "fg_dim", "muted", "accent", "accent_alt", "danger", "success", "warning", "info"):
             self.assertEqual(palette[key], stock_matrix[key], key)
         self.assertNotEqual(palette["background"], stock_matrix["background"])
-        # One notched outline and its glow, around octagonal windows. Hyprland's own border,
+        # One outline and its glow, around octagonal windows. Hyprland's own border,
         # glow and shadow are off, so the plugin's outline and halo are all there is.
         self.assertEqual(variables["themeHudFrame"], "1")
         self.assertEqual(variables["themeHudStyle"], "matrix")
@@ -342,13 +342,16 @@ class StockThemeEffectTests(unittest.TestCase):
         self.assertEqual(palette["border_size"], "2")  # the width compositors without the frame draw
         self.assertEqual(variables["themeGlow"], "0")
         self.assertEqual(variables["themeShadowRange"], "0")  # a range of 1 still draws a thin ring
-        # The notches need the outline at least 13 px off the window.
-        self.assertGreaterEqual(int(variables["themeHudGap"]), 13)
-        # Without Hyprland's border the windows are 2 * gaps_in apart and the outlines
-        # stand hud_gap off them: that is the room two neighbours' halos share.
-        apart = 2 * (int(variables["themeGapsIn"]) + int(variables["themeBorderSize"])) - 2 * int(variables["themeHudGap"])
-        self.assertGreaterEqual(apart, int(variables["themeHudLineWidth"]) + 13)
-        self.assertEqual(apart, 18)
+        # The outline hugs the window: 3 px off it is as close as a 2 px line gets.
+        self.assertEqual(int(variables["themeHudGap"]), 3)
+        # The two columns of falling characters stand outside the outline and, with its
+        # offset, reach about 24 px from the window's edge (at scale 1). Without Hyprland's
+        # border the windows are 2 * gaps_in apart, and the columns of two neighbours must
+        # stay clear of each other, as must the columns and the screen's edge.
+        reach = 24
+        apart = 2 * (int(variables["themeGapsIn"]) + int(variables["themeBorderSize"]))
+        self.assertGreaterEqual(apart, 2 * reach + 8)
+        self.assertGreaterEqual(int(variables["themeGapsOut"]), reach + 8)
         # The falling characters and the drifting glows are the animation, and the
         # sweep drives both: without it the plugin shows only the still outline.
         self.assertEqual(variables["themeBorderAnimation"], "0")

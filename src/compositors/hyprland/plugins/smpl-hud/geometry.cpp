@@ -82,13 +82,14 @@ const Style kStyles[] = {
         .runnerSpeed     = 1.6f,
     },
     {
-        // The panel's outline alone, with a rain of characters falling down both
-        // sides inside its glow and glows going slowly to and fro along the
-        // top and the bottom: the Matrix HUD.
+        // The panel's outline alone, standing on the window's edge, with a rain
+        // of characters falling down both sides in two columns outside it, inside
+        // its glow, and glows going slowly to and fro along the top and the
+        // bottom: the Matrix HUD.
         .name            = "matrix",
         .lineAlpha       = 0.90f,
         .haloAlpha       = 0.85f,
-        .haloReach       = 18.f,
+        .haloReach       = 22.f,
         .floatBoost      = 1.30f,
         .haloInnerReach  = 0.f,
         .haloInnerFactor = 0.f,
@@ -103,13 +104,14 @@ const Style kStyles[] = {
         .tabGlowAlpha    = {0.f, 0.f},
         .brightWhiten    = 0.55f,
         .sweepAlpha      = 0.95f,
-        .sweepWhiten     = 0.50f,
+        .sweepWhiten     = 0.22f,
         .kind            = Kind::Panel,
         .notchDepth      = 9.f,
         .glyphHeight     = 14.f,
         .glyphPitch      = 16.f,
         .glyphFall       = 0.6f,
         .glyphGlow       = 0.45f,
+        .glyphColumns    = 2,
         .lamps           = 2,
     },
 };

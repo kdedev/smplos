@@ -4,9 +4,9 @@ A Hyprland plugin that draws HUD window frames around every window, from the
 active theme: either a chamfered, glowing outline with corner brackets and edge
 tabs (the look of the `neon` theme), or a notched panel outline with circuit
 traces, dots that circle the outline and dots that bounce along the traces (the
-look of `amber-hud`), or that notched outline alone, with Matrix characters
-falling down its sides and slow glows drifting along its top and bottom (the look
-of `matrix-hud`).
+look of `amber-hud`), or a plain outline right at the window's edge, with two
+columns of Matrix characters falling beside each of its sides and slow green
+glows drifting along its top and bottom (the look of `matrix-hud`).
 
 It is a **window decoration inside the compositor's own render pass**. It moves,
 resizes, animates, fades and stacks together with its window, so it never lags
@@ -54,13 +54,13 @@ Hyprland config reload, which `theme-set` triggers. Values are clamped.
 | `$themeHudSweep` | `hud_sweep` | `false` | `true` / `false`; a soft glow drifts along the focused window's outline, the dots of a `panel` move along its lines, and the characters of a `matrix` fall and its lamps drift along its top and bottom; `false` keeps all of them still, so a `matrix` shows only its outline and halo |
 | `$themeHudSweepSpeed` | `hud_sweep_speed` | `80` | 10 to 400 px per second (the dots of a `panel` run 1.6 times as fast, the characters of a `matrix` fall 0.6 times as fast) |
 | `$themeHudSweepLength` | `hud_sweep_length` | `180` | 40 to 600 px along the line; for a `matrix`, the longest a lamp gets, which also decides how many fit on an edge |
-| `$themeHudGlyphColor` | `hud_glyph_color` | `none` | `rgb(rrggbb)` or `none`; the colour of the characters of a glyph style such as `matrix` (their heads are it lightened, their glow it too); `none` leaves them the colours of the line. Anything else is ignored |
+| `$themeHudGlyphColor` | `hud_glyph_color` | `none` | `rgb(rrggbb)` or `none`; the colour of the characters of a glyph style such as `matrix` and of its lamps (the heads are it lightened, the glow of the characters it too); `none` leaves them the colours of the line. Anything else is ignored |
 
 Frame and glow colours are not keys of their own: the plugin paints with each
 window's own border gradient (`border_active` / `border_inactive`) and glow gradient
 (`glow_color`), including their focus fades and `border_animation` rotation. The one
-exception is the characters of a glyph style, which can have a colour of their own
-(`hud_glyph_color`). See
+exception is the characters of a glyph style and its lamps, which can have a colour
+of their own (`hud_glyph_color`). See
 "Glow, Shadow and Animated Borders" in `CREATING_MODIFYING_A_THEME.md` for how the
 keys interact with `gaps_in`, `rounding` and `rounding_power`.
 
@@ -142,7 +142,8 @@ and two windows never start in step. It is meant to be almost subliminal: the
 default 80 px/s takes a typical window tens of seconds for a lap.
 
 A `matrix` has no glow going round its outline. Its lamps (below) are the same
-sprite, one for each lamp, on a track of their own.
+sprite, one for each lamp, on a track of their own, in the colour of the
+characters (`hud_glyph_color`, else the line's).
 
 It is built to cost very little:
 
@@ -193,7 +194,7 @@ A style is one entry in `kStyles[]` in `geometry.cpp`; the fields are documented
 | `scifi` | Outline, halos on both sides, corner brackets, mid-edge tabs |
 | `minimal` | Outline and halos only |
 | `panel` | Notched outline with a step, a ghost line and a cut corner, circuit traces ending in beads, two dots circling the outline in opposite directions and a dot bouncing along each trace; the circling dots glow as they near a bouncing dot or each other (`amber-hud`) |
-| `matrix` | The `panel`'s outline alone, as one line with its glow: Matrix characters fall down both sides in two columns, one on each side of the line inside its glow, each a bright head that glides down keeping one shape for four or five rows and a tail of other characters it leaves behind, and a few slow glows (lamps) pulse and drift to and fro along the top and the bottom (`matrix-hud`) |
+| `matrix` | The `panel`'s outline alone, hugging the window, as one line with its glow: Matrix characters fall beside both sides in two columns on each, outside the line and inside its glow, the second half as tall and two thirds as bright as the first so that it looks further away, each a bright head that glides down keeping one shape for four or five rows and a tail of other characters it leaves behind, and a few slow green glows (lamps) pulse and drift to and fro along the top and the bottom (`matrix-hud`) |
 
 For the ring styles (`scifi`, `minimal`) the corner shape is not part of the
 style: the outline follows the window's own `rounding` and `rounding_power` at a
@@ -268,64 +269,76 @@ corner.
 A `matrix` style is a `Kind::Panel` style with `glyphHeight` and `lamps` above 0
 and no beads, runners or traces (`beadRadius` and `traceOffset` are 0): the
 `panel`'s outline as one line with its glow, and light that moves inside that
-glow. `buildPanel()` adds to the `Panel` a `GlyphFace` (character height, stroke
-weight, glow reach, pitch, fall speed and plate opacity, derived from the style
-and the scale), the columns the characters fall in (`placeRain()`,
+glow. `buildPanel()` adds to the `Panel` two `GlyphFace`s (character height, stroke
+weight, glow reach, pitch, fall speed, plate opacity and `dim`, how bright the
+characters are at most, derived from the style and the scale): `glyphs` for the
+column next to the line and `farGlyphs` for the second, half the size and two
+thirds as bright. It also adds the columns the characters fall in (`placeRain()`,
 `Panel::lanes`) and the track and lamps of the top and bottom edges
 (`placeLamps()`, `Panel::track` and `Panel::lamps`).
 
 - **One line.** The theme sets `hud_hide_border = "true"`, so Hyprland's own
   border is not drawn (the generator gives it a size of 0), and turns its glow and
   shadow off (`glow = "false"`, `shadow_range = "0"`). The outline and its halo
-  (`haloAlpha`, `haloReach`) are then the window's only line and glow, and
-  `hud_float_glow_range` widens the halo on floating windows. The plugin still
-  frames such a window unless it opts out itself (fullscreen, `decorate` off or a
-  `border_size 0` rule, as the JetBrains and picture-in-picture windows have); see
-  Limits.
+  (`haloAlpha`, `haloReach`: 22 px, enough for both columns of characters to stand
+  in it) are then the window's only line and glow, and `hud_float_glow_range`
+  widens the halo on floating windows. The theme's `hud_gap` of 3 puts the line as
+  close to the window as a 2 px line gets, which leaves no room for the notches,
+  so it is the plain chamfered outline that follows the window's cut corners. The
+  plugin still frames such a window unless it opts out itself (fullscreen,
+  `decorate` off or a `border_size 0` rule, as the JetBrains and picture-in-picture
+  windows have); see Limits.
 - **Characters.** `glyph.cpp` holds sixty half-width katakana, digits and signs,
   each a few straight strokes on a 4 × 6 grid, mirrored like the film's. Drawing
   them from strokes, not from a font, keeps the HUD free of a font or text
   library and every machine rendering the same glyph; `stamp.cpp` bakes them with
   the same bright core and soft halo as the lines.
 - **Columns.** Only the straight runs of the two sides get characters, none on the
-  top or the bottom (`placeLanes()`): two columns on each side, in the glow either
-  side of the line. The inner one is centred in the gap between the line and the
-  window (if the characters fit there, else it is left out); the outer one is as
-  far from the line on the other side, and half a pitch lower, so that the two do
-  not line up. A column begins and ends a pitch short of its straight run, and one
-  of fewer than three characters is dropped (the compact outline of a small window
-  has short sides). They depend on the style and the scale, never on the window's
-  size. The outer column reaches out into the gap between two frames and clears
-  the neighbour's line by only a couple of pixels at the 18 px `matrix-hud` leaves
-  between the lines, so do not narrow that gap (see Limits).
+  top or the bottom (`placeLanes()`). On each side the columns stand outside the
+  line, in its glow (`Style::glyphColumns` says whether there are one or two): the
+  first keeps 1.5 px from the line's edge, the second 1 px from the first. The
+  second column's characters are half the size (`kFarScale`) and two thirds as
+  bright (`kFarDim`) as the first's, with half the pitch, so that it looks further
+  away; it falls as many rows a second, which is half as many px, so it looks
+  slower too. A column begins and ends a pitch short of its straight run, and one
+  of fewer than three characters is dropped, together with any beyond it (the
+  compact outline of a small window has short sides): there is no second column
+  where there is no first. They depend on the style and the scale, never on the
+  window's size. At scale 1 the second column reaches 21 px out from the middle of
+  the line, so the lines of tiled neighbours need to be about twice that apart, and
+  a window needs about 24 px between its edge and the screen's (see Limits). To
+  have no second column, set `glyphColumns` to 1.
 - **Rain.** `glyphDraws()` is a pure function of how far the columns have fallen,
   how far the window has focus (`intensity`, 0 to 1) and a per-window seed, so the
   tests and `make preview` can ask for any moment. Each column has one to three
-  falls (one for every twenty characters). A fall is a **head**, one bright
-  character that glides down the column smoothly, never up, and keeps its shape
-  for four or five rows before it turns into another one (over about two thirds of
-  a row, the old shape fading as the new one comes up), and a **tail** behind it:
-  every cell the head passes is given a character of its own, different from the
-  head's, which comes up as the head gets clear of the cell and then dims, more
-  slowly the longer the tail. The next head to reach a cell replaces whatever is
-  in it, and nothing ever changes by itself. A fall fades in at the top of the
-  column and out at the bottom, runs off the end, and after a pause begins again
-  at the top. Every fall has its own speed (0.75 to 1.35 times the column's) and
-  pause, and every pass a tail of its own length, eight to
-  twenty-eight rows (a column of fewer than 47 allows three fifths of its length,
-  and never fewer than three). A pass lasts as long as the longest tail needs, so
-  a short tail only rests longer, and no pass is cut off by the next. Two heads
-  that come within a row of each other do not run together: one of the pair (always
-  the same one) fades out as they close in, and is gone when they are less than a
-  third of a row apart. No two characters are quite alike: every
-  head and every character left behind has a brightness (a head at least 85% of
-  the full one, the others at least 70% of their own) and one of three sizes
-  (84%, 92% or 100% of the face's, for 30%, 40% and 30% of them), too little to
-  look like another font. The nearest rows behind a head are overdrawn in the
-  Bright colour. The whole rain is as slow as the lamps (the heads fall 0.6 times
-  as fast as `hud_sweep_speed`, each fall at 0.75 to 1.35 times that), so that it
-  stays at the edge of the eye and does not draw it from the
-  work. Characters that no fall lights are not drawn, and at intensity 0 none are.
+  falls (one for every twenty characters), the second column, whose characters
+  are half as tall, up to six. A fall is a **head**, one bright character that
+  glides down the column smoothly, never up, and keeps its shape for four or five
+  rows before it turns into another one (over about two thirds of a row, the old
+  shape fading as the new one comes up), and a **tail** behind it: every cell the
+  head passes is given a character of its own, different from the head's, which
+  comes up as the head gets clear of the cell and then dims, more slowly the
+  longer the tail. The next head to reach a cell replaces whatever is in it, and
+  nothing ever changes by itself. A fall fades in at the top of the column and out
+  at the bottom, runs off the end, and after a pause begins again at the top.
+  Every fall has its own speed (0.75 to 1.35 times the column's) and pause, and
+  every pass a tail of its own length, eight to twenty-eight rows (a column of
+  fewer than 47 allows three fifths of its length, and never fewer than three). A
+  pass lasts as long as the longest tail needs, so a short tail only rests longer,
+  and no pass is cut off by the next. Two heads that come within a row of each
+  other do not run together: one of the pair (always the same one) fades out as
+  they close in, and is gone when they are less than a third of a row apart. No
+  two characters are quite alike: every head and every character left behind has
+  a brightness (a head at least 85% of the full one, the others at least 70% of
+  their own) and one of three sizes (84%, 92% or 100% of the face's, for 30%, 40%
+  and 30% of them), too little to look like another font. The face's `dim` scales
+  all of it, so the second column is at most two thirds as bright as the first.
+  The nearest rows behind a head are overdrawn in the Bright colour. The whole
+  rain is as slow as the lamps (the heads of the first column fall 0.6 times as
+  fast as `hud_sweep_speed`, those of the second half as many px a second, each
+  fall at 0.75 to 1.35 times that), so that it stays at the edge of the eye and
+  does not draw it from the work. Characters that no fall lights are not drawn,
+  and at intensity 0 none are.
 - **Lamps.** The glows along the top and the bottom are up to two ellipses on each
   edge (`placeLamps()`, `lampPose()`), as many as fit in the edge at one and a half
   times `hud_sweep_length` each, none if the edge is shorter than one. Each goes to
@@ -333,12 +346,16 @@ and the scale), the columns the characters fall in (`placeRain()`,
   trace, pulses every four to six seconds between 35% and full strength while its
   length swells and shrinks by an eighth, and every one has its own length, speed,
   direction and pulse. The track they follow (`Panel::track`) is the outline with
-  its two sides dark, so that no glow runs where the characters fall.
+  its two sides dark, so that no glow runs where the characters fall. A lamp is
+  tinted with the colour of the characters (`hud_glyph_color`, else the line's) and
+  whitens only a little at its core (`sweepWhiten` of 0.22), so that it stays
+  green and does not turn white at full strength.
 - **How it is drawn.** A lit character is one textured quad from the shared stamp
   cache, keyed on the glyph, its alpha and heat step (32 and 8 of them), size and
   colours; the characters are the most numerous images, which is why the cache
-  holds 2048. Each is baked in the size it was given (`glyphFaceOf()`). (A style
-  with a `glyphKnock` above 0 also bakes a dark plate behind each character that
+  holds 2048. Each is baked in the size it was given (`glyphFaceOf()`), with the
+  face of its column (`GlyphDraw::column` is 0 for `glyphs` and 1 for `farGlyphs`).
+  (A style with a `glyphKnock` above 0 also bakes a dark plate behind each character that
   dims the line it stands on; `matrix` has none, because its characters stand
   beside the line and not on it.) The colours are those of the line where the
   character stands and of the glow, or, with `hud_glyph_color`, that colour for
@@ -363,10 +380,11 @@ and the scale), the columns the characters fall in (`placeRain()`,
   software-rendered nested compositor (no GPU, so far costlier than a real
   session) three windows took about 3% of one core with the frames moving, against
   0.6% without the plugin.
-- **Preview.** `build/preview matrix 900 560 1 1 0 700 3.0 matrix 1 3 > matrix.ppm`
+- **Preview.** `build/preview matrix 900 560 1 1 0 700 3.0 matrix 1 3 3 > matrix.ppm`
   draws a focused frame with the rain 700 px of travel into its fall (the seventh
-  argument, which alone decides where the characters are) and the lamps three
-  seconds into their run (the eighth), and
+  argument, which alone decides where the characters are), the lamps three
+  seconds into their run (the eighth) and the outline 3 px off the window like
+  `matrix-hud`'s (the last; without it the gap is 15 and the notches are back), and
   `build/preview glyphs 4 matrix > glyphs.ppm` every character.
 
 ### Adding a style
@@ -377,8 +395,9 @@ To add a look:
    (what the theme generator accepts) and unique. Setting `bracketLen` / `tabLen`
    to `0` drops the corner brackets / edge tabs, and a `Kind::Panel` style with
    `glyphHeight` above 0 draws characters falling in columns along the straight
-   sides (`glyphPitch`, `glyphFall`, `glyphGlow`, `glyphKnock`) and, with `lamps`
-   above 0, glows drifting along the top and the bottom (`beadRadius` and
+   sides (`glyphPitch`, `glyphFall`, `glyphGlow`, `glyphKnock`, and `glyphColumns`,
+   one or two columns beside each side, the second smaller and dimmer) and, with
+   `lamps` above 0, glows drifting along the top and the bottom (`beadRadius` and
    `traceOffset` at 0 leave out the dots and the traces).
 2. `make test`. The tests walk `allStyles()`, so the new style is checked for a
    valid name, shapes that stay inside the extents the compositor was told about,
@@ -449,8 +468,9 @@ session you work in, and load a build by path with
 - It needs room: tiled neighbours' outlines are
   `2 * (gaps_in + border_size) - 2 * hud_gap` apart (see the theme guide), and
   with small gaps the lines and halos touch. With `hud_hide_border` the border
-  size here is 0, which is why `matrix-hud` has 18 px between the lines where
-  `amber-hud` has 22, and its two columns of characters need those 18.
+  size here is 0: `matrix-hud` has 50 px between the lines (`2 * 28 - 2 * 3`)
+  where `amber-hud` has 22, and the two columns of characters on each side of the
+  gap, which reach 21 px from their line, need most of it.
 - Without the plugin, a theme with `hud_hide_border` has no border line at all
   (the others keep Hyprland's own border).
 - A `panel` or `matrix` is a frame, not a window shape: the window itself stays a uniformly

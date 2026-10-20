@@ -106,12 +106,13 @@ struct Style {
     float runnerSpeed = 1; // speed of the runner dots relative to the travelling glow
 
     // Glyph styles let characters fall along the straight sides of the outline,
-    // two columns of them either side of the line, inside its glow (panel.hpp).
-    float glyphHeight = 0; // logical px; 0 has no characters
-    float glyphPitch  = 0; // logical px between two characters of a column
-    float glyphFall   = 0; // how fast they fall, relative to the travelling glow
-    float glyphGlow   = 0; // how far the glow round a character reaches past its strokes, in character heights
-    float glyphKnock  = 0; // how dark a plate behind a character is, 0..1: it dims the line it stands on
+    // in columns outside the line, inside its glow (panel.hpp).
+    float glyphHeight  = 0; // logical px; 0 has no characters
+    float glyphPitch   = 0; // logical px between two characters of a column
+    float glyphFall    = 0; // how fast they fall, relative to the travelling glow
+    float glyphGlow    = 0; // how far the glow round a character reaches past its strokes, in character heights
+    float glyphKnock   = 0; // how dark a plate behind a character is, 0..1: it dims the line it stands on
+    int   glyphColumns = 1; // 1, or 2 for a smaller, dimmer, slower column beyond the first, which looks further away
 
     // Glow lamps: slow glows that pulse and go to and fro along the top and the
     // bottom edge, a few on each edge, in place of the one glow round the outline.
@@ -226,6 +227,7 @@ struct GlyphFace {
     double pitch     = 0; // px between two characters of a column
     double fall      = 0; // how fast a column falls, in the units of `travelled` (see glyphDraws)
     float  knock     = 0; // opacity of the dark plate behind a character, 0..1
+    float  dim       = 1; // how bright its characters are at most, 0..1 of what they would be
 
     bool on() const { return height > 0; }
 };
@@ -235,9 +237,10 @@ struct GlyphFace {
 // between them.
 struct RainLane {
     int x       = 0; // whole px, the middle of the characters
-    int y0      = 0; // whole px, the middle of the first (topmost) cell; the rest are GlyphFace::pitch apart
+    int y0      = 0; // whole px, the middle of the first (topmost) cell; the rest are the face's pitch apart
     int cells   = 0; // how many cells the column has
     int streams = 1; // how many falls it has at once
+    int column  = 0; // 0 for the column next to the line, which has Panel::glyphs; 1 for the one beyond it, which has Panel::farGlyphs
 };
 
 // A glow that goes slowly to and fro along an edge of the outline and pulses
@@ -266,9 +269,13 @@ struct Panel {
     Proximity touch;
     Proximity merge;
 
-    // A glyph style lets characters fall in columns along the straight sides.
+    // A glyph style lets characters fall in columns along the straight sides:
+    // `glyphs` are those of the column next to the line, `farGlyphs` those of the
+    // second column, beyond it, if the style has one (a smaller, dimmer and slower
+    // face).
     GlyphFace             glyphs;
-    std::vector<RainLane> lanes; // top to bottom of the left side's, then of the right side's
+    GlyphFace             farGlyphs;
+    std::vector<RainLane> lanes; // top to bottom of the left side's columns, then of the right side's
 
     // A lamp style has glows on the top and the bottom edge. They follow `track`,
     // the outline with its sides masked out (alpha 0), so that no glow runs where

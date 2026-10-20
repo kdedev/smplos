@@ -225,26 +225,31 @@ namespace {
 
     // The characters of a glyph style, each in the colours of the line where it
     // stands (on a dark plate that dims the line behind it, if the style has one),
-    // in the size it was given. One that is hot has the same character drawn over
-    // it in the bright colour (without a plate), as strongly as it is hot; the glow
-    // of the two adds up.
+    // in the size it was given and the face of its column. One that is hot has the
+    // same character drawn over it in the bright colour (without a plate), as
+    // strongly as it is hot; the glow of the two adds up.
     void drawGlyphs(const SHudFrame& frame) {
-        const auto& base = frame.layout->panel.glyphs;
-        if (!base.on() || frame.glyphs.empty())
+        const auto& panel = frame.layout->panel;
+        if (!panel.glyphs.on() || frame.glyphs.empty())
             return;
 
-        std::array<smplhud::GlyphFace, smplhud::kGlyphSizes> faces;
-        std::array<smplhud::GlyphSize, smplhud::kGlyphSizes> sizes;
-        for (int i = 0; i < smplhud::kGlyphSizes; ++i) {
-            faces[i] = smplhud::glyphFaceOf(base, i);
-            sizes[i] = smplhud::glyphSize(faces[i]);
+        // The faces of the column next to the line, then of the one beyond it.
+        std::array<std::array<smplhud::GlyphFace, smplhud::kGlyphSizes>, 2> faces;
+        std::array<std::array<smplhud::GlyphSize, smplhud::kGlyphSizes>, 2> sizes;
+        for (size_t column = 0; column < faces.size(); ++column) {
+            const auto& base = column > 0 && panel.farGlyphs.on() ? panel.farGlyphs : panel.glyphs;
+            for (int i = 0; i < smplhud::kGlyphSizes; ++i) {
+                faces[column][size_t(i)] = smplhud::glyphFaceOf(base, i);
+                sizes[column][size_t(i)] = smplhud::glyphSize(faces[column][size_t(i)]);
+            }
         }
 
         CTextureScope scope;
         for (const auto& glyph : frame.glyphs) {
-            const int   which = std::clamp(glyph.size, 0, smplhud::kGlyphSizes - 1);
-            const auto& face  = faces[which];
-            const auto& size  = sizes[which];
+            const auto  column = size_t(std::clamp(glyph.column, 0, 1));
+            const auto  which  = size_t(std::clamp(glyph.size, 0, smplhud::kGlyphSizes - 1));
+            const auto& face   = faces[column][which];
+            const auto& size   = sizes[column][which];
             if (size.w <= 0 || size.h <= 0)
                 continue;
 
@@ -290,8 +295,12 @@ namespace {
         if (damage.empty())
             return;
 
-        const auto  centre = smplhud::pointAt(*sweep.path, sweep.at).pos;
-        const auto  rgba   = paintAt(frame.paints[size_t(smplhud::Paint::Line)], frame.layout->sampleBox, centre.x, centre.y);
+        const auto centre = smplhud::pointAt(*sweep.path, sweep.at).pos;
+        auto       rgba   = paintAt(frame.paints[size_t(smplhud::Paint::Line)], frame.layout->sampleBox, centre.x, centre.y);
+        // A theme that has a colour of its own for its characters has its glows in that colour, not
+        // in the line's, which may start out nearly white.
+        if (const auto& own = frame.glyphColour)
+            rgba = {own->line.r, own->line.g, own->line.b, rgba.a};
         const std::array<uint8_t, 4> colour = {quantised(rgba.r), quantised(rgba.g), quantised(rgba.b), quantised(rgba.a)};
         if (colour[3] == 0)
             return;

@@ -61,15 +61,21 @@ constexpr double kGlyphStroke = 0.05; // half the thickness of a stroke
 constexpr double kGlyphMin    = 6;    // px; no character is smaller
 constexpr double kGlyphHalo   = 1.25; // their glow is this much brighter than the line's
 
-// The columns the characters fall in: the one on the window's side of the line
-// is centred in the gap between the line and the window, the other is its mirror
-// image across the line. A character keeps kGlyphGap px from the line and
-// kGlyphClear px from the window, and a column starts and ends a pitch short of
-// the ends of the straight run, clear of the corners. One with fewer than
-// kLaneMinCells characters is not worth having. A column has one fall for every
-// kLaneCells characters, but no more than kLaneMaxStreams.
-constexpr double kGlyphGap       = 0.5;
-constexpr double kGlyphClear     = 1.5;
+// The second column of characters, in terms of the first: it looks further away,
+// being smaller and dimmer, and it is slower in px, though its characters fall
+// as many rows a second.
+constexpr double kFarScale = 0.5;
+constexpr double kFarDim   = 2.0 / 3.0;
+
+// The columns the characters fall in, all outside the line: the first keeps
+// kGlyphGap px from the line, the second kColumnGap px from the first. A column
+// starts and ends a pitch short of the ends of the straight run, clear of the
+// corners. One with fewer than kLaneMinCells characters is not worth having, and
+// neither is a second column where there is no first. A column has one fall for
+// every kLaneCells characters, but no more than kLaneMaxStreams for characters as
+// tall as the first column's: a column of smaller ones may have more.
+constexpr double kGlyphGap       = 1.5;
+constexpr double kColumnGap      = 1.0;
 constexpr double kLaneInset      = 1.0; // in pitches
 constexpr int    kLaneMinCells   = 3;
 constexpr double kLaneCells      = 20;
@@ -282,7 +288,8 @@ double minClearance(const Frame& f) {
     return best;
 }
 
-// The characters' size.
+// The characters' sizes: those of the first column, and those of the second,
+// which is smaller, dimmer and slower in px, but has as many rows a second go by.
 void placeFace(const Style& style, const Frame& f, double halo, Panel& panel) {
     GlyphFace& face = panel.glyphs;
     face.height     = std::max(kGlyphMin, std::round(style.glyphHeight * f.s));
@@ -292,50 +299,69 @@ void placeFace(const Style& style, const Frame& f, double halo, Panel& panel) {
     face.pitch      = std::max(face.height * 0.5, std::round(style.glyphPitch * f.s));
     face.fall       = style.glyphFall;
     face.knock      = style.glyphKnock;
+    face.dim        = 1.f;
+
+    panel.farGlyphs = {};
+    if (style.glyphColumns >= 2) {
+        GlyphFace& far = panel.farGlyphs;
+        far            = face;
+        far.height *= kFarScale;
+        far.halfWidth *= kFarScale;
+        far.reach *= kFarScale;
+        far.pitch *= kFarScale;
+        far.fall *= kFarScale;
+        far.dim = float(kFarDim);
+    }
 }
 
-// Where the columns beside one straight side of the outline are. The line is at
-// x = `line` and the window's edge at x = `window`. The first column is the one
-// in the gap between the line and the window, if the characters fit in it; the
-// second is on the other side of the line, as far from it as the first is. They
-// depend on the style and the scale, never on how big the window is.
+double halfWidthOf(const GlyphFace& face) {
+    return face.height * kGlyphW / kGlyphH / 2 + face.halfWidth;
+}
+
+// Where the columns of characters beside one straight side of the outline are.
+// The line is at x = `line` and `away` (1 or -1) points from the window to the
+// columns, which are all outside the line: the first is next to it, the second
+// next to the first. They depend on the style and the scale, never on how big
+// the window is.
 struct Columns {
-    bool fits  = false;
-    int  inner = 0, outer = 0;
+    int n    = 0;
+    int x[2] = {0, 0}; // the middle of the characters of each
 };
 
-Columns columnsOf(const GlyphFace& face, const Frame& f, double line, double window) {
-    const double dir   = window > line ? 1.0 : -1.0;
-    const double halfW = face.height * kGlyphW / kGlyphH / 2 + face.halfWidth;
-    const double edge  = line + dir * f.hw; // the line's edge on the window's side
-
+Columns columnsOf(const Panel& panel, const Frame& f, double line, double away) {
     Columns out;
-    out.inner         = int(std::lround((edge + window) / 2));
-    out.fits          = std::fabs(window - out.inner) >= halfW + kGlyphClear && std::fabs(out.inner - edge) >= halfW + kGlyphGap;
-    const double away = std::max(std::fabs(line - out.inner), std::ceil(f.hw + halfW + kGlyphGap));
-    out.outer         = int(std::lround(line - dir * away));
+    double  edge = line + away * f.hw; // how far the line, then each column, reaches
+    double  gap  = kGlyphGap;
+    for (const GlyphFace* face : {&panel.glyphs, &panel.farGlyphs}) {
+        if (!face->on())
+            break;
+        const double half = halfWidthOf(*face);
+        const double at   = edge + away * (gap + half);
+        const double x    = away > 0 ? std::ceil(at) : std::floor(at); // whole px, never nearer than the gap
+        out.x[out.n++]    = int(x);
+        edge              = x + away * half;
+        gap               = kColumnGap;
+    }
     return out;
 }
 
 // The columns of one straight side of the outline, between `top` and `bottom`.
-// The second is half a pitch lower than the first.
-void placeLanes(const GlyphFace& face, const Frame& f, double line, double window, double top, double bottom, std::vector<RainLane>& out) {
-    const Columns cols = columnsOf(face, f, line, window);
+void placeLanes(const Panel& panel, const Frame& f, double line, double away, double top, double bottom, std::vector<RainLane>& out) {
+    const Columns cols = columnsOf(panel, f, line, away);
+    for (int c = 0; c < cols.n; ++c) {
+        const GlyphFace& face  = c == 0 ? panel.glyphs : panel.farGlyphs;
+        const double     inset = kLaneInset * face.pitch;
+        const int        y0    = int(std::lround(top + inset));
+        const int        cells = int(std::floor((bottom - inset - y0) / face.pitch + 1e-9)) + 1;
+        if (cells < kLaneMinCells)
+            break; // and no column beyond one that is not there
 
-    const double inset = kLaneInset * face.pitch;
-    const auto   lane  = [&](int x, int y0) {
-        const int cells = int(std::floor((bottom - inset - y0) / face.pitch + 1e-9)) + 1;
-        if (cells >= kLaneMinCells)
-            out.push_back({x, y0, cells, std::clamp(int(std::lround(cells / kLaneCells)), 1, kLaneMaxStreams)});
-    };
-
-    const int first = int(std::lround(top + inset));
-    if (cols.fits)
-        lane(cols.inner, first);
-    lane(cols.outer, first + int(std::floor(face.pitch / 2)));
+        const int most = std::max(kLaneMaxStreams, int(std::lround(kLaneMaxStreams * panel.glyphs.pitch / face.pitch)));
+        out.push_back({cols.x[c], y0, cells, std::clamp(int(std::lround(cells / kLaneCells)), 1, most), c});
+    }
 }
 
-// The characters' size and the columns they fall in: down both sides, between
+// The characters' sizes and the columns they fall in: down both sides, between
 // the corners of the outline.
 void placeRain(const Style& style, const Frame& f, double halo, Panel& panel) {
     if (style.glyphHeight <= 0)
@@ -343,8 +369,8 @@ void placeRain(const Style& style, const Frame& f, double halo, Panel& panel) {
 
     placeFace(style, f, halo, panel);
     const double leftEnd = f.fancy ? f.bottom - f.d - f.b : f.bottom - f.a;
-    placeLanes(panel.glyphs, f, f.left, f.left + f.c, f.top + f.a, leftEnd, panel.lanes);
-    placeLanes(panel.glyphs, f, f.right, f.right - f.c, f.top + f.a, f.bottom - f.a, panel.lanes);
+    placeLanes(panel, f, f.left, -1.0, f.top + f.a, leftEnd, panel.lanes);
+    placeLanes(panel, f, f.right, 1.0, f.top + f.a, f.bottom - f.a, panel.lanes);
 }
 
 // The track the lamps follow: the outline, dark where it runs down a side, so
@@ -481,9 +507,9 @@ void buildPanel(const Style& style, const Params& p, Layout& out) {
     // this window is tall enough for the column.
     double columns = 0;
     if (panel.glyphs.on()) {
-        const Columns cols = columnsOf(panel.glyphs, f, f.left, f.left + f.c);
-        const double  half = glyphSize(panel.glyphs).w / 2.0 + 1;
-        columns            = half - std::min(cols.fits ? double(cols.inner) : 0.0, double(cols.outer)); // 0 is the window's edge
+        const Columns cols = columnsOf(panel, f, f.left, -1.0);
+        for (int c = 0; c < cols.n; ++c)
+            columns = std::max(columns, glyphSize(c == 0 ? panel.glyphs : panel.farGlyphs).w / 2.0 + 1 - cols.x[c]); // 0 is the window's edge
     }
 
     const int side = logical(std::ceil(f.c) + room);
@@ -810,20 +836,20 @@ LampPose lampPose(const Panel& panel, size_t index, double travelled, double clo
 
 std::vector<GlyphDraw> glyphDraws(const Panel& panel, double travelled, double intensity, unsigned seed) {
     std::vector<GlyphDraw> out, heads;
-    const GlyphFace&       face = panel.glyphs;
-    intensity                   = std::clamp(intensity, 0.0, 1.0);
-    if (!face.on() || face.pitch <= 0 || intensity <= 0)
+    intensity = std::clamp(intensity, 0.0, 1.0);
+    if (!panel.glyphs.on() || panel.glyphs.pitch <= 0 || intensity <= 0)
         return out;
-    const double fallen = std::max(travelled, 0.0) * face.fall / face.pitch; // rows
 
     std::vector<Fall> falls;
     uint32_t          base = 0; // the id of the first cell of the column
     uint32_t          next = 0; // the number of the next fall, which its head's ids come from
     for (size_t l = 0; l < panel.lanes.size(); ++l) {
-        const RainLane& lane = panel.lanes[l];
-        if (lane.cells <= 0)
+        const RainLane&  lane = panel.lanes[l];
+        const GlyphFace& face = lane.column > 0 ? panel.farGlyphs : panel.glyphs;
+        if (lane.cells <= 0 || !face.on() || face.pitch <= 0)
             continue;
-        const auto y = [&](double row) { return int(std::lround(lane.y0 + row * face.pitch)); };
+        const double fallen = std::max(travelled, 0.0) * face.fall / face.pitch; // rows
+        const auto   y      = [&](double row) { return int(std::lround(lane.y0 + row * face.pitch)); };
 
         falls.clear();
         for (int k = 0; k < std::max(1, lane.streams); ++k)
@@ -850,7 +876,7 @@ std::vector<GlyphDraw> glyphDraws(const Panel& panel, double travelled, double i
 
             const uint32_t id    = base + uint32_t(row);
             const uint32_t visit = mix(uint32_t(owner->pass)) + owner->key;
-            double         look  = kTrailPeak * rise * std::pow(1.0 - ago / owner->tail, kFall) * edgeFade(row, lane.cells);
+            double         look  = kTrailPeak * rise * std::pow(1.0 - ago / owner->tail, kFall) * edgeFade(row, lane.cells) * face.dim;
             look *= kTrailBrightMin + (1 - kTrailBrightMin) * unit(hashOf(seed, id, kSaltTrailBright, visit));
             for (const Fall& f : falls) {
                 // What a head is about to take the place of fades out as it gets there.
@@ -869,13 +895,13 @@ std::vector<GlyphDraw> glyphDraws(const Panel& panel, double travelled, double i
                 glyph = (glyph + 1) % glyphCount();
 
             const double heat = kTrailHeat * rise * smooth(1.0 - (ago - kHeatStart) / kHeatRows);
-            out.push_back({int(id), lane.x, y(row), glyph, a, steps(heat * intensity, kGlyphHeatSteps), sizeOfRoll(hashOf(seed, id, kSaltSize, visit))});
+            out.push_back({int(id), lane.x, y(row), glyph, a, steps(heat * intensity, kGlyphHeatSteps), sizeOfRoll(hashOf(seed, id, kSaltSize, visit)), lane.column});
         }
         base += uint32_t(lane.cells);
 
         for (size_t i = 0; i < falls.size(); ++i, ++next) {
             const Fall& f    = falls[i];
-            double      look = edgeFade(f.head, lane.cells);
+            double      look = edgeFade(f.head, lane.cells) * face.dim;
             for (size_t j = i + 1; j < falls.size(); ++j)
                 look *= smooth((std::fabs(f.head - falls[j].head) - kYieldNear) / (kYieldFar - kYieldNear));
             look *= kHeadBrightMin + (1 - kHeadBrightMin) * unit(hashOf(seed, f.key, kSaltBright, uint32_t(f.pass)));
@@ -890,7 +916,7 @@ std::vector<GlyphDraw> glyphDraws(const Panel& panel, double travelled, double i
                 const int a = steps(look * share * intensity, kGlyphAlphaSteps);
                 if (a > 0)
                     heads.push_back({kGlyphHeadId + int(2 * next + which), lane.x, y(f.head), shapeOf(seed, f.key, f.pass, shape), a, steps(intensity, kGlyphHeatSteps),
-                                     sizeOfRoll(hashOf(seed, f.key, kSaltSize, bandSalt(f.pass, shape)))});
+                                     sizeOfRoll(hashOf(seed, f.key, kSaltSize, bandSalt(f.pass, shape))), lane.column});
             };
             if (turned < 1)
                 put(0, band - 1, 1 - turned);
