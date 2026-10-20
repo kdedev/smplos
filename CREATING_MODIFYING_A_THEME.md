@@ -199,7 +199,7 @@ unchanged. niri and other compositors ignore them.
 | `hud_line_width` | `"3"` | Number from 1 to 9.99: outline thickness in px; corner brackets and edge tabs follow it |
 | `hud_float_glow_range` | `"0"` | Non-negative integer. Floating windows glow brighter than tiled ones and their halo reaches at least this many px; `"0"` keeps the style's own reach (14 px for `scifi`) |
 | `hud_sweep` | `"false"` | `"true"` or `"false"` only; a soft glow drifts slowly along the focused window's outline, in the outline's own colors, and fades in and out as focus moves. In the `panel` style it also sets the dots moving along the lines, in the `matrix` style the falling characters and the drifting glows |
-| `hud_sweep_speed`, `hud_sweep_length` | `"80"`, `"180"` | Integers: speed in px per second (10 to 400; the dots of a `panel` run 1.6 times as fast and the characters of a `matrix` fall twice as fast) and length along the line in px (40 to 600; the longest a glow of a `matrix` gets, which also decides how many fit on an edge). Keep the speed low: it reads as light moving along the frame, not as a spinner (Neon: `"70"`, a lap takes tens of seconds) |
+| `hud_sweep_speed`, `hud_sweep_length` | `"80"`, `"180"` | Integers: speed in px per second (10 to 400; the dots of a `panel` run 1.6 times as fast and the characters of a `matrix` fall 0.6 times as fast) and length along the line in px (40 to 600; the longest a glow of a `matrix` gets, which also decides how many fit on an edge). Keep the speed low: it reads as light moving along the frame, not as a spinner (Neon: `"70"`, a lap takes tens of seconds) |
 
 Gradients use the same syntax as `border_active`: one or more `rgba(rrggbbaa)`
 stops and an optional angle, e.g. `"rgba(00f0ffb0) rgba(2f7bff80) 45deg"`.
@@ -288,7 +288,8 @@ stops and an optional angle, e.g. `"rgba(00f0ffb0) rgba(2f7bff80) 45deg"`.
   the only glow, and `hud_float_glow_range` widens it on floating windows. Matrix
   characters fall down the left and right edges, top to bottom, in two columns on
   each side, one either side of the line inside its glow, each fall a bright head
-  with a fading tail and a slight glow of its own. Along the top and the bottom up
+  with a fading tail of a random length and a slight glow of its own, falling as
+  slowly as the lamps drift so that it stays at the edge of the eye. Along the top and the bottom up
   to two ellipses of light per edge drift slowly to and fro and pulse, also inside
   the glow. Only the focused window moves, and `hud_sweep = "true"` drives all of
   it (`"false"` leaves the outline and its halo); keep `border_animation = "false"`.

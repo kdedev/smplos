@@ -1179,8 +1179,9 @@ std::vector<RainCell> cellsOf(const Panel& pn) {
     return out;
 }
 
-// No fall has a longer tail than this many rows.
-constexpr int kLongestTail = 12;
+// No fall has a tail of fewer rows than this, unless its column is too short for it, or of more than this many.
+constexpr int kShortestTail = 8;
+constexpr int kLongestTail  = 28;
 
 // On the real panels: what is drawn is well formed, deterministic, only a part of every column, and
 // every character of every column is lit by some fall.
@@ -1328,7 +1329,8 @@ Look lookAt(const Panel& pn, double travelled, double clock, unsigned seed) {
 // bottom, rests, and starts again. It fades in and out at both ends of the column.
 void testRainFalls() {
     constexpr int kCells = 30, kEnd = kCells - 1;
-    const Panel   pn     = oneColumn(kCells);
+    constexpr int kLongest = kCells * 6 / 10; // no tail is longer than three fifths of its column
+    const Panel   pn       = oneColumn(kCells);
 
     for (unsigned seed : {1u, 2u, 3u, 77u}) {
         const int        before = g_failures;
@@ -1338,7 +1340,7 @@ void testRainFalls() {
         double           reached[2] = {-1, -1};
         Look             prev;
 
-        for (double t = 0; t <= 3000; t += 5) {
+        for (double t = 0; t <= 5000; t += 5) {
             const Look now = lookAt(pn, t, 0.0, seed);
 
             if (now.lit == 0) {
@@ -1391,9 +1393,9 @@ void testRainFalls() {
             }
 
             if (now.first >= 3 && now.last <= kCells - 4) {
-                // Well inside the column that is all of a fall: a tail of seven to twelve characters, dimmer and
+                // Well inside the column that is all of a fall: a tail of eight characters or more, dimmer and
                 // dimmer behind a head at full strength, and only the head and the two behind it hot.
-                CHECK(now.lit >= 7 && now.last - now.first + 1 == now.lit);
+                CHECK(now.lit >= kShortestTail && now.lit <= kLongest && now.last - now.first + 1 == now.lit);
                 CHECK(now.alpha[size_t(now.last)] == kGlyphAlphaSteps && now.heat[size_t(now.last)] == kGlyphHeatSteps);
                 CHECK(now.alpha[size_t(now.last - 1)] < now.alpha[size_t(now.last)]);
                 CHECK(now.heat[size_t(now.last - 3)] == 0);
@@ -1404,7 +1406,7 @@ void testRainFalls() {
             prev = now;
         }
         CHECK(passes >= 3);
-        CHECK(shortest >= 6 && longest <= 80); // a rest is not over at once, and does not leave the column dark for long
+        CHECK(shortest >= 6 && longest <= 100); // a rest is not over at once, and does not leave the column dark for long
         if (g_failures != before)
             std::fprintf(stderr, "  ^ seed %u\n", seed);
     }
@@ -1421,8 +1423,65 @@ void testRainFalls() {
     CHECK(most <= 3 * kLongestTail && pieces >= 2 && pieces <= 3);
 }
 
-// The head of a fall and the character behind it flicker through others seven times a second, the rest of the tail
-// changes now and then, each character at its own pace.
+// Every pass of a fall has a tail of its own, eight rows to twenty-eight: a column does not fall the same way twice,
+// short tails and long ones both come, and no tail is longer than its column allows.
+void testRainTails() {
+    // How many characters are lit at most in every pass of a column, for the passes in 20000 px of travel.
+    const auto tailsOf = [](const Panel& pn, unsigned seed) {
+        std::vector<int> tails;
+        int              most = 0;
+        for (double t = 0; t <= 20000; t += 5) {
+            const int lit = lookAt(pn, t, 0.0, seed).lit;
+            if (lit == 0 && most > 0) {
+                tails.push_back(most);
+                most = 0;
+            }
+            most = std::max(most, lit);
+        }
+        return tails;
+    };
+
+    std::set<int> every;
+    for (unsigned seed : {1u, 2u, 3u, 4u, 5u, 6u}) {
+        const std::vector<int> tails = tailsOf(oneColumn(60), seed);
+        const std::set<int>    kinds(tails.begin(), tails.end());
+        CHECK(tails.size() >= 8 && kinds.size() >= 4);
+        if (kinds.empty())
+            continue;
+        CHECK(*kinds.begin() >= kShortestTail && *kinds.rbegin() <= kLongestTail);
+        every.insert(kinds.begin(), kinds.end());
+    }
+    CHECK(!every.empty() && *every.begin() <= kShortestTail + 2 && *every.rbegin() >= kLongestTail - 4);
+
+    // A column that is too short for the longest tail has one of three fifths of it, or of three rows.
+    for (int cells : {1, 2, 4, 10, 20, 45, 120}) {
+        const int cap  = std::clamp(cells * 6 / 10, 3, kLongestTail);
+        int       most = 0;
+        for (unsigned seed : {1u, 2u, 3u})
+            for (int tail : tailsOf(oneColumn(cells), seed))
+                most = std::max(most, tail);
+        CHECK(most <= cap);
+        if (cells == 10 || cells == 20)
+            CHECK(most == cap);
+    }
+
+    // A fall is never cut short, whatever its tail: it has left the column before the next one begins, and so what is
+    // lit only ever goes down. A short rest after a long tail is what could go wrong, so look at many columns.
+    for (int cells : {12, 30, 45})
+        for (unsigned seed = 1; seed <= 60; ++seed) {
+            const Panel pn = oneColumn(cells);
+            Look        prev;
+            for (double t = 0; t <= 6000; t += 5) {
+                const Look now = lookAt(pn, t, 0.0, seed);
+                if (prev.lit > 0 && now.lit > 0)
+                    CHECK(now.first >= prev.first);
+                prev = now;
+            }
+        }
+}
+
+// The head of a fall and the character behind it flicker through others three times a second, the rest of the tail
+// changes now and then, each character at its own slow pace.
 void testRainRhythm() {
     const Panel    pn   = oneColumn(30);
     const unsigned seed = 11;
@@ -1456,26 +1515,77 @@ void testRainRhythm() {
             was[k] = it->second.glyph;
         }
     }
-    CHECK(changes[0] >= 9 && changes[0] <= 14 && changes[1] >= 9 && changes[1] <= 14); // about seven a second
-    CHECK(changes[2] <= 2 && changes[3] <= 2);
+    CHECK(changes[0] >= 4 && changes[0] <= 7 && changes[1] >= 4 && changes[1] <= 7); // about three a second
+    CHECK(changes[2] <= 1 && changes[3] <= 1);
 
-    // Further back a character changes now and then, never in a hurry.
-    int    drifts = 0, glyph = -1;
-    double since  = -10;
-    for (double clock = 0; clock < 30; clock += 0.01) {
-        const Drawn d  = drawn(glyphDraws(pn, stop, clock, 1.0, seed));
-        const auto  it = d.find(head - 5);
-        CHECK(it != d.end());
-        if (it == d.end())
-            return;
-        if (glyph >= 0 && it->second.glyph != glyph) {
-            ++drifts;
-            CHECK(clock - since >= 1.4);
-            since = clock;
+    // Further back a character changes now and then, never in a hurry, each at a pace of its own.
+    const Look       tail = lookAt(pn, stop, 0.0, seed);
+    std::vector<int> back; // the rows that are lit but too cool to flicker
+    for (int row = 0; row < int(tail.alpha.size()); ++row)
+        if (tail.alpha[size_t(row)] > 0 && tail.heat[size_t(row)] <= 2)
+            back.push_back(row);
+    CHECK(back.size() >= 5);
+
+    std::map<int, int>    drifts, glyph;
+    std::map<int, double> since;
+    for (double clock = 0; clock < 40; clock += 0.01) {
+        const Drawn d = drawn(glyphDraws(pn, stop, clock, 1.0, seed));
+        for (const int row : back) {
+            const auto it = d.find(row);
+            CHECK(it != d.end());
+            if (it == d.end())
+                return;
+            if (glyph.count(row) && it->second.glyph != glyph[row]) {
+                ++drifts[row];
+                if (since.count(row))
+                    CHECK(clock - since[row] >= 2.4);
+                since[row] = clock;
+            }
+            glyph[row] = it->second.glyph;
         }
-        glyph = it->second.glyph;
     }
-    CHECK(drifts >= 5 && drifts <= 21);
+    std::set<int> paces;
+    for (const int row : back) {
+        CHECK(drifts[row] >= 4 && drifts[row] <= 17);
+        paces.insert(drifts[row]);
+    }
+    CHECK(paces.size() >= 3);
+}
+
+// The rain is meant to stay at the edge of the eye: at the speed matrix-hud asks for, the fastest fall of the real
+// panel goes down no more rows a second than the fastest lamp goes along its edge, and none stands still.
+void testRainIsCalm() {
+    constexpr double kThemeSpeed = 60; // px a second, as `hud_sweep_speed` of matrix-hud
+    constexpr double kSeconds    = 5;
+    Panel            pn          = buildLayout(matrixStyle(), params(1920, 1080)).panel;
+    CHECK(!pn.lanes.empty() && !pn.lamps.empty() && pn.glyphs.on());
+    if (pn.lanes.empty() || pn.lamps.empty() || !pn.glyphs.on())
+        return;
+
+    double lamp = 0;
+    for (const Lamp& l : pn.lamps)
+        lamp = std::max(lamp, std::abs(l.speed));
+    const double lampRows = lamp * kThemeSpeed / pn.glyphs.pitch; // rows a second
+
+    pn.lanes = {{pn.lanes[0].x, pn.lanes[0].y0, 60, 1}}; // one fall, so that its head is the last row lit
+    double slowest = 1e9, fastest = 0;
+    int    measured = 0;
+    for (unsigned seed = 1; seed <= 40; ++seed)
+        for (double travelled = 0; travelled < 6000; travelled += 15) {
+            // From a head well inside the column to five seconds later: it cannot have run off the end by then.
+            const Look from = lookAt(pn, travelled, 0.0, seed);
+            if (from.last < 8 || from.last > 34)
+                continue;
+            const Look   to   = lookAt(pn, travelled + kThemeSpeed * kSeconds, 0.0, seed);
+            const double rate = (to.last - from.last) / kSeconds;
+            slowest           = std::min(slowest, rate);
+            fastest           = std::max(fastest, rate);
+            ++measured;
+            break;
+        }
+    CHECK(measured == 40);
+    CHECK(slowest >= 1.0);
+    CHECK(fastest <= lampRows + 0.25);
 }
 
 void testGlyphChanges() {
@@ -1533,7 +1643,9 @@ int main() {
     testLampPose();
     testRainDraws();
     testRainFalls();
+    testRainTails();
     testRainRhythm();
+    testRainIsCalm();
     testGlyphChanges();
     return finish("test_panel");
 }

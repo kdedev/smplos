@@ -51,7 +51,7 @@ Hyprland config reload, which `theme-set` triggers. Values are clamped.
 | `$themeHudLineWidth` | `hud_line_width` | `3` | 1 to 16 px |
 | `$themeHudFloatGlowRange` | `hud_float_glow_range` | `0` | 0 to 64 px; floating windows' halo reaches at least this far |
 | `$themeHudSweep` | `hud_sweep` | `false` | `true` / `false`; a soft glow drifts along the focused window's outline, the dots of a `panel` move along its lines, and the characters of a `matrix` fall and its lamps drift along its top and bottom; `false` keeps all of them still, so a `matrix` shows only its outline and halo |
-| `$themeHudSweepSpeed` | `hud_sweep_speed` | `80` | 10 to 400 px per second (the dots of a `panel` run 1.6 times as fast, the characters of a `matrix` fall twice as fast) |
+| `$themeHudSweepSpeed` | `hud_sweep_speed` | `80` | 10 to 400 px per second (the dots of a `panel` run 1.6 times as fast, the characters of a `matrix` fall 0.6 times as fast) |
 | `$themeHudSweepLength` | `hud_sweep_length` | `180` | 40 to 600 px along the line; for a `matrix`, the longest a lamp gets, which also decides how many fit on an edge |
 
 Frame and glow colours are not keys of their own: the plugin paints with each
@@ -257,11 +257,18 @@ and the scale), the columns the characters fall in (`placeRain()`,
   can ask for any moment. Characters stay where they are and only their look
   changes. Each column has one to three falls (one for every twenty characters),
   and a fall is a bright head that goes down a row at a time, never up, and a tail
-  of seven to twelve characters behind it that dim with every row. It fades in at
-  the top of the column and out at the bottom, runs off the end, and after a pause
-  begins again at the top; every fall has its own speed, tail and pause. The
-  nearest rows are overdrawn in the Bright colour, the head changes character about
-  seven times a second, and every character changes now and then by itself.
+  behind it that dims with every row. It fades in at the top of the column and out
+  at the bottom, runs off the end, and after a pause begins again at the top. Every
+  fall has its own speed and pause, and every pass of it a tail of its own length,
+  eight to twenty-eight characters (a column of fewer than 47 allows three fifths
+  of its length, and never fewer than three). A pass lasts as long as the longest
+  tail needs, so a short tail only rests longer, and no pass is cut off by the
+  next. The nearest rows are overdrawn in the Bright colour, the head changes
+  character about three times a second, and every other character changes by
+  itself every two and a half to seven and a half seconds. The whole rain is as
+  slow as the lamps (the characters fall 0.6 times as fast as `hud_sweep_speed`,
+  each fall at three quarters to one and a third of that), so that it stays at the
+  edge of the eye and does not draw it from the work.
   Characters that no fall lights are not drawn, and at intensity 0 none are.
 - **Lamps.** The glows along the top and the bottom are up to two ellipses on each
   edge (`placeLamps()`, `lampPose()`), as many as fit in the edge at one and a half
@@ -283,15 +290,15 @@ and the scale), the columns the characters fall in (`placeRain()`,
   those characters' boxes are damaged, and the boxes a lamp leaves and enters.
 - **Focus and cost.** Only the focused window moves, fading in and out over half a
   second like the travelling glow; the others keep their outline and halo. The
-  timer steps at the pace of the fastest motion (the characters fall twice as fast
-  as `hud_sweep_speed`) and backs off to a slow poll when nothing could be seen
-  moving. With `hud_sweep = "false"` there is no timer, no lamps and no
-  characters, only the outline and its halo. Keep `border_animation` off in a
-  `matrix` theme, as `matrix-hud` does: a turning gradient would repaint the whole
-  outline at every step (see the `panel` style). In a
+  timer steps at the pace of `hud_sweep_speed` (the characters fall 0.6 times as
+  fast and the lamps go up to 0.8 times as fast) and backs off to a slow poll when
+  nothing could be seen moving. With `hud_sweep = "false"` there is no timer, no
+  lamps and no characters, only the outline and its halo. Keep `border_animation`
+  off in a `matrix` theme, as `matrix-hud` does: a turning gradient would repaint
+  the whole outline at every step (see the `panel` style). In a
   software-rendered nested compositor (no GPU, so far costlier than a real
-  session) three windows took about 4% of one core with the frames moving, against
-  0.7% without the plugin.
+  session) three windows took about 3% of one core with the frames moving, against
+  0.6% without the plugin.
 - **Preview.** `build/preview matrix 900 560 1 1 0 700 3.0 matrix 1 3 > matrix.ppm`
   draws a focused frame three seconds into its run, and
   `build/preview glyphs 4 matrix > glyphs.ppm` every character.

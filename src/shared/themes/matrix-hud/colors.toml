@@ -114,8 +114,9 @@ border_animation = "false"
 # fading characters, falling from top to bottom, pausing now and then, with a
 # slight glow of their own. Along the top and the bottom a few ellipses of light
 # drift slowly to and fro and pulse, inside the same glow. Only the focused
-# window moves (the rain falls about twice as fast as the glows drift, which go
-# hud_sweep_speed px/s); the others keep their outline and halo. All of it is
+# window moves (the rain falls as slowly as the glows drift, which go at most
+# hud_sweep_speed px/s, so it stays at the edge of the eye); the others keep their
+# outline and halo. All of it is
 # small cached sprites, repainted ~20 times a second only where something
 # changes, and only while the window is visible. hud_sweep = false turns the
 # rain and the ellipses off and leaves the outline.

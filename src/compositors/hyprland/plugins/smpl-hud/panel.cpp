@@ -603,11 +603,14 @@ constexpr double kTwoPi = 2 * std::numbers::pi;
 // A column of characters has a few falls. A fall is a bright head that goes down
 // a row at a time, never up, with a tail behind it that dims with every row. It
 // begins at the top of the column, grows its tail, runs off the bottom, and
-// after a pause begins again. Every fall has its own speed and tail.
+// after a pause begins again. Every fall has its own speed, and every pass of it
+// a tail of its own: a long one, a short one, and everything between.
 constexpr double kFallSpeedMin  = 0.75; // relative to the speed of the column
 constexpr double kFallSpeedSpan = 0.6;
-constexpr int    kTailMin       = 7; // rows
-constexpr int    kTailSpan      = 5;
+constexpr int    kTailMin       = 8; // rows
+constexpr int    kTailMax       = 28;
+constexpr double kTailOfColumn  = 0.6; // no tail is longer than this part of its column ...
+constexpr int    kTailLeast     = 3;   // ... but a tail may always be this long
 constexpr double kPauseMin      = 0.2; // of the length of the column ...
 constexpr double kPauseSpan     = 0.5;
 constexpr int    kPauseRows     = 2; // ... and this many rows more
@@ -615,10 +618,12 @@ constexpr double kFall          = 1.3; // how fast a tail dims: 1 is linearly
 constexpr double kHeadRows      = 2.5; // the rows this near the head are also drawn in the bright colour
 constexpr double kEdgeRows      = 2.5; // a fall fades in and out over this many rows at the ends of the column
 
-// A character changes into another one every few seconds, each at its own pace.
-constexpr double    kChangeMin   = 1.5; // seconds
-constexpr double    kChangeSpan  = 3.0;
-constexpr double    kFlickerHz   = 7.0; // how often a head changes
+// A character changes into another one every few seconds, each at its own pace;
+// the rain is meant to stay at the edge of the eye without drawing it, so both
+// the changes and the fall are as slow as the lamps are.
+constexpr double    kChangeMin   = 2.5; // seconds
+constexpr double    kChangeSpan  = 5.0;
+constexpr double    kFlickerHz   = 3.0; // how often a head changes
 constexpr double    kFlickerHeat = 0.4; // how hot a character must be to do so
 constexpr long long kFlickerBase = 1LL << 40;
 
@@ -708,10 +713,16 @@ std::vector<GlyphDraw> glyphDraws(const Panel& panel, double travelled, double c
         for (int k = 0; k < std::max(1, lane.streams); ++k) {
             const uint32_t key   = uint32_t(l) * 16 + uint32_t(k);
             const double   speed = kFallSpeedMin + kFallSpeedSpan * unit(hashOf(seed, key, kSaltSpeed));
-            const int      tail  = kTailMin + int(hashOf(seed, key, kSaltTail) % uint32_t(kTailSpan + 1));
             const int      pause = int(std::floor(cells * (kPauseMin + kPauseSpan * unit(hashOf(seed, key, kSaltPause))))) + kPauseRows;
-            const double   cycle = double(cells) + tail + pause;
-            const int      head  = int(std::floor(frac(fallen * speed / cycle + unit(hashOf(seed, key, kSaltPhase))) * cycle));
+
+            // A pass is as long as the longest tail allows, so that a short tail only rests for longer.
+            const int      tailMax = std::clamp(int(std::floor(cells * kTailOfColumn)), kTailLeast, kTailMax);
+            const int      tailMin = std::min(kTailMin, tailMax);
+            const double   cycle   = double(cells) + tailMax + pause;
+            const double   run     = fallen * speed / cycle + unit(hashOf(seed, key, kSaltPhase));
+            const double   pass    = std::floor(run);
+            const int      head    = int(std::floor((run - pass) * cycle));
+            const int      tail    = tailMin + int(hashOf(seed, key, kSaltTail, uint32_t((long long)pass)) % uint32_t(tailMax - tailMin + 1));
 
             for (int i = 0; i < tail; ++i) {
                 const int row = head - i;

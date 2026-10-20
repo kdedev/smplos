@@ -108,7 +108,7 @@ const Style kStyles[] = {
         .notchDepth      = 9.f,
         .glyphHeight     = 14.f,
         .glyphPitch      = 16.f,
-        .glyphFall       = 2.f,
+        .glyphFall       = 0.6f,
         .glyphGlow       = 0.45f,
         .lamps           = 2,
     },

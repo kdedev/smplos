@@ -101,9 +101,11 @@ constexpr int kGlyphHeatSteps  = 8;
 // Each column has a few falls at once: a bright head that goes down a row at a
 // time, never up, and a tail of characters that dim as they get further behind
 // it. A fall begins at the top of the column, grows its tail, runs off the
-// bottom, and after a pause begins again. Every character changes into another
-// one now and then, the head faster. At intensity 0 nothing is lit, and nothing
-// is if the panel has no characters (see GlyphFace::on).
+// bottom, and after a pause begins again, each time with a tail of another
+// length (eight to twenty-eight rows, less in a short column). Every character
+// changes into another one now and then, the head faster. At intensity 0
+// nothing is lit, and nothing is if the panel has no characters (see
+// GlyphFace::on).
 std::vector<GlyphDraw> glyphDraws(const Panel& panel, double travelled, double clock, double intensity, unsigned seed);
 
 // What to redraw to get from one list of `glyphDraws` to the next: every
