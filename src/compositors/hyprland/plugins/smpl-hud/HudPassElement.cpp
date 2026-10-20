@@ -233,7 +233,7 @@ namespace {
         if (!panel.glyphs.on() || frame.glyphs.empty())
             return;
 
-        // The faces of the column next to the line, then of the ones beyond it.
+        // The faces of the column on the line, then of the ones beyond it.
         std::array<std::array<smplhud::GlyphFace, smplhud::kGlyphSizes>, smplhud::kGlyphColumns> faces;
         std::array<std::array<smplhud::GlyphSize, smplhud::kGlyphSizes>, smplhud::kGlyphColumns> sizes;
         for (size_t column = 0; column < faces.size(); ++column) {

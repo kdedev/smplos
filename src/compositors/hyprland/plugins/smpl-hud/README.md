@@ -195,7 +195,7 @@ A style is one entry in `kStyles[]` in `geometry.cpp`; the fields are documented
 | `scifi` | Outline, halos on both sides, corner brackets, mid-edge tabs |
 | `minimal` | Outline and halos only |
 | `panel` | Notched outline with a step, a ghost line and a cut corner, circuit traces ending in beads, two dots circling the outline in opposite directions and a dot bouncing along each trace; the circling dots glow as they near a bouncing dot or each other (`amber-hud`) |
-| `matrix` | The `panel`'s outline alone, hugging the window, as one line with its glow: Matrix characters fall beside both sides in three columns on each, outside the line and inside its glow, each further one smaller, dimmer and softer than the one before and partly under it, so that the rain looks deep, each a bright head that glides down keeping one shape for four or five rows and a tail of other characters it leaves behind, and a few slow green glows (lamps) pulse and drift to and fro along the top and the bottom (`matrix-hud`) |
+| `matrix` | The `panel`'s outline alone, hugging the window, as one line with its glow: Matrix characters fall down both sides in three columns on each, the first on the line itself, as if they slid along it, and the others beyond it, inside its glow, each further one smaller, dimmer and softer than the one before and partly under it, so that the rain looks deep, each a bright head that glides down keeping one shape for four or five rows and a tail of other characters it leaves behind, and a few slow green glows (lamps) pulse and drift to and fro along the top and the bottom (`matrix-hud`) |
 
 For the ring styles (`scifi`, `minimal`) the corner shape is not part of the
 style: the outline follows the window's own `rounding` and `rounding_power` at a
@@ -274,7 +274,7 @@ glow. `buildPanel()` adds to the `Panel` up to three `GlyphFace`s (character hei
 stroke weight, glow reach, pitch, fall speed, plate opacity, `dim`, how bright the
 characters are at most, and `soft`, how much softer than a pixel the edge of a
 stroke is, derived from the style and the scale; `Panel::face(column)` gives the
-one of a column): `glyphs` for the column next to the line, `farGlyphs` for the
+one of a column): `glyphs` for the column on the line, `farGlyphs` for the
 second and `deepGlyphs` for the third. It also adds the columns the characters fall
 in (`placeRain()`, `Panel::lanes`) and the track and lamps of the top and bottom
 edges (`placeLamps()`, `Panel::track` and `Panel::lamps`).
@@ -296,26 +296,31 @@ edges (`placeLamps()`, `Panel::track` and `Panel::lamps`).
   library and every machine rendering the same glyph; `stamp.cpp` bakes them with
   the same bright core and soft halo as the lines.
 - **Columns.** Only the straight runs of the two sides get characters, none on the
-  top or the bottom (`placeLanes()`). On each side the columns stand outside the
-  line, in its glow (`Style::glyphColumns` says how many there are, up to
-  `kGlyphColumns`, which is 3): the first keeps 1.5 px from the line's edge, and
-  each of the others lies partly under the one before it, with only 0.4 of the
-  width of one of its characters beyond that column's outer edge (`kColumnPeek`),
-  as things at different distances overlap. Each further column's characters are
+  top or the bottom (`placeLanes()`). On each side the first column is on the line
+  itself, its characters centred on it (to the whole px), as if they slid along
+  it, and the others lie beyond it, in its glow (`Style::glyphColumns` says how
+  many there are, up to `kGlyphColumns`, which is 3): each of them lies partly
+  under the one before it, with only 0.4 of the width of one of its characters
+  beyond that column's outer edge (`kColumnPeek`), as things at different
+  distances overlap. Each further column's characters are
   smaller, dimmer and softer than the one before's (`kFurther`): the second's half
   the size, 0.55 as bright, with the edges of their strokes 0.6 px soft; the
   third's a third of the size, 0.38 as bright and 0.9 px soft, a faint haze behind
-  the rest. The first is 0.8 as bright (`kNearDim`), so a little see-through, and
-  the second shows through where it lies under it. A further column's pitch is in
+  the rest. The first is 0.8 as bright (`kNearDim`), so a little see-through: the
+  line shows through its characters, and the second shows through where it lies
+  under it. A further column's pitch is in
   proportion to its size, and it falls as many rows a second, which are fewer px, so
   it looks slower too. A column begins and ends a pitch short of its straight run,
   and one of fewer than three characters is dropped, together with any beyond it
   (the compact outline of a small window has short sides): there is no further
   column where there is no first. They depend on the style and the scale, never on
-  the window's size. At scale 1 the columns stand 8, 13 and 16 px out from the
-  middle of the line and the outermost one's glow reaches 21 px, so the lines of
-  tiled neighbours need to be about twice that apart, and a window needs about 24
-  px between its edge and the screen's (see Limits). For fewer columns, set
+  the window's size. At scale 1 the columns stand 0, 5 and 8 px from the
+  middle of the line and the outermost one's glow reaches 13 px, so the lines of
+  tiled neighbours need to be about twice that apart, and a window needs about 16
+  px between its edge and the screen's (see Limits). The frame is drawn under the
+  window, so the part of the first column's characters that lies over the window
+  box, a fifth of each at the default `hud_gap` of 3, is hidden by it, or shows
+  through as faintly as the window is see-through. For fewer columns, set
   `glyphColumns` to 1 or 2.
 - **Rain.** `glyphDraws()` is a pure function of how far the columns have fallen,
   how far the window has focus (`intensity`, 0 to 1) and a per-window seed, so the
@@ -373,8 +378,8 @@ edges (`placeLamps()`, `Panel::track` and `Panel::lamps`).
   too. The columns are drawn furthest first (`glyphOrder()`), so that the nearer
   ones, which are a little see-through, lie over them.
   (A style with a `glyphKnock` above 0 also bakes a dark plate behind each character that
-  dims the line it stands on; `matrix` has none, because its characters stand
-  beside the line and not on it.) The colours are those of the line where the
+  dims the line it stands on; `matrix` has none, so that the line shows through the
+  characters of its first column, which stand on it.) The colours are those of the line where the
   character stands and of the glow, or, with `hud_glyph_color`, that colour for
   the character (at the opacity the line has there), the same for its glow, and
   that colour lightened by the style's `brightWhiten` for what is overdrawn in the
@@ -487,13 +492,14 @@ session you work in, and load a build by path with
   counts as borderless only if it opts out itself: fullscreen, `decorate` off or a
   `border_size 0` rule.
 - The frame is drawn under the window, so it only shows in the margin around it
-  and in its cut corners, never over its content.
+  and in its cut corners, never over its content (the characters that stand on a
+  `matrix` line are cut by the window's edge the same way).
 - It needs room: tiled neighbours' outlines are
   `2 * (gaps_in + border_size) - 2 * hud_gap` apart (see the theme guide), and
   with small gaps the lines and halos touch. With `hud_hide_border` the border
   size here is 0: `matrix-hud` has 50 px between the lines (`2 * 28 - 2 * 3`)
   where `amber-hud` has 22, and the three columns of characters on each side of the
-  gap, which reach 21 px from their line, need most of it.
+  gap, which reach 13 px from their line, need about half of it.
 - Without the plugin, a theme with `hud_hide_border` has no border line at all
   (the others keep Hyprland's own border).
 - A `panel` or `matrix` is a frame, not a window shape: the window itself stays a uniformly

@@ -982,10 +982,10 @@ void testGlyphFace() {
     }
 }
 
-// The characters fall in three columns down both sides of the window, all of them outside the line: the first
-// next to it, the others beyond it, each partly under the one before. All of them are in the line's glow, off the
-// line and the window, and beside one straight run of the line. Where the columns are depends on the style
-// and the scale, not on how far the line stands from the window.
+// The characters fall in three columns down both sides of the window: the first on the line itself, centred on
+// it, the others outside it, each partly under the one before. All of them are in the line's glow, along one
+// straight run of it, and the middle of every character is off the window. Where the columns are depends on the
+// style and the scale, not on how far the line stands from the window.
 void testLanes() {
     const Style& st = matrixStyle();
     for (const auto& size : kSizes)
@@ -1008,31 +1008,39 @@ void testLanes() {
                             const double     halfX  = face.height * kGlyphW / kGlyphH / 2 + face.halfWidth, halfY = face.height / 2 + face.halfWidth;
                             const bool       right  = lane.x >= p.width / 2;
                             const double     lineX  = lineAt(lane);
-                            const double     off    = std::fabs(lane.x - lineX);
+                            const double     off    = (right ? 1.0 : -1.0) * (lane.x - lineX); // beyond the line, outwards; below 0 is on the window's side of it
+                            const double     apart  = right ? lineX - p.width : -lineX;      // how far the line is from the window
                             const long       bottom = std::lround(lane.y0 + (lane.cells - 1) * face.pitch);
                             const int        most   = lane.column == 0 ? 3 : lane.column == 1 ? 6 : 4; // the second column's smaller characters get more falls, the haze of the third only one more
                             CHECK(face.on() && lane.cells >= 3 && lane.streams >= 1 && lane.streams <= most);
                             CHECK(lane.cells > 20 || lane.streams == 1);                   // a short column has one fall
                             CHECK(lane.cells < 20 * most - 10 || lane.streams == most);    // a long one has the most
 
-                            // Outside the line, never on it, and in its glow.
-                            CHECK(right ? lane.x > lineX : lane.x < lineX);
-                            CHECK(off - line.halfWidth - halfX >= 1.0 - 1e-9);
+                            // The first column is centred on the line, to the whole px; the others are wholly beyond its middle.
+                            // All of them are in its glow.
+                            if (lane.column == 0)
+                                CHECK(std::fabs(off) <= 0.5 + 1e-9);
+                            else
+                                CHECK(off - halfX > 0);
                             CHECK(off + halfX <= line.halfWidth + line.reach + 1);
 
                             // The rows lie along one straight run of the line, with half a pitch to spare at both ends.
                             for (double y = lane.y0 - face.pitch / 2; y <= double(bottom) + face.pitch / 2; ++y)
                                 CHECK(distToStroke(line, {lineX, y}) < 1e-6);
 
-                            // And off the window.
+                            // The middle of every character is off the window by about as far as the line is, and so are the
+                            // corners of those of the other columns; the first's inner corners reach in under the window.
                             for (int row = 0; row < lane.cells; ++row) {
                                 const double y = double(std::lround(lane.y0 + row * face.pitch));
+                                CHECK(distToWindow({double(lane.x), y}, p.width, p.height, p.cut) >= apart - 0.5 - 1e-9);
+                                if (lane.column == 0)
+                                    continue;
                                 for (double fx : {-1.0, 1.0})
                                     for (double fy : {-1.0, 1.0})
                                         CHECK(distToWindow({lane.x + fx * halfX, y + fy * halfY}, p.width, p.height, p.cut) >= 1.5 - 1e-9);
                             }
 
-                            // The left side's columns come first, those of a side from the one next to the line outwards. Each
+                            // The left side's columns come first, those of a side from the one on the line outwards. Each
                             // beyond the first is partly under the one before: its middle is further out, its inner edge is under
                             // that column and its outer edge beyond it, by less than the width of one of its characters, so that
                             // the two are narrower than side by side. It has as many times the characters as its pitch is smaller,
@@ -1050,7 +1058,7 @@ void testLanes() {
                                 continue;
                             }
                             const double prevHalfX = prevFace.height * kGlyphW / kGlyphH / 2 + prevFace.halfWidth;
-                            const double prevOff   = std::fabs(prev.x - lineX);
+                            const double prevOff   = (right ? 1.0 : -1.0) * (prev.x - lineX);
                             const double peek      = off + halfX - (prevOff + prevHalfX); // how far this column goes beyond the one before
                             CHECK(lane.column == prev.column + 1);
                             CHECK(off > prevOff);

@@ -63,7 +63,7 @@ enum class Kind {
     Panel, // a notched outline with traces and beads, drawn from small baked images (panel.hpp)
 };
 
-// How many columns of characters a glyph style can have beside each straight side of the outline.
+// How many columns of characters a glyph style can have along each straight side of the outline.
 constexpr int kGlyphColumns = 3;
 
 // A look. New HUDs are new entries in the registry in geometry.cpp.
@@ -109,7 +109,7 @@ struct Style {
     float runnerSpeed = 1; // speed of the runner dots relative to the travelling glow
 
     // Glyph styles let characters fall along the straight sides of the outline,
-    // in columns outside the line, inside its glow (panel.hpp).
+    // in columns on the line and beyond it, inside its glow (panel.hpp).
     float glyphHeight  = 0; // logical px; 0 has no characters
     float glyphPitch   = 0; // logical px between two characters of a column
     float glyphFall    = 0; // how fast they fall, relative to the travelling glow
@@ -244,7 +244,7 @@ struct RainLane {
     int y0      = 0; // whole px, the middle of the first (topmost) cell; the rest are the face's pitch apart
     int cells   = 0; // how many cells the column has
     int streams = 1; // how many falls it has at once
-    int column  = 0; // 0 for the column next to the line, 1 for the one beyond it, 2 for the one beyond that: see Panel::face
+    int column  = 0; // 0 for the column on the line, 1 for the one beyond it, 2 for the one beyond that: see Panel::face
 };
 
 // A glow that goes slowly to and fro along an edge of the outline and pulses
@@ -274,7 +274,7 @@ struct Panel {
     Proximity merge;
 
     // A glyph style lets characters fall in columns along the straight sides:
-    // `glyphs` are those of the column next to the line, `farGlyphs` those of the
+    // `glyphs` are those of the column on the line, `farGlyphs` those of the
     // second column, beyond it, and `deepGlyphs` those of the third, beyond that,
     // as far as the style has them (each a smaller, dimmer, softer and slower face
     // than the one before).

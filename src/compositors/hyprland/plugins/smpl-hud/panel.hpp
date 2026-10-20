@@ -16,12 +16,12 @@
 //    other one comes close.
 //
 //  - Matrix: the outline alone, standing on the window's edge. Heads of falling
-//    characters glide down both straight sides, in two columns a side, both
-//    outside the line, inside its glow: the first next to the line, the second
-//    beyond it, smaller, dimmer and slower, so that it looks further away. They
-//    leave a trail of other characters that fade. Along the top and the bottom
-//    edge a few glows, the lamps, go slowly to and fro and pulse. All of it only
-//    while the window has focus.
+//    characters glide down both straight sides, in three columns a side: the
+//    first on the line itself, as if they slid along it, the others beyond it,
+//    inside its glow, each smaller, dimmer and slower than the one before, so that
+//    it looks further away. They leave a trail of other characters that fade.
+//    Along the top and the bottom edge a few glows, the lamps, go slowly to and
+//    fro and pulse. All of it only while the window has focus.
 //
 // Nothing here touches Hyprland, so it is unit tested with a plain compiler.
 

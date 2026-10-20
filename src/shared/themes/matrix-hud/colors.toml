@@ -64,11 +64,11 @@ messenger_opacity = "0.85"
 browser_opacity = "0.85"
 
 # -- Layout --
-# The outline hugs the window and the three columns of characters stand outside it, so
-# together they reach about 24 px from the window's edge and the gaps are wide:
+# The outline hugs the window and the first column of characters rides on it, the
+# other two just beyond, so together they reach about 16 px from the window's edge:
 # neighbours are 2 * gaps_in = 56 px apart (Hyprland's own border is hidden, so
-# border_size adds nothing), room for the columns of both, and the outer gap leaves
-# the columns and the halo room at the screen edge.
+# border_size adds nothing), room for the columns of both with some to spare, and
+# the outer gap leaves the columns and the halo room at the screen edge.
 # border_size is the width compositors without the frame (niri) draw; Hyprland
 # is given 0 because of hud_hide_border. border_active / border_inactive still
 # colour the outline.
@@ -109,9 +109,9 @@ border_animation = "false"
 # are not drawn. The outline is the only line because Hyprland's own border is
 # hidden (hud_hide_border), and its glow is the plugin's halo, 22 px on both sides
 # of the line.
-# Matrix characters fall down the left and right edges in three columns on each, all
-# outside the line and inside its glow: the first right beside the line, the
-# second tucked partly under it and the third under that, each smaller, dimmer and
+# Matrix characters fall down the left and right edges in three columns on each: the
+# first on the line itself, as if they slid along it, the second tucked partly under
+# it, beyond it and inside its glow, and the third under that, each smaller, dimmer and
 # softer than the one before, which makes them look further and further away.
 # They fall from top to bottom and pause now and then, with a
 # slight glow of their own. A bright head slides smoothly down and keeps its shape
