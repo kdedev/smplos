@@ -167,7 +167,7 @@ Most themes never need overrides. Use `term_N` only when a terminal slot should 
 
 - **Decoration**: `rounding`, `app_rounding` (optional), `blur_size`, `blur_passes`, `opacity_active`, `opacity_inactive`, `app_background_opacity`, `term_opacity_active`, `term_opacity_inactive`, `popup_opacity`, `messenger_opacity`, `browser_opacity`
 - **Layout**: `gaps_in`, `gaps_out`, `border_size`, `border_active` (optional), `border_inactive` (optional)
-- **Effects** (optional, Hyprland only): `rounding_power`, `shadow_range`, `shadow_render_power`, `shadow_color`, `shadow_color_inactive`, `glow`, `glow_range`, `glow_render_power`, `glow_color`, `glow_color_inactive`, `border_animation`, `hud_frame`, `hud_hide_border`, `hud_style`, `hud_gap`, `hud_chamfer`, `hud_line_width`, `hud_float_glow_range`, `hud_sweep`, `hud_sweep_speed`, `hud_sweep_length`
+- **Effects** (optional, Hyprland only): `rounding_power`, `shadow_range`, `shadow_render_power`, `shadow_color`, `shadow_color_inactive`, `glow`, `glow_range`, `glow_render_power`, `glow_color`, `glow_color_inactive`, `border_animation`, `hud_frame`, `hud_hide_border`, `hud_style`, `hud_gap`, `hud_chamfer`, `hud_line_width`, `hud_float_glow_range`, `hud_sweep`, `hud_sweep_speed`, `hud_sweep_length`, `hud_glyph_color`
 - **App selectors**: `app_theme_nvim`, `app_theme_vscode`
 
 Example:
@@ -200,6 +200,7 @@ unchanged. niri and other compositors ignore them.
 | `hud_float_glow_range` | `"0"` | Non-negative integer. Floating windows glow brighter than tiled ones and their halo reaches at least this many px; `"0"` keeps the style's own reach (14 px for `scifi`) |
 | `hud_sweep` | `"false"` | `"true"` or `"false"` only; a soft glow drifts slowly along the focused window's outline, in the outline's own colors, and fades in and out as focus moves. In the `panel` style it also sets the dots moving along the lines, in the `matrix` style the falling characters and the drifting glows |
 | `hud_sweep_speed`, `hud_sweep_length` | `"80"`, `"180"` | Integers: speed in px per second (10 to 400; the dots of a `panel` run 1.6 times as fast and the characters of a `matrix` fall 0.6 times as fast) and length along the line in px (40 to 600; the longest a glow of a `matrix` gets, which also decides how many fit on an edge). Keep the speed low: it reads as light moving along the frame, not as a spinner (Neon: `"70"`, a lap takes tens of seconds) |
+| `hud_glyph_color` | `"none"` | `"rgb(rrggbb)"` (hex digits, no `#`) or `"none"`: the colour of the characters of a glyph style such as `matrix`, for the falling rain, with its heads and its glow derived from it (the heads are the same colour lightened). `"none"` gives them the colours of the outline and its glow. `matrix-hud` uses `"rgb(3cff28)"`, hue 114°, a yellower green than its teal outline, like the film's code. Styles without characters ignore it |
 
 Gradients use the same syntax as `border_active`: one or more `rgba(rrggbbaa)`
 stops and an optional angle, e.g. `"rgba(00f0ffb0) rgba(2f7bff80) 45deg"`.
@@ -296,9 +297,16 @@ stops and an optional angle, e.g. `"rgba(00f0ffb0) rgba(2f7bff80) 45deg"`.
   `1` still draws a thin ring); the plugin's halo, tinted by `glow_color`, is then
   the only glow, and `hud_float_glow_range` widens it on floating windows. Matrix
   characters fall down the left and right edges, top to bottom, in two columns on
-  each side, one either side of the line inside its glow, each fall a bright head
-  with a fading tail of a random length and a slight glow of its own, falling as
-  slowly as the lamps drift so that it stays at the edge of the eye. Along the top and the bottom up
+  each side, one either side of the line inside its glow. Each fall is one bright
+  head that glides smoothly down, keeping its shape for four or five rows before
+  it turns into another, with a fading tail of other characters behind it (a
+  random length each time) and a slight glow of its own; the characters come in
+  three sizes and a range of brightness. They fall as slowly as the lamps drift,
+  so that they stay at the edge of the eye. `hud_glyph_color` gives the characters
+  a colour of their own (`rgb(rrggbb)`; the heads are it lightened), as `matrix-hud`
+  does with a green of hue 114° (`"rgb(3cff28)"`), yellower than its teal outline,
+  like the film's code; without it they take the outline's and the glow's colours.
+  Along the top and the bottom up
   to two ellipses of light per edge drift slowly to and fro and pulse, also inside
   the glow. Only the focused window moves, and `hud_sweep = "true"` drives all of
   it (`"false"` leaves the outline and its halo); keep `border_animation = "false"`.

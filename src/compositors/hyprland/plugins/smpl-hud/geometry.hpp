@@ -230,13 +230,13 @@ struct GlyphFace {
     bool on() const { return height > 0; }
 };
 
-// A column of characters on a straight side of the outline. The characters
-// never move: they light up, change and fade where they are, which keeps them
-// crisp, and the rain falls as the lighting moves down the column.
+// A column of characters on a straight side of the outline. Its cells are where
+// the characters a head leaves behind stay and fade; the heads themselves glide
+// between them.
 struct RainLane {
     int x       = 0; // whole px, the middle of the characters
-    int y0      = 0; // whole px, the middle of the first (topmost) one; the rest are GlyphFace::pitch apart
-    int cells   = 0; // how many characters the column has
+    int y0      = 0; // whole px, the middle of the first (topmost) cell; the rest are GlyphFace::pitch apart
+    int cells   = 0; // how many cells the column has
     int streams = 1; // how many falls it has at once
 };
 

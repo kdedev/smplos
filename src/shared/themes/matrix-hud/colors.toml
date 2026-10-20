@@ -110,16 +110,22 @@ border_animation = "false"
 # is the only line because Hyprland's own border is hidden (hud_hide_border), and
 # its glow is the plugin's halo, 18 px on both sides of the line.
 # Matrix characters fall down the left and right edges in two columns on each,
-# one on each side of the line, inside its glow: a bright head with a tail of
-# fading characters, falling from top to bottom, pausing now and then, with a
-# slight glow of their own. Along the top and the bottom a few ellipses of light
-# drift slowly to and fro and pulse, inside the same glow. Only the focused
-# window moves (the rain falls as slowly as the glows drift, which go at most
-# hud_sweep_speed px/s, so it stays at the edge of the eye); the others keep their
-# outline and halo. All of it is
+# one on each side of the line, inside its glow, falling from top to bottom and
+# pausing now and then, with a slight glow of their own. A bright head slides
+# smoothly down and keeps its shape for four or five rows before it turns into
+# another character; behind it a tail of other, different characters fades out,
+# each the one the head was a few rows earlier. The characters come in three sizes
+# and a range of brightness, so no two look alike. Along the top and the bottom a
+# few ellipses of light drift slowly to and fro and pulse, inside the same glow.
+# Only the focused window moves (the rain falls as slowly as the glows drift,
+# which go at most hud_sweep_speed px/s, so it stays at the edge of the eye); the
+# others keep their outline and halo. All of it is
 # small cached sprites, repainted ~20 times a second only where something
 # changes, and only while the window is visible. hud_sweep = false turns the
 # rain and the ellipses off and leaves the outline.
+# hud_glyph_color is the green of the characters, a yellower, more natural one
+# than the teal outline (hue 114 degrees, like the film's code); the heads are
+# the same green lightened. none gives them the colours of the line.
 # hud_sweep_length is how long an ellipse is at most, which decides how many fit
 # on an edge (two at most).
 # hud_gap is how far the outline stands off the window: the notches need at least 13.
@@ -133,6 +139,7 @@ hud_float_glow_range = "24"
 hud_sweep = "true"
 hud_sweep_speed = "60"
 hud_sweep_length = "180"
+hud_glyph_color = "rgb(3cff28)"
 
 # -- App Theme Selectors --
 app_theme_nvim = "matrix"

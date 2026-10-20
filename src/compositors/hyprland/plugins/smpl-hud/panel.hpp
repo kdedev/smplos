@@ -15,9 +15,10 @@
 //    each trace. A dot going round glows brighter when a bouncing dot or the
 //    other one comes close.
 //
-//  - Matrix: the outline alone. Characters fall down both straight sides, two
-//    columns a side, one on each side of the line, inside its glow. Along the
-//    top and the bottom edge a few glows, the lamps, go slowly to and fro and
+//  - Matrix: the outline alone. Heads of falling characters glide down both
+//    straight sides, two columns a side, one on each side of the line, inside
+//    its glow, and leave a trail of other characters that fade. Along the top
+//    and the bottom edge a few glows, the lamps, go slowly to and fro and
 //    pulse. All of it only while the window has focus.
 //
 // Nothing here touches Hyprland, so it is unit tested with a plain compiler.
@@ -76,40 +77,60 @@ struct LampPose {
 
 LampPose lampPose(const Panel& panel, size_t index, double travelled, double clock, unsigned seed);
 
-// A character to draw. Characters never move: each sits in a cell of a column
-// and only its look changes, in steps coarse enough that nothing needs
-// redrawing until a step is crossed.
+// A character to draw: either one the head of a fall has left behind in a cell
+// of a column, which stays where it is and only dims, or a head, which glides.
+// Its look changes in steps coarse enough that nothing needs redrawing until a
+// step is crossed.
 struct GlyphDraw {
-    int id    = 0; // ascending in a list; the cells of the first column come first, top to bottom, then those of the next
+    int id    = 0; // ascending in a list; the cells of the first column come first, top to bottom, then those of the next, then the heads (see kGlyphHeadId)
     int x     = 0; // the middle of the character, whole px
     int y     = 0;
     int glyph = 0; // see glyph.hpp
     int alpha = 0; // 1..kGlyphAlphaSteps
     int heat  = 0; // 0..kGlyphHeatSteps: how far it is overdrawn in the bright colour
+    int size  = 0; // 0..kGlyphSizes - 1: which of the sizes of glyphFaceOf it has
 
     bool operator==(const GlyphDraw&) const = default;
 };
 
 constexpr int kGlyphAlphaSteps = 32;
 constexpr int kGlyphHeatSteps  = 8;
+constexpr int kGlyphSizes      = 3;
+
+// The ids of the heads begin here, after those of the cells. A head has two:
+// kGlyphHeadId + 2n + 1 is the character it has, and kGlyphHeadId + 2n the one
+// it is turning from, which it has only for the moment it takes to turn. n is
+// the place of its fall in the panel: the falls of the first column come first.
+constexpr int kGlyphHeadId = 1 << 24;
+
+// The face of the characters of size `size` (0..kGlyphSizes - 1, anything else
+// is clamped): the panel's own, which is the largest, or a little smaller. The
+// sizes differ by little: enough to vary the rain, not enough to look like
+// different fonts.
+GlyphFace glyphFaceOf(const GlyphFace& face, int size);
 
 // The characters of a glyph style that are lit when the columns have fallen
-// `travelled` px at speed 1, `clock` seconds after the window came to life, in
-// ascending id order. `intensity` (0..1) is how far the window has focus and
-// `seed` tells windows apart.
+// `travelled` px at speed 1, in ascending id order. `intensity` (0..1) is how
+// far the window has focus and `seed` tells windows apart.
 //
-// Each column has a few falls at once: a bright head that goes down a row at a
-// time, never up, and a tail of characters that dim as they get further behind
-// it. A fall begins at the top of the column, grows its tail, runs off the
-// bottom, and after a pause begins again, each time with a tail of another
-// length (eight to twenty-eight rows, less in a short column). Every character
-// changes into another one now and then, the head faster. At intensity 0
-// nothing is lit, and nothing is if the panel has no characters (see
-// GlyphFace::on).
-std::vector<GlyphDraw> glyphDraws(const Panel& panel, double travelled, double clock, double intensity, unsigned seed);
+// Each column has a few falls at once. A fall begins at the top of the column,
+// runs down it at a pace of its own, runs off the bottom, and after a pause
+// begins again, each time with a tail of another length (eight to twenty-eight
+// rows, less in a short column). Its head is one bright character that glides
+// down smoothly, never up, and keeps its shape for four or five rows before it
+// turns into another one. Behind the head each cell it has passed is given a
+// character of its own, different from the head's, which comes up as the head
+// gets clear of the cell and then dims, more slowly the longer the tail; the
+// next head to reach a cell replaces whatever is in it. Nothing changes into
+// anything else by itself. Every head and every character it leaves has a
+// brightness and one of a few sizes of its own. At intensity 0 nothing is lit,
+// and nothing is if the panel has no characters (see GlyphFace::on).
+std::vector<GlyphDraw> glyphDraws(const Panel& panel, double travelled, double intensity, unsigned seed);
 
 // What to redraw to get from one list of `glyphDraws` to the next: every
 // character that was added, removed or changed, as it is in the list it is in.
+// One that has moved is there twice, as it was and as it is, since its old
+// place has to be repainted as well.
 std::vector<GlyphDraw> glyphChanges(std::span<const GlyphDraw> before, std::span<const GlyphDraw> after);
 
 } // namespace smplhud

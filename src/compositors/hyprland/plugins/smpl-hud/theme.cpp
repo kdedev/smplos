@@ -55,6 +55,21 @@ bool isStyleName(std::string_view s) {
     return !s.empty() && std::ranges::all_of(s, [](unsigned char c) { return std::isalnum(c) || c == '_' || c == '-'; });
 }
 
+// `rgb(rrggbb)`, Hyprland's own spelling of a colour without opacity.
+bool parseColour(std::string_view text, Rgb8& out) {
+    constexpr std::string_view open = "rgb(";
+    if (text.size() != open.size() + 6 + 1 || !text.starts_with(open) || text.back() != ')')
+        return false;
+
+    const std::string digits(text.substr(open.size(), 6));
+    if (!std::ranges::all_of(digits, [](unsigned char c) { return std::isxdigit(c); }))
+        return false;
+
+    const unsigned long v = std::strtoul(digits.c_str(), nullptr, 16);
+    out                   = {uint8_t(v >> 16), uint8_t(v >> 8), uint8_t(v)};
+    return true;
+}
+
 void apply(Theme& t, std::string_view key, std::string_view value) {
     if (key == "themeHudFrame")
         parseBool(value, t.frame);
@@ -76,6 +91,12 @@ void apply(Theme& t, std::string_view key, std::string_view value) {
         parseNumber(value, 40, 600, t.sweepLength);
     else if (key == "themeHudHideBorder")
         parseBool(value, t.hideBorder);
+    else if (key == "themeHudGlyphColor") {
+        if (Rgb8 colour; parseColour(value, colour))
+            t.glyphColour = colour;
+        else if (value == "none")
+            t.glyphColour.reset();
+    }
 }
 
 } // namespace

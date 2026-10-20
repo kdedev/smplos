@@ -281,6 +281,14 @@ namespace {
         return out;
     }
 
+    // The colour a theme gives the characters of a glyph style, and the same
+    // `amount` lighter for the ones that are hot.
+    SHudGlyphColour glyphColourOf(const smplhud::Rgb8& colour, float amount) {
+        const smplhud::Rgba line{colour.r / 255.F, colour.g / 255.F, colour.b / 255.F, 1.F};
+        const auto          lighter = [amount](float v) { return v + (1.F - v) * amount; };
+        return {line, {lighter(line.r), lighter(line.g), lighter(line.b), 1.F}};
+    }
+
     // Adds to `region` the boxes, in global logical px, of the dots of `panel`
     // that are visible once they have travelled `travelled`. `origin` is the
     // window's box.
@@ -303,13 +311,13 @@ namespace {
     }
 
     // The falling characters of a glyph style, `level` of the way into the fade
-    // with the focus, once the columns have fallen `travelled` and `clock`
-    // seconds have passed. None is lit while the window has no focus.
-    std::vector<smplhud::GlyphDraw> glyphsAt(const smplhud::Panel& panel, double travelled, double clock, double level, unsigned seed) {
+    // with the focus, once the columns have fallen `travelled`. None is lit while
+    // the window has no focus.
+    std::vector<smplhud::GlyphDraw> glyphsAt(const smplhud::Panel& panel, double travelled, double level, unsigned seed) {
         if (!panel.glyphs.on())
             return {};
 
-        return smplhud::glyphDraws(panel, travelled, clock, smplhud::sweepIntensity(level), seed);
+        return smplhud::glyphDraws(panel, travelled, smplhud::sweepIntensity(level), seed);
     }
 
     // The shape of the glow of a lamp in `pose`: the theme's `shape`, longer or
@@ -720,7 +728,7 @@ CHudDecoration::SSweepStep CHudDecoration::advanceSweep(double seconds) {
     }
 
     if (panel.glyphs.on()) {
-        auto now = glyphsAt(panel, m_dotPos, m_clock, m_sweepLevel, m_seed);
+        auto now = glyphsAt(panel, m_dotPos, m_sweepLevel, m_seed);
         addGlyphBoxes(region, panel, smplhud::glyphChanges(m_glyphs, now), origin, m_sweep.scale);
         m_glyphs = std::move(now);
     }
@@ -730,9 +738,9 @@ CHudDecoration::SSweepStep CHudDecoration::advanceSweep(double seconds) {
         addRunnerBoxes(region, panel, m_dotPos, origin, m_sweep.scale);
     }
 
-    // Steps are fine enough to be several to a step of a lamp or a row of
-    // characters, so most change nothing; the timer must still go on as often
-    // while something is moving.
+    // Steps are fine enough to be several to a step of a lamp, so most change
+    // nothing; the timer must still go on as often while something is moving,
+    // and a falling head moves a little at every one of them.
     SSweepStep step;
     step.fading = m_sweepLevel > 0 && m_sweepLevel < 1;
     step.moved  = !lamps || !m_lamps.empty() || !panel.lanes.empty();
@@ -813,6 +821,8 @@ void CHudDecoration::draw(PHLMONITOR monitor, const float& a) {
         glow = line;
 
     frame.paints[size_t(Paint::Bright)] = whitened(line, g_settings.style->brightWhiten);
+    if (const auto& own = g_settings.theme.glyphColour)
+        frame.glyphColour = glyphColourOf(*own, g_settings.style->brightWhiten);
 
     // The window's own opacity is not the HUD's; fades (workspace switches,
     // open/close) still are.
@@ -850,7 +860,7 @@ void CHudDecoration::draw(PHLMONITOR monitor, const float& a) {
     // The characters are worked out from the same state the steps of the timer
     // compare with. None is lit while the window has no focus.
     if (panel.glyphs.on()) {
-        frame.glyphs = glyphsAt(panel, m_dotPos, m_clock, m_sweepLevel, m_seed);
+        frame.glyphs = glyphsAt(panel, m_dotPos, m_sweepLevel, m_seed);
         m_glyphs     = frame.glyphs;
     }
 

@@ -50,9 +50,10 @@ namespace {
     // stamp.hpp), kept on the GPU and shared by all windows, so each is baked and
     // uploaded once. The key holds everything the image depends on. A full cache
     // is emptied rather than managed: the next frame bakes what it needs again.
-    // The characters are the most numerous: some sixty of them in a few tones.
+    // The characters are the most numerous: some sixty of them in three sizes
+    // and a few tones.
     std::unordered_map<std::string, SP<Render::ITexture>> g_stamps;
-    constexpr size_t                                      kMaxStamps = 2048;
+    constexpr size_t                                      kMaxStamps = 4096;
 
     template <class Bake>
     SP<Render::ITexture> stampOf(const std::string& key, Bake&& bake) {
@@ -207,18 +208,46 @@ namespace {
     // 8 steps a channel are enough to keep the images that are baked few.
     constexpr int kGlyphToneLevels = 7;
 
+    // The colours of a character at (x, y) and of its glow: those of the line
+    // there, or the theme's own colour for characters with the opacity the line
+    // has there.
+    smplhud::Tone glyphToneAt(const SHudFrame& frame, smplhud::Paint core, double x, double y) {
+        const auto& area = frame.layout->sampleBox;
+        auto        line = paintAt(frame.paints[size_t(core)], area, x, y);
+        auto        glow = paintAt(frame.paints[size_t(smplhud::Paint::Glow)], area, x, y);
+        if (const auto& own = frame.glyphColour) {
+            const auto& hue = core == smplhud::Paint::Bright ? own->bright : own->line;
+            line            = {hue.r, hue.g, hue.b, line.a};
+            glow            = {own->line.r, own->line.g, own->line.b, glow.a};
+        }
+        return smplhud::makeTone(line, glow, kGlyphToneLevels);
+    }
+
     // The characters of a glyph style, each in the colours of the line where it
-    // stands (on a dark plate that dims the line behind it, if the style has one).
-    // One that is hot has the same character drawn over it in the bright colour
-    // (without a plate), as strongly as it is hot; the glow of the two adds up.
+    // stands (on a dark plate that dims the line behind it, if the style has one),
+    // in the size it was given. One that is hot has the same character drawn over
+    // it in the bright colour (without a plate), as strongly as it is hot; the glow
+    // of the two adds up.
     void drawGlyphs(const SHudFrame& frame) {
-        const auto& face = frame.layout->panel.glyphs;
-        const auto  size = smplhud::glyphSize(face);
-        if (!face.on() || size.w <= 0 || size.h <= 0)
+        const auto& base = frame.layout->panel.glyphs;
+        if (!base.on() || frame.glyphs.empty())
             return;
+
+        std::array<smplhud::GlyphFace, smplhud::kGlyphSizes> faces;
+        std::array<smplhud::GlyphSize, smplhud::kGlyphSizes> sizes;
+        for (int i = 0; i < smplhud::kGlyphSizes; ++i) {
+            faces[i] = smplhud::glyphFaceOf(base, i);
+            sizes[i] = smplhud::glyphSize(faces[i]);
+        }
 
         CTextureScope scope;
         for (const auto& glyph : frame.glyphs) {
+            const int   which = std::clamp(glyph.size, 0, smplhud::kGlyphSizes - 1);
+            const auto& face  = faces[which];
+            const auto& size  = sizes[which];
+            if (size.w <= 0 || size.h <= 0)
+                continue;
+
             const CBox box    = {frame.window.x + glyph.x - size.w / 2.0, frame.window.y + glyph.y - size.h / 2.0, double(size.w), double(size.h)};
             auto       damage = scope.damageIn(outward(box));
             if (damage.empty())
@@ -228,7 +257,7 @@ namespace {
                 if (frame.alpha * strength < 0.002F)
                     return;
 
-                auto spec = smplhud::glyphSpecOf(face, glyph.glyph, toneAt(frame, core, smplhud::Paint::Glow, glyph.x, glyph.y, kGlyphToneLevels));
+                auto spec = smplhud::glyphSpecOf(face, glyph.glyph, glyphToneAt(frame, core, glyph.x, glyph.y));
                 if (!plate)
                     spec.knock = 0;
                 if (const auto texture = stampOf(smplhud::keyOf(spec), [&] { return smplhud::bakeGlyph(spec); })) {

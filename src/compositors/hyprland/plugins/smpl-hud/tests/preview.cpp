@@ -8,8 +8,8 @@
 //   build/preview [style] [width] [height] [scale] [zoom] [floating] [travelled] [clock] [palette] [intensity] [seed] > panel.ppm
 //   build/preview glyphs [zoom] [palette] > glyphs.ppm
 //
-// width and height are the window in physical px; `travelled` is how far the dots have run
-// and `clock` how long the characters of a glyph style have been running, in seconds;
+// width and height are the window in physical px; `travelled` is how far the dots and the rain have run
+// and `clock` how long the lamps of a glyph style have been running, in seconds;
 // `intensity` is how far the window has faded into focus, 0 to 1. `glyphs` draws every
 // character of the matrix style, twelve to a row, in the order of the table.
 
@@ -137,32 +137,62 @@ void drawSprite(Canvas& cv, const Sprite& sp, int ox, int oy, float alpha) {
 
 struct Palette {
     Rgba line, glow, bright;
+    bool ownGlyphs = false; // the characters of a glyph style have a colour of their own, as the theme can give them
+    Rgba glyph{}, glyphBright{};
 };
+
+Rgba lighter(const Rgba& c, float amount) {
+    return {c.r + (1 - c.r) * amount, c.g + (1 - c.g) * amount, c.b + (1 - c.b) * amount, 1.f};
+}
 
 Palette paletteOf(const std::string& name, float whiten) {
     Palette p;
     if (name == "matrix") {
-        p.line = {0.0f, 1.0f, 0.25f, 1.f};
-        p.glow = {0.0f, 0.75f, 0.45f, 1.f};
+        p.line      = {0.0f, 1.0f, 0.25f, 1.f};
+        p.glow      = {0.0f, 0.75f, 0.45f, 1.f};
+        p.ownGlyphs = true; // as `hud_glyph_color` of matrix-hud
+        p.glyph     = {0x3c / 255.f, 1.0f, 0x28 / 255.f, 1.f};
     } else {
         p.line = {1.0f, 0.69f, 0.0f, 1.f};
         p.glow = {1.0f, 0.45f, 0.05f, 1.f};
     }
-    p.bright = {p.line.r + (1 - p.line.r) * whiten, p.line.g + (1 - p.line.g) * whiten, p.line.b + (1 - p.line.b) * whiten, 1.f};
+    p.bright      = lighter(p.line, whiten);
+    p.glyphBright = lighter(p.glyph, whiten);
     return p;
 }
 
-// What the pass element does for a character: the character in the colour of
-// the line and, as hot as it is, the same one over it in the bright colour.
-void drawGlyphs(Canvas& cv, const GlyphFace& face, const std::vector<GlyphDraw>& draws, const Palette& pal, int ox, int oy) {
-    const GlyphSize size = glyphSize(face);
-    const Tone      line = makeTone(pal.line, pal.glow, 7), bright = makeTone(pal.bright, pal.glow, 7);
+// The colours of a character and of its glow, and of the same one when it is hot: those of the line, or the
+// theme's own colour for characters.
+struct GlyphTones {
+    Tone line, bright;
+};
+
+GlyphTones glyphTonesOf(const Palette& pal) {
+    const Rgba& body = pal.ownGlyphs ? pal.glyph : pal.line;
+    const Rgba& hot  = pal.ownGlyphs ? pal.glyphBright : pal.bright;
+    const Rgba& halo = pal.ownGlyphs ? pal.glyph : pal.glow;
+    return {makeTone(body, halo, 7), makeTone(hot, halo, 7)};
+}
+
+// What the pass element does for a character: the character in the size it was given, in the colours of the line
+// and, as hot as it is, the same one over it in the bright colour.
+void drawGlyphs(Canvas& cv, const GlyphFace& base, const std::vector<GlyphDraw>& draws, const Palette& pal, int ox, int oy) {
+    GlyphFace faces[kGlyphSizes];
+    GlyphSize sizes[kGlyphSizes];
+    for (int i = 0; i < kGlyphSizes; ++i) {
+        faces[i] = glyphFaceOf(base, i);
+        sizes[i] = glyphSize(faces[i]);
+    }
+
+    const GlyphTones tones = glyphTonesOf(pal);
     for (const GlyphDraw& g : draws) {
-        const double x = ox + g.x - size.w / 2.0, y = oy + g.y - size.h / 2.0;
-        const float  lit = float(g.alpha) / kGlyphAlphaSteps;
-        drawImage(cv, bakeGlyph(glyphSpecOf(face, g.glyph, line)), x, y, lit);
+        const int        which = std::clamp(g.size, 0, kGlyphSizes - 1);
+        const GlyphFace& face  = faces[which];
+        const double     x = ox + g.x - sizes[which].w / 2.0, y = oy + g.y - sizes[which].h / 2.0;
+        const float      lit = float(g.alpha) / kGlyphAlphaSteps;
+        drawImage(cv, bakeGlyph(glyphSpecOf(face, g.glyph, tones.line)), x, y, lit);
         if (g.heat > 0) {
-            GlyphSpec hot = glyphSpecOf(face, g.glyph, bright);
+            GlyphSpec hot = glyphSpecOf(face, g.glyph, tones.bright);
             hot.knock     = 0;
             drawImage(cv, bakeGlyph(hot), x, y, lit * float(g.heat) / kGlyphHeatSteps);
         }
@@ -217,7 +247,7 @@ int sheet(int zoom, const std::string& palette) {
             cv.over(x, y, bg);
 
     const Palette pal  = paletteOf(palette, style->brightWhiten);
-    const Tone    tone = makeTone(pal.line, pal.glow, 7);
+    const Tone    tone = glyphTonesOf(pal).line;
     for (int i = 0; i < glyphCount(); ++i)
         drawImage(cv, bakeGlyph(glyphSpecOf(face, i, tone)), pad + (i % cols) * cw, pad + (i / cols) * ch, 1.f);
 
@@ -312,7 +342,7 @@ int main(int argc, char** argv) {
     }
 
     if (glyphMode) {
-        drawGlyphs(cv, layout.panel.glyphs, glyphDraws(layout.panel, travel, clock, intensity, seed), pal, left, top);
+        drawGlyphs(cv, layout.panel.glyphs, glyphDraws(layout.panel, travel, intensity, seed), pal, left, top);
     } else {
         const std::vector<RunnerPose> poses = intensity > 0 ? runnerPoses(layout.panel, travel) : std::vector<RunnerPose>{};
         auto drawBeadAt = [&](const Bead& bead, const RunnerPose& pose, float alpha) {

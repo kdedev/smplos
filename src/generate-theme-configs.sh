@@ -147,6 +147,14 @@ generate_theme() {
     fi
     pairs[$hud_key]=$((10#${pairs[$hud_key]}))
   done
+  # The colour of the characters of a glyph style such as "matrix", as
+  # rgb(rrggbb), or none to give them the colours of the line. Always written
+  # out: the sed expansion skips an empty value and would leave the placeholder.
+  pairs[hud_glyph_color]="${pairs[hud_glyph_color]-none}"
+  if [[ ! "${pairs[hud_glyph_color]}" =~ ^(none|rgb\([0-9a-fA-F]{6}\))$ ]]; then
+    echo "ERROR: $name: hud_glyph_color must be none or rgb(rrggbb)" >&2
+    return 1
+  fi
   local accent_hex="${pairs[accent]:-}"
   pairs[shadow_range]="${pairs[shadow_range]:-2}"
   pairs[shadow_render_power]="${pairs[shadow_render_power]:-3}"

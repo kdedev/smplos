@@ -12,6 +12,7 @@
 #include <hyprland/src/render/pass/PassElement.hpp>
 
 #include "geometry.hpp"
+#include "gradient.hpp"
 #include "panel.hpp"
 #include "sweep.hpp"
 
@@ -48,6 +49,13 @@ struct SHudSweep {
     float                                intensity = 1.F; // fades the glow in and out, and a lamp's pulse; never part of the cached image
 };
 
+// The colours a theme gives the characters of a glyph style in place of those of
+// the line. Each keeps the opacity the line has where it stands.
+struct SHudGlyphColour {
+    smplhud::Rgba line;   // the characters, and the glow around them
+    smplhud::Rgba bright; // a character that is hot: the same colour, lighter
+};
+
 // Everything one frame of one window's HUD needs. It is copied out of the
 // window when the pass element is queued, so drawing never touches the window
 // or its decoration again.
@@ -57,6 +65,7 @@ struct SHudFrame {
     std::vector<SHudSweep>                 sweeps; // one glow going round the line, or the lamps of a lamp style
     std::vector<smplhud::RunnerPose>       runners; // one per layout->panel.runners; their opacity already includes the fade with the focus, their glow says how much of the flare goes over them
     std::vector<smplhud::GlyphDraw>        glyphs;  // the falling characters of a glyph style
+    std::optional<SHudGlyphColour>         glyphColour;
     float                                  alpha         = 1.F;
     float                                  roundingPower = 1.F;
     CBox                                   window;  // window box, monitor-local physical px

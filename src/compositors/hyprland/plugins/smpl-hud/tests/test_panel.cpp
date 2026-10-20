@@ -6,11 +6,14 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
+#include <iterator>
 #include <limits>
 #include <map>
 #include <numbers>
 #include <set>
 #include <string>
+#include <utility>
 #include <vector>
 
 using namespace smplhud;
@@ -877,7 +880,7 @@ void testExtents() {
 void testGlyphFace() {
     const Layout plain = buildLayout(panelStyle(), params(900, 600));
     CHECK(!plain.panel.glyphs.on() && plain.panel.lanes.empty() && plain.panel.glyphs.knock == 0);
-    CHECK(glyphDraws(plain.panel, 50.0, 3.0, 1.0, 1).empty());
+    CHECK(glyphDraws(plain.panel, 50.0, 1.0, 1).empty());
 
     const Style& st = matrixStyle();
     for (float s : kScales) {
@@ -902,6 +905,21 @@ void testGlyphFace() {
         }
     }
     CHECK(buildLayout(st, params(900, 600, 2.f)).panel.glyphs.height > buildLayout(st, params(900, 600, 1.f)).panel.glyphs.height);
+
+    // The characters come in three sizes, the largest the face itself and none much smaller; only the size of
+    // the character differs, not how a column of them is laid out.
+    const GlyphFace face = buildLayout(st, params(900, 600)).panel.glyphs;
+    const GlyphFace big  = glyphFaceOf(face, kGlyphSizes - 1);
+    CHECK(big.height == face.height && big.halfWidth == face.halfWidth && big.reach == face.reach);
+    double smaller = 0;
+    for (int size = 0; size < kGlyphSizes; ++size) {
+        const GlyphFace f = glyphFaceOf(face, size);
+        CHECK(f.height > smaller && f.height >= 0.8 * face.height && f.height <= face.height);
+        CHECK(f.halfWidth <= face.halfWidth && f.reach <= face.reach);
+        CHECK(f.pitch == face.pitch && f.fall == face.fall && f.haloAlpha == face.haloAlpha && f.knock == face.knock);
+        smaller = f.height;
+    }
+    CHECK(glyphFaceOf(face, -3).height == glyphFaceOf(face, 0).height && glyphFaceOf(face, 17).height == big.height);
 }
 
 // The characters fall in columns down both sides of the window: one in the gap between the line and the
@@ -1183,8 +1201,20 @@ std::vector<RainCell> cellsOf(const Panel& pn) {
 constexpr int kShortestTail = 8;
 constexpr int kLongestTail  = 28;
 
+// The lane of every fall of a panel, in the order of the numbers in the ids of their heads.
+std::vector<size_t> fallLanes(const Panel& pn) {
+    std::vector<size_t> out;
+    for (size_t l = 0; l < pn.lanes.size(); ++l)
+        if (pn.lanes[l].cells > 0)
+            out.insert(out.end(), size_t(std::max(1, pn.lanes[l].streams)), l);
+    return out;
+}
+
+// A head at full strength is lit at least this much, and a cell at most this much.
+constexpr int kBrightest = 27;
+
 // On the real panels: what is drawn is well formed, deterministic, only a part of every column, and
-// every character of every column is lit by some fall.
+// every cell of every column is lit by some fall.
 void testRainDraws() {
     struct Case {
         int   w, h;
@@ -1197,6 +1227,7 @@ void testRainDraws() {
         const Layout lay    = buildLayout(matrixStyle(), p);
         const Panel& pn     = lay.panel;
         const auto   cells  = cellsOf(pn);
+        const auto   falls  = fallLanes(pn);
         CHECK(pn.lanes.size() == 4 && !cells.empty());
 
         const double      row    = pn.glyphs.pitch / pn.glyphs.fall; // the px a fall takes to go down a row
@@ -1204,51 +1235,61 @@ void testRainDraws() {
         size_t            unseen = cells.size();
         int               n      = 0;
         for (double t = 0; unseen > 0 && t < 5000 * row; t += row / 4, ++n) {
-            const double clock = 0.013 * n;
-            const auto   draws = glyphDraws(pn, t, clock, 1.0, 12345);
+            const auto draws = glyphDraws(pn, t, 1.0, 12345);
 
-            std::vector<int> litIn(pn.lanes.size(), 0);
+            std::vector<int> litIn(pn.lanes.size(), 0), headsIn(pn.lanes.size(), 0);
             int              last = -1;
             for (const GlyphDraw& d : draws) {
-                CHECK(d.id > last && size_t(d.id) < cells.size());
+                CHECK(d.id > last);
                 last = d.id;
+                CHECK(d.glyph >= 0 && d.glyph < glyphCount() && d.size >= 0 && d.size < kGlyphSizes);
+                CHECK(d.alpha >= 1 && d.alpha <= kGlyphAlphaSteps && d.heat >= 0 && d.heat <= kGlyphHeatSteps);
+
+                if (d.id >= kGlyphHeadId) {
+                    const size_t fall = size_t(d.id - kGlyphHeadId) / 2;
+                    CHECK(fall < falls.size());
+                    if (fall >= falls.size())
+                        continue;
+                    const RainLane& lane = pn.lanes[falls[fall]];
+                    CHECK(d.x == lane.x && d.heat == kGlyphHeatSteps);
+                    CHECK(d.y >= lane.y0 && d.y <= lane.y0 + (lane.cells - 0.5) * pn.glyphs.pitch + 1);
+                    ++headsIn[falls[fall]];
+                    continue;
+                }
+
+                CHECK(size_t(d.id) < cells.size());
                 if (size_t(d.id) >= cells.size())
                     continue;
                 const RainCell& cell = cells[size_t(d.id)];
                 CHECK(d.x == cell.x && d.y == cell.y);
-                CHECK(d.glyph >= 0 && d.glyph < glyphCount());
-                CHECK(d.alpha >= 1 && d.alpha <= kGlyphAlphaSteps && d.heat >= 0 && d.heat <= kGlyphHeatSteps);
+                CHECK(d.alpha <= kBrightest && d.heat < kGlyphHeatSteps);
                 ++litIn[cell.lane];
                 if (!seen[size_t(d.id)]) {
                     seen[size_t(d.id)] = 1;
                     --unseen;
                 }
             }
-            for (size_t l = 0; l < litIn.size(); ++l)
-                CHECK(litIn[l] <= pn.lanes[l].streams * kLongestTail);
+            for (size_t l = 0; l < litIn.size(); ++l) {
+                const int streams = std::max(1, pn.lanes[l].streams);
+                CHECK(litIn[l] <= streams * kLongestTail && headsIn[l] <= 2 * streams);
+            }
 
             if (n % 5 != 0)
                 continue;
-            CHECK(draws == glyphDraws(pn, t, clock, 1.0, 12345));
+            CHECK(draws == glyphDraws(pn, t, 1.0, 12345));
 
             // Less focus is a fainter picture of the same: the same characters, less lit and less hot.
             const Drawn all = drawn(draws);
-            for (const GlyphDraw& d : glyphDraws(pn, t, clock, 0.5, 12345)) {
+            for (const GlyphDraw& d : glyphDraws(pn, t, 0.5, 12345)) {
                 const auto it = all.find(d.id);
                 CHECK(it != all.end());
                 if (it == all.end())
                     continue;
-                CHECK(d.glyph == it->second.glyph && d.x == it->second.x && d.y == it->second.y);
+                CHECK(d.glyph == it->second.glyph && d.size == it->second.size && d.x == it->second.x && d.y == it->second.y);
                 CHECK(d.alpha <= it->second.alpha && d.alpha <= kGlyphAlphaSteps / 2 && d.heat <= it->second.heat);
             }
-            CHECK(glyphDraws(pn, t, clock, 0.0, 12345).empty() && glyphDraws(pn, t, clock, -1.0, 12345).empty());
-            CHECK(glyphDraws(pn, t, clock, 2.0, 12345) == draws); // out of range is clamped
-
-            // The rain goes with how far the columns have fallen; only the choice of characters goes with the time.
-            const auto later = glyphDraws(pn, t, clock + 9.7, 1.0, 12345);
-            CHECK(later.size() == draws.size());
-            for (size_t i = 0; i < std::min(later.size(), draws.size()); ++i)
-                CHECK(later[i].id == draws[i].id && later[i].alpha == draws[i].alpha && later[i].heat == draws[i].heat);
+            CHECK(glyphDraws(pn, t, 0.0, 12345).empty() && glyphDraws(pn, t, -1.0, 12345).empty());
+            CHECK(glyphDraws(pn, t, 2.0, 12345) == draws); // out of range is clamped
         }
         CHECK(unseen == 0);
         if (g_failures != before)
@@ -1263,10 +1304,12 @@ void testRainDraws() {
     // Windows are told apart by their seeds, and the columns of one window do not fall in step.
     bool seeds = false, apart = false;
     for (double t = 0; t < 4000; t += 130) {
-        seeds = seeds || glyphDraws(pn, t, 5.0, 1.0, 1) != glyphDraws(pn, t, 5.0, 1.0, 2);
+        seeds = seeds || glyphDraws(pn, t, 1.0, 1) != glyphDraws(pn, t, 1.0, 2);
 
         std::vector<int> rows[2];
-        for (const GlyphDraw& d : glyphDraws(pn, t, 0.0, 1.0, 1)) {
+        for (const GlyphDraw& d : glyphDraws(pn, t, 1.0, 1)) {
+            if (d.id >= kGlyphHeadId)
+                continue;
             const size_t lane = cells[size_t(d.id)].lane;
             if (lane < 2)
                 rows[lane].push_back(d.id - (lane == 0 ? 0 : pn.lanes[0].cells));
@@ -1275,25 +1318,24 @@ void testRainDraws() {
     }
     CHECK(seeds && apart);
 
-    // Time and the distance fallen do not run backwards.
-    CHECK(glyphDraws(pn, -500.0, 3.0, 1.0, 1) == glyphDraws(pn, 0.0, 3.0, 1.0, 1));
-    CHECK(glyphDraws(pn, 400.0, -3.0, 1.0, 1) == glyphDraws(pn, 400.0, 0.0, 1.0, 1));
+    // The distance fallen does not run backwards.
+    CHECK(glyphDraws(pn, -500.0, 1.0, 1) == glyphDraws(pn, 0.0, 1.0, 1));
 
     // Most of a long column is dark at any time.
-    const Layout tall    = buildLayout(matrixStyle(), params(900, 2000));
-    size_t       total   = 0, lit = 0, samples = 0;
+    const Layout tall  = buildLayout(matrixStyle(), params(900, 2000));
+    size_t       total = 0, lit = 0, samples = 0;
     for (const RainLane& lane : tall.panel.lanes)
         total += size_t(lane.cells);
     for (double t = 0; t < 40000; t += 37, ++samples)
-        lit += glyphDraws(tall.panel, t, 0.0, 1.0, 3).size();
+        lit += glyphDraws(tall.panel, t, 1.0, 3).size();
     CHECK(total > 0 && 2 * lit < total * samples);
 
     // Nothing to draw where there are no characters, or no columns for them.
-    CHECK(glyphDraws(Panel{}, 1.0, 1.0, 1.0, 1).empty());
-    CHECK(glyphDraws(buildLayout(panelStyle(), params(900, 600)).panel, 1.0, 1.0, 1.0, 1).empty());
+    CHECK(glyphDraws(Panel{}, 1.0, 1.0, 1).empty());
+    CHECK(glyphDraws(buildLayout(panelStyle(), params(900, 600)).panel, 1.0, 1.0, 1).empty());
     Panel bare;
     bare.glyphs = {12, 0.6, 3.4, 0.5f, 40, 4};
-    CHECK(glyphDraws(bare, 1.0, 1.0, 1.0, 1).empty());
+    CHECK(glyphDraws(bare, 1.0, 1.0, 1).empty());
 }
 
 // A column of characters by itself, that falls a row for every 10 px of travel.
@@ -1304,259 +1346,554 @@ Panel oneColumn(int cells, int streams = 1) {
     return pn;
 }
 
-// What is lit in such a column: how much of every row, which rows are first and last, how many, and in how many pieces.
-struct Look {
-    std::vector<int> alpha, heat;
-    int              first = -1, last = -1, lit = 0, pieces = 0;
+// What is drawn of such a column at one moment: how lit and how hot, and which character of which size every one of
+// its cells has, how many are lit, and the heads, which are not in any cell.
+struct Column {
+    std::vector<int>       alpha, heat, glyph, size;
+    std::vector<GlyphDraw> heads;
+    int                    lit = 0;
 };
 
-Look lookAt(const Panel& pn, double travelled, double clock, unsigned seed) {
-    Look out;
+Column columnAt(const Panel& pn, double travelled, unsigned seed) {
+    Column out;
     out.alpha.assign(size_t(pn.lanes[0].cells), 0);
-    out.heat = out.alpha;
-    for (const GlyphDraw& d : glyphDraws(pn, travelled, clock, 1.0, seed)) {
+    out.heat  = out.alpha;
+    out.glyph = out.alpha;
+    out.size  = out.alpha;
+    for (const GlyphDraw& d : glyphDraws(pn, travelled, 1.0, seed)) {
+        if (d.id >= kGlyphHeadId) {
+            out.heads.push_back(d);
+            continue;
+        }
         out.alpha[size_t(d.id)] = d.alpha;
         out.heat[size_t(d.id)]  = d.heat;
-        out.pieces += (out.lit == 0 || out.last != d.id - 1) ? 1 : 0;
-        out.first = out.lit == 0 ? d.id : out.first;
-        out.last  = d.id;
+        out.glyph[size_t(d.id)] = d.glyph;
+        out.size[size_t(d.id)]  = d.size;
         ++out.lit;
     }
     return out;
 }
 
-// A fall starts at the top of its column, goes down and never up, with a tail that dims towards its end, runs off the
-// bottom, rests, and starts again. It fades in and out at both ends of the column.
-void testRainFalls() {
-    constexpr int kCells = 30, kEnd = kCells - 1;
-    constexpr int kLongest = kCells * 6 / 10; // no tail is longer than three fifths of its column
-    const Panel   pn       = oneColumn(kCells);
+// How many rows from the first cell a head is, as far as its place on the screen tells.
+double rowOf(const Panel& pn, const GlyphDraw& head) {
+    return (head.y - pn.lanes[0].y0) / pn.glyphs.pitch;
+}
 
+// The fall that a head entry belongs to, and whether it is the character that fall is turning from.
+int fallOf(const GlyphDraw& head) {
+    return (head.id - kGlyphHeadId) / 2;
+}
+
+bool turningFrom(const GlyphDraw& head) {
+    return (head.id - kGlyphHeadId) % 2 == 0;
+}
+
+// A character and its size, as one number.
+int shapeKey(const GlyphDraw& d) {
+    return d.glyph * kGlyphSizes + d.size;
+}
+
+// The entries of the head of the only fall of a column: the character it has, and the one it is turning from, if it is.
+struct Head {
+    const GlyphDraw *has = nullptr, *from = nullptr;
+};
+
+Head headOf(const Column& col) {
+    Head out;
+    for (const GlyphDraw& d : col.heads) {
+        if (turningFrom(d))
+            out.from = &d;
+        else
+            out.has = &d;
+    }
+    return out;
+}
+
+// How lit the head of every fall of a column is, by the number of the fall, for both of its characters together.
+std::map<int, int> headAlphas(const Column& col) {
+    std::map<int, int> out;
+    for (const GlyphDraw& d : col.heads)
+        out[fallOf(d)] += d.alpha;
+    return out;
+}
+
+// A head is one character that glides down its column: it comes in at the top dim, is at full strength in the middle
+// and goes out at the bottom dim again. It never goes back up and never jumps, and it goes at a pace of its own, the
+// same on every pass. Nothing is lit when it comes in.
+void testRainHeads() {
+    constexpr int kCells = 30, kIn = 3, kOut = kCells - 3; // the pace is taken from row kIn to row kOut
+    const Panel   pn     = oneColumn(kCells);
+
+    int           lowest = kGlyphAlphaSteps, highest = 0; // of a head that is one character, all passes of all seeds
+    std::set<long> paces;                                 // in twentieths of a row a row of the column's fall
     for (unsigned seed : {1u, 2u, 3u, 77u}) {
-        const int        before = g_failures;
-        int              passes = 0, rest = 0, shortest = 1 << 30, longest = 0;
-        bool             whole  = false;      // the pass that goes on has been seen from its start
-        std::vector<int> arrival(kCells, -1); // how bright its head was when it got to a row
-        double           reached[2] = {-1, -1};
-        Look             prev;
+        const int before = g_failures;
+        int       passes = 0, total = 0;
+        bool      gone = false, whole = false; // no head a step ago; the pass that goes on seen from its start
+        double    row = 0, rowIn = 0, rowOut = 0, tIn = -1, tOut = -1, pace = -1;
 
-        for (double t = 0; t <= 5000; t += 5) {
-            const Look now = lookAt(pn, t, 0.0, seed);
+        for (double t = 0; t <= 6000; t += 0.5) {
+            const Column col = columnAt(pn, t, seed);
 
-            if (now.lit == 0) {
-                if (prev.lit > 0 && whole) {
-                    // It came in dim, was at full strength in the middle and went out dim.
-                    CHECK(arrival[0] > 0 && arrival[0] < arrival[1] && arrival[1] < arrival[2] && arrival[2] == kGlyphAlphaSteps);
-                    CHECK(arrival[kEnd] > 0 && arrival[kEnd] < arrival[kEnd - 1] && arrival[kEnd - 1] < arrival[kEnd - 2] &&
-                          arrival[kEnd - 2] == kGlyphAlphaSteps);
-
-                    // It fell at the speed of the column, give or take a third that is its own.
-                    const double rate = (kEnd - 4) / ((reached[1] - reached[0]) / 10);
-                    CHECK(rate >= 0.7 && rate <= 1.4);
+            if (col.heads.empty()) {
+                if (whole) {
+                    // It went out dim at the bottom of the column, at a steady pace.
+                    CHECK(row >= kCells - 1 && total <= 4 && tIn >= 0 && tOut > tIn);
+                    const double rate = (rowOut - rowIn) / ((tOut - tIn) / 10);
+                    CHECK(rate >= 0.74 && rate <= 1.36);
+                    CHECK(pace < 0 || std::abs(rate - pace) <= 0.01);
+                    pace = rate;
+                    ++passes;
                 }
+                gone  = true;
                 whole = false;
-                ++rest;
-                prev = now;
                 continue;
             }
 
-            if (prev.lit == 0 && rest > 0) {
-                // A pass begins with its head at the top of the column.
-                CHECK(now.last == 0 && now.lit == 1);
-                if (passes > 0) {
-                    shortest = std::min(shortest, rest);
-                    longest  = std::max(longest, rest);
-                }
-                ++passes;
-                rest  = 0;
+            // One character, or two while it turns; at the same place, and as hot as can be.
+            CHECK(col.heads.size() <= 2);
+            total = 0;
+            for (const GlyphDraw& d : col.heads) {
+                CHECK(d.heat == kGlyphHeatSteps && d.x == pn.lanes[0].x && d.y == col.heads[0].y);
+                total += d.alpha;
+            }
+            const double now = rowOf(pn, col.heads[0]);
+
+            if (gone) {
+                // A pass begins with a head just inside the top of the column, so dim as to be hardly there, and
+                // nothing lit behind it.
+                CHECK(now >= 0 && now <= 0.1 && total <= 5 && col.lit == 0);
                 whole = true;
-                arrival.assign(kCells, -1);
-                reached[0] = reached[1] = -1;
+                tIn = tOut = -1;
+            } else if (whole) {
+                CHECK(now >= row && now - row <= 0.1); // it glides
+            }
+            if (whole) {
+                if (tIn < 0 && now >= kIn) {
+                    tIn   = t;
+                    rowIn = now;
+                }
+                if (tOut < 0 && now >= kOut) {
+                    tOut   = t;
+                    rowOut = now;
+                }
             }
 
-            CHECK(now.lit <= kLongestTail && now.pieces == 1);
-            if (prev.lit > 0) {
-                // The same pass as a step ago: it goes down, and what is lit only dims.
-                CHECK(now.first >= prev.first);
-                if (prev.heat[size_t(prev.last)] > 0) // while its head is on the column
-                    CHECK(now.last >= prev.last);
-                for (size_t r = 0; r < size_t(kCells); ++r)
-                    CHECK(prev.alpha[r] == 0 || now.alpha[r] <= prev.alpha[r]);
+            if (now >= kIn && now <= kOut - 1) {
+                CHECK(total >= 26 && total <= 33);
+                if (col.heads.size() == 1) {
+                    CHECK(col.heads[0].alpha >= 27 && col.heads[0].alpha <= kGlyphAlphaSteps);
+                    lowest  = std::min(lowest, col.heads[0].alpha);
+                    highest = std::max(highest, col.heads[0].alpha);
+                }
             }
-
-            if (whole && now.heat[size_t(now.last)] > 0 && arrival[size_t(now.last)] < 0) {
-                arrival[size_t(now.last)] = now.alpha[size_t(now.last)];
-                if (now.last == 2)
-                    reached[0] = t;
-                if (now.last == kEnd - 2)
-                    reached[1] = t;
-            }
-
-            if (now.first >= 3 && now.last <= kCells - 4) {
-                // Well inside the column that is all of a fall: a tail of eight characters or more, dimmer and
-                // dimmer behind a head at full strength, and only the head and the two behind it hot.
-                CHECK(now.lit >= kShortestTail && now.lit <= kLongest && now.last - now.first + 1 == now.lit);
-                CHECK(now.alpha[size_t(now.last)] == kGlyphAlphaSteps && now.heat[size_t(now.last)] == kGlyphHeatSteps);
-                CHECK(now.alpha[size_t(now.last - 1)] < now.alpha[size_t(now.last)]);
-                CHECK(now.heat[size_t(now.last - 3)] == 0);
-                CHECK(now.alpha[size_t(now.last - now.lit / 2)] < kGlyphAlphaSteps / 2); // it dims faster than linearly
-                for (int r = now.first; r < now.last; ++r)
-                    CHECK(now.alpha[size_t(r)] <= now.alpha[size_t(r + 1)] && now.heat[size_t(r)] <= now.heat[size_t(r + 1)]);
-            }
-            prev = now;
+            row  = now;
+            gone = false;
         }
         CHECK(passes >= 3);
-        CHECK(shortest >= 6 && longest <= 100); // a rest is not over at once, and does not leave the column dark for long
+        paces.insert(std::lround(pace * 20));
+        if (g_failures != before)
+            std::fprintf(stderr, "  ^ seed %u\n", seed);
+    }
+    CHECK(paces.size() >= 3);          // every column has a pace of its own
+    CHECK(lowest <= 29 && highest >= 31); // and a head is not as bright as another
+}
+
+// A head keeps its character for four or five rows, then turns into another: the new one comes up as the old one goes
+// out, over a little more than half a row, and all the while the head is one or the other. No two characters in a
+// row are meant to be alike, and what is left behind does not matter here.
+void testRainBands() {
+    constexpr int kCells = 60, kFirst = 3, kLast = kCells - 4; // a head is at full strength from row kFirst to row kLast
+    const Panel   pn     = oneColumn(kCells);
+
+    std::set<int> glyphs, units;
+    int           turns = 0, flips = 0;
+    for (unsigned seed : {1u, 2u, 3u, 4u}) {
+        const int           before = g_failures;
+        bool                gone = false, armed = false; // no head a step ago; the pass that goes on seen from its start
+        bool                crossing = false;            // the head is turning from one character to another
+        int                 oddKey = -1, fromKey = -1, frames = 0, evenAlpha = 0, oddAlpha = 0;
+        double              startRow = 0, evenRow = 0;
+        std::vector<double> at; // the rows where the head began to turn, in this pass
+
+        for (double t = 0; t <= 14000; t += 0.5) {
+            const Column col = columnAt(pn, t, seed);
+
+            if (col.heads.empty()) {
+                if (armed) {
+                    // Every four rows or every five, the same for the whole pass, the first turn not later than that.
+                    CHECK(at.size() >= 10);
+                    if (at.size() >= 2) {
+                        const double unit = std::round(at[1] - at[0]);
+                        CHECK(unit == 4 || unit == 5);
+                        CHECK(at.front() > 0 && at.front() <= unit + 0.2);
+                        for (size_t i = 1; i < at.size(); ++i)
+                            CHECK_NEAR(at[i] - at[i - 1], unit, 0.2);
+                        units.insert(int(unit));
+                    }
+                    turns += int(at.size());
+                }
+                gone     = true;
+                armed    = false;
+                crossing = false;
+                continue;
+            }
+
+            const Head   head = headOf(col);
+            const double row  = rowOf(pn, col.heads[0]);
+            CHECK(col.heads.size() <= 2);
+            if (head.from && head.has)
+                CHECK(head.from->id + 1 == head.has->id && head.from->x == head.has->x && head.from->y == head.has->y);
+
+            if (gone) {
+                // Only a pass that starts with one character is followed; one that starts in the middle of a turn is not.
+                armed    = head.has && !head.from;
+                gone     = false;
+                crossing = false;
+                oddKey   = armed ? shapeKey(*head.has) : -1;
+                at.clear();
+            }
+            if (!armed)
+                continue;
+
+            if (head.from) {
+                if (!crossing) {
+                    // It begins to turn here, from the character it had.
+                    crossing = true;
+                    at.push_back(row);
+                    CHECK(shapeKey(*head.from) == oddKey);
+                    fromKey   = oddKey;
+                    frames    = 0;
+                    startRow  = row;
+                    evenAlpha = kGlyphAlphaSteps + 1;
+                    oddAlpha  = -1;
+                }
+                ++frames;
+                evenRow = row;
+                CHECK(shapeKey(*head.from) == fromKey);
+                if (row >= kFirst && row <= kLast) {
+                    CHECK(head.from->alpha <= evenAlpha);
+                    evenAlpha = head.from->alpha;
+                }
+            }
+            if (head.has) {
+                const int key = shapeKey(*head.has);
+                if (key != oddKey) {
+                    // It has another character only while it turns.
+                    CHECK(head.from != nullptr);
+                    oddKey = key;
+                    glyphs.insert(head.has->glyph);
+                    ++flips;
+                }
+                if (crossing && row >= kFirst && row <= kLast) {
+                    CHECK(head.has->alpha >= oddAlpha);
+                    oddAlpha = head.has->alpha;
+                }
+            }
+            if (crossing && !head.from) {
+                crossing = false;
+                // It takes a little more than half a row, which at the paces there are is ten frames to seventeen.
+                if (startRow >= kFirst && evenRow <= kLast)
+                    CHECK(frames >= 8 && frames <= 19);
+            }
+        }
+        if (g_failures != before)
+            std::fprintf(stderr, "  ^ seed %u\n", seed);
+    }
+    CHECK(units.count(4) == 1 && units.count(5) == 1);
+    CHECK(turns >= 100 && flips * 10 >= turns * 9); // a character repeats the one before only by chance
+    CHECK(int(glyphs.size()) >= glyphCount() / 2);
+}
+
+// What a head leaves in the cells it passes: a character of its own, never the head's, that comes up as the head gets
+// clear of the cell and from then on only dims, stays what it is while it lasts, and is hot only while it is new.
+void testRainTrail() {
+    constexpr int kCells = 40, kFirst = 3, kLast = kCells - 4;
+    const Panel   pn     = oneColumn(kCells);
+
+    int minPeak = kGlyphAlphaSteps, maxPeak = 0, comparable = 0, rows = 0, sizes[kGlyphSizes] = {};
+    for (unsigned seed : {1u, 2u}) {
+        const int         before = g_failures;
+        int               passes = 0;
+        bool              dark = false, running = false; // a dark column was seen; a pass that began from one goes on
+        std::vector<int>  peak, headGlyph, trailGlyph;   // of every cell in this pass; -1 where not known
+        std::vector<char> mature;                        // it has been far enough behind the head to have peaked
+        Column            prev;
+
+        for (double t = 0; passes < 2 && t <= 60000; t += 0.25) {
+            const Column col  = columnAt(pn, t, seed);
+            const bool   idle = col.lit == 0 && col.heads.empty();
+
+            if (!running) {
+                if (idle) {
+                    dark = true;
+                    continue;
+                }
+                if (!dark)
+                    continue;
+                running = true;
+                dark    = false;
+                peak.assign(size_t(kCells), 0);
+                headGlyph.assign(size_t(kCells), -2);
+                trailGlyph.assign(size_t(kCells), -1);
+                mature.assign(size_t(kCells), 0);
+                prev = Column{};
+                CHECK(col.lit == 0 && !col.heads.empty());
+            }
+
+            if (idle) {
+                // The pass is over: every cell it passed got a character of its own, not the head's, at its own strength.
+                running = false;
+                dark    = true;
+                ++passes;
+                for (int r = kFirst; r <= kLast; ++r) {
+                    const size_t i = size_t(r);
+                    CHECK(peak[i] > 0);
+                    minPeak = std::min(minPeak, peak[i]);
+                    maxPeak = std::max(maxPeak, peak[i]);
+                    ++rows;
+                    if (headGlyph[i] >= 0 && trailGlyph[i] >= 0) {
+                        ++comparable;
+                        CHECK(headGlyph[i] != trailGlyph[i]);
+                    }
+                }
+                continue;
+            }
+
+            const double h = col.heads.empty() ? -1.0 : rowOf(pn, col.heads[0]);
+            CHECK(col.lit < 24);
+            if (h >= 26 && h <= 36) {
+                // A tail of some rows, dimming to nothing at its end.
+                CHECK(col.lit >= 5);
+                size_t top = 0;
+                while (top + 1 < col.alpha.size() && col.alpha[top] == 0)
+                    ++top;
+                CHECK(col.alpha[top] <= 4);
+            }
+
+            // What the head was when it passed a row: its only character, if it had no other.
+            for (int r = 0; r < kCells; ++r)
+                if (headGlyph[size_t(r)] == -2 && h >= r + 0.03)
+                    headGlyph[size_t(r)] = col.heads.size() == 1 && !turningFrom(col.heads[0]) ? col.heads[0].glyph : -1;
+
+            for (int r = 0; r < kCells; ++r) {
+                const size_t i = size_t(r);
+                const int    a = col.alpha[i];
+                if (a == 0) {
+                    mature[i] = 0;
+                    continue;
+                }
+                CHECK(a <= kBrightest && col.heat[i] < kGlyphHeatSteps);
+                const double ago = h - r;
+                if (h >= 0) {
+                    CHECK(ago >= 0.75);
+                    if (col.heat[i] > 0)
+                        CHECK(ago <= 2.55);
+                }
+
+                if (prev.alpha.empty() || prev.alpha[i] == 0) {
+                    // It comes up as soon as the head's own character is clear of it.
+                    if (h >= 0 && r >= kFirst && r <= kLast)
+                        CHECK(ago >= 0.8 && ago <= 1.1);
+                    trailGlyph[i] = col.glyph[i];
+                    if (r >= kFirst && r <= kLast)
+                        ++sizes[col.size[i]];
+                } else {
+                    CHECK(col.glyph[i] == prev.glyph[i] && col.size[i] == prev.size[i]);
+                    if (mature[i] && r >= kFirst && r <= kLast)
+                        CHECK(a <= prev.alpha[i]);
+                }
+                if (ago >= 1.7)
+                    mature[i] = 1;
+                peak[i] = std::max(peak[i], a);
+            }
+            prev = col;
+        }
+        CHECK(passes == 2);
         if (g_failures != before)
             std::fprintf(stderr, "  ^ seed %u\n", seed);
     }
 
-    // A long column has several falls at once, each at its own pace: never more than it should, and sometimes two or more.
-    const Panel wide   = oneColumn(120, 3);
-    int         most   = 0, pieces = 0;
-    for (unsigned seed : {1u, 2u, 3u})
-        for (double t = 0; t <= 8000; t += 7) {
-            const Look now = lookAt(wide, t, 0.0, seed);
-            most           = std::max(most, now.lit);
-            pieces         = std::max(pieces, now.pieces);
-        }
-    CHECK(most <= 3 * kLongestTail && pieces >= 2 && pieces <= 3);
+    // They are not all as bright as each other, nor all of a size, and most are not what the head was.
+    CHECK(minPeak >= 10 && maxPeak <= kBrightest && maxPeak - minPeak >= 4);
+    CHECK(rows > 0 && comparable * 10 >= rows * 7);
+    for (int size = 0; size < kGlyphSizes; ++size)
+        CHECK(sizes[size] > 0);
 }
 
 // Every pass of a fall has a tail of its own, eight rows to twenty-eight: a column does not fall the same way twice,
 // short tails and long ones both come, and no tail is longer than its column allows.
 void testRainTails() {
-    // How many characters are lit at most in every pass of a column, for the passes in 20000 px of travel.
-    const auto tailsOf = [](const Panel& pn, unsigned seed) {
+    // How many characters are lit at most in every pass of a column that began on a dark one, in `reach` px of travel.
+    const auto tailsOf = [](const Panel& pn, unsigned seed, double reach, double step) {
         std::vector<int> tails;
         int              most = 0;
-        for (double t = 0; t <= 20000; t += 5) {
-            const int lit = lookAt(pn, t, 0.0, seed).lit;
-            if (lit == 0 && most > 0) {
-                tails.push_back(most);
+        bool             dark = false;
+        for (double t = 0; t <= reach; t += step) {
+            const Column col = columnAt(pn, t, seed);
+            if (col.lit == 0 && col.heads.empty()) {
+                if (dark && most > 0)
+                    tails.push_back(most);
                 most = 0;
+                dark = true;
+            } else if (dark) {
+                most = std::max(most, col.lit);
             }
-            most = std::max(most, lit);
         }
         return tails;
     };
 
     std::set<int> every;
     for (unsigned seed : {1u, 2u, 3u, 4u, 5u, 6u}) {
-        const std::vector<int> tails = tailsOf(oneColumn(60), seed);
+        const std::vector<int> tails = tailsOf(oneColumn(60), seed, 20000, 2);
         const std::set<int>    kinds(tails.begin(), tails.end());
         CHECK(tails.size() >= 8 && kinds.size() >= 4);
         if (kinds.empty())
             continue;
-        CHECK(*kinds.begin() >= kShortestTail && *kinds.rbegin() <= kLongestTail);
+        // The last rows of a tail are too dim to be lit, so a tail of n rows has a little fewer characters at once.
+        CHECK(*kinds.begin() >= kShortestTail - 2 && *kinds.rbegin() <= kLongestTail - 1);
         every.insert(kinds.begin(), kinds.end());
     }
-    CHECK(!every.empty() && *every.begin() <= kShortestTail + 2 && *every.rbegin() >= kLongestTail - 4);
+    CHECK(!every.empty() && *every.begin() <= kShortestTail && *every.rbegin() >= kLongestTail - 6);
 
     // A column that is too short for the longest tail has one of three fifths of it, or of three rows.
     for (int cells : {1, 2, 4, 10, 20, 45, 120}) {
-        const int cap  = std::clamp(cells * 6 / 10, 3, kLongestTail);
+        const int cap  = std::min(cells, std::clamp(cells * 6 / 10, 3, kLongestTail) - 1);
         int       most = 0;
         for (unsigned seed : {1u, 2u, 3u})
-            for (int tail : tailsOf(oneColumn(cells), seed))
+            for (int tail : tailsOf(oneColumn(cells), seed, 20000, 5))
                 most = std::max(most, tail);
         CHECK(most <= cap);
-        if (cells == 10 || cells == 20)
-            CHECK(most == cap);
+        if (cells >= 10)
+            CHECK(most >= 3);
     }
 
-    // A fall is never cut short, whatever its tail: it has left the column before the next one begins, and so what is
-    // lit only ever goes down. A short rest after a long tail is what could go wrong, so look at many columns.
+    // A pass is never cut short by the next, whatever its tail: it has left the column before the next head comes in,
+    // so that the head comes in on a dark column. A short rest after a long tail is what could go wrong, so look at many.
     for (int cells : {12, 30, 45})
         for (unsigned seed = 1; seed <= 60; ++seed) {
-            const Panel pn = oneColumn(cells);
-            Look        prev;
+            const Panel pn   = oneColumn(cells);
+            bool        none = false;
             for (double t = 0; t <= 6000; t += 5) {
-                const Look now = lookAt(pn, t, 0.0, seed);
-                if (prev.lit > 0 && now.lit > 0)
-                    CHECK(now.first >= prev.first);
-                prev = now;
+                const Column col = columnAt(pn, t, seed);
+                if (none && !col.heads.empty())
+                    CHECK(col.lit == 0);
+                none = col.heads.empty();
             }
         }
+
+    // The character a cell is left with differs from pass to pass.
+    const Panel      pn = oneColumn(12);
+    std::vector<int> left;
+    bool             lit = false;
+    for (double t = 0; t <= 10000; t += 5) {
+        const Column col = columnAt(pn, t, 1);
+        const bool   now = col.alpha[6] > 0;
+        if (now && !lit)
+            left.push_back(col.glyph[6]);
+        lit = now;
+    }
+    const std::set<int> kinds(left.begin(), left.end());
+    CHECK(left.size() >= 15 && kinds.size() >= 5);
 }
 
-// The head of a fall and the character behind it flicker through others three times a second, the rest of the tail
-// changes now and then, each character at its own slow pace.
-void testRainRhythm() {
-    const Panel    pn   = oneColumn(30);
-    const unsigned seed = 11;
+// What is drawn of a column changes by little from one step of travel to the next: no cell and no head jumps in
+// strength or in heat, not where a head comes in or goes out, nor where it turns or gives way to another.
+void testRainSmooth() {
+    struct Case {
+        int cells, streams;
+    };
+    for (const Case c : {Case{30, 1}, Case{120, 3}}) {
+        const Panel pn = oneColumn(c.cells, c.streams);
+        for (unsigned seed : {1u, 2u}) {
+            const int before = g_failures;
+            Column    prev   = columnAt(pn, 0, seed);
+            for (double t = 0.5; t <= 5000; t += 0.5) {
+                const Column col = columnAt(pn, t, seed);
+                for (size_t r = 0; r < col.alpha.size(); ++r) {
+                    CHECK(std::abs(col.alpha[r] - prev.alpha[r]) <= 6);
 
-    // Stop the rain at a moment when its head is well inside the column.
-    double stop = -1;
-    int    head = -1;
-    for (double t = 0; t <= 3000 && stop < 0; t += 5) {
-        const Look look = lookAt(pn, t, 0.0, seed);
-        if (look.first >= 3 && look.last <= 24 && look.heat[size_t(look.last)] > 0) {
-            stop = t;
-            head = look.last;
+                    // How hot a cell is shows only as much as it is lit, so one that has just come up at the edge of
+                    // the column, at a thirtieth of its strength, may be warm at once.
+                    CHECK(std::abs(col.alpha[r] * col.heat[r] - prev.alpha[r] * prev.heat[r]) <= 40);
+                    if (col.alpha[r] >= 2 && prev.alpha[r] >= 2)
+                        CHECK(std::abs(col.heat[r] - prev.heat[r]) <= 2);
+                }
+
+                // A head as a whole, with both of its characters if it has two; one that is not there is not lit.
+                std::map<int, int> was = headAlphas(prev);
+                for (const auto& [fall, alpha] : headAlphas(col)) {
+                    CHECK(std::abs(alpha - was[fall]) <= 6);
+                    was.erase(fall);
+                }
+                for (const auto& gone : was)
+                    CHECK(gone.second <= 6);
+                prev = col;
+            }
+            if (g_failures != before)
+                std::fprintf(stderr, "  ^ %d cells, seed %u\n", c.cells, seed);
         }
     }
-    CHECK(stop >= 0 && head >= 8);
-    if (stop < 0 || head < 8)
+}
+
+// The heads of the falls of a long column keep their distance: one gives way to another that gets close, so that
+// two are never so near that their characters touch, and yet they do come close.
+void testRainHeadsApart() {
+    const Panel pn = oneColumn(120, 3);
+
+    bool close = false;
+    for (unsigned seed : {1u, 2u, 3u})
+        for (double t = 0; t <= 8000; t += 3) {
+            std::map<int, int> at; // the y of the head of every fall that has one
+            for (const GlyphDraw& d : columnAt(pn, t, seed).heads)
+                at[fallOf(d)] = d.y;
+            for (auto a = at.begin(); a != at.end(); ++a)
+                for (auto b = std::next(a); b != at.end(); ++b) {
+                    const int apart = std::abs(a->second - b->second);
+                    CHECK(apart >= 12);
+                    close = close || apart <= 40;
+                }
+        }
+    CHECK(close);
+}
+
+// The rain is not of one size: of the three sizes, every one is a good part of the cells that are lit and of the
+// heads, though the cells and heads of a size are not what makes the others.
+void testRainVariety() {
+    const Panel pn = buildLayout(matrixStyle(), params(900, 600)).panel;
+    CHECK(pn.glyphs.on());
+    if (!pn.glyphs.on())
         return;
 
-    const int rows[]       = {head, head - 1, head - 2, head - 5};
-    int       changes[4]   = {0, 0, 0, 0};
-    int       was[4]       = {-1, -1, -1, -1};
-    for (double clock = 0; clock < 2; clock += 0.005) {
-        const Drawn d = drawn(glyphDraws(pn, stop, clock, 1.0, seed));
-        for (size_t k = 0; k < 4; ++k) {
-            const auto it = d.find(rows[k]);
-            CHECK(it != d.end());
-            if (it == d.end())
-                return;
-            if (was[k] >= 0 && it->second.glyph != was[k])
-                ++changes[k];
-            was[k] = it->second.glyph;
+    int          cells[kGlyphSizes] = {}, heads[kGlyphSizes] = {};
+    const double row                = pn.glyphs.pitch / pn.glyphs.fall; // the px of travel that make a fall go a row down
+    for (double t = 0; t < 3000 * row; t += row / 3)
+        for (const GlyphDraw& d : glyphDraws(pn, t, 1.0, 5)) {
+            if (d.id >= kGlyphHeadId)
+                ++heads[d.size];
+            else
+                ++cells[d.size];
         }
-    }
-    CHECK(changes[0] >= 4 && changes[0] <= 7 && changes[1] >= 4 && changes[1] <= 7); // about three a second
-    CHECK(changes[2] <= 1 && changes[3] <= 1);
 
-    // Further back a character changes now and then, never in a hurry, each at a pace of its own.
-    const Look       tail = lookAt(pn, stop, 0.0, seed);
-    std::vector<int> back; // the rows that are lit but too cool to flicker
-    for (int row = 0; row < int(tail.alpha.size()); ++row)
-        if (tail.alpha[size_t(row)] > 0 && tail.heat[size_t(row)] <= 2)
-            back.push_back(row);
-    CHECK(back.size() >= 5);
-
-    std::map<int, int>    drifts, glyph;
-    std::map<int, double> since;
-    for (double clock = 0; clock < 40; clock += 0.01) {
-        const Drawn d = drawn(glyphDraws(pn, stop, clock, 1.0, seed));
-        for (const int row : back) {
-            const auto it = d.find(row);
-            CHECK(it != d.end());
-            if (it == d.end())
-                return;
-            if (glyph.count(row) && it->second.glyph != glyph[row]) {
-                ++drifts[row];
-                if (since.count(row))
-                    CHECK(clock - since[row] >= 2.4);
-                since[row] = clock;
-            }
-            glyph[row] = it->second.glyph;
-        }
-    }
-    std::set<int> paces;
-    for (const int row : back) {
-        CHECK(drifts[row] >= 4 && drifts[row] <= 17);
-        paces.insert(drifts[row]);
-    }
-    CHECK(paces.size() >= 3);
+    const auto spread = [](const int (&n)[kGlyphSizes]) {
+        int total = 0;
+        for (const int k : n)
+            total += k;
+        CHECK(total > 1000);
+        for (const int k : n)
+            CHECK(k * 100 >= total * 15 && k * 100 <= total * 55);
+    };
+    spread(cells);
+    spread(heads);
 }
 
 // The rain is meant to stay at the edge of the eye: at the speed matrix-hud asks for, the fastest fall of the real
-// panel goes down no more rows a second than the fastest lamp goes along its edge, and none stands still.
+// panel goes down no more rows a second than the fastest lamp goes along its edge, none stands still, and a head moves
+// a little at every tick of the timer that moves it, not in jumps.
 void testRainIsCalm() {
     constexpr double kThemeSpeed = 60; // px a second, as `hud_sweep_speed` of matrix-hud
     constexpr double kSeconds    = 5;
+    constexpr double kTick       = 3.5; // px of travel between two ticks of that timer at that speed
     Panel            pn          = buildLayout(matrixStyle(), params(1920, 1080)).panel;
     CHECK(!pn.lanes.empty() && !pn.lamps.empty() && pn.glyphs.on());
     if (pn.lanes.empty() || pn.lamps.empty() || !pn.glyphs.on())
@@ -1567,20 +1904,38 @@ void testRainIsCalm() {
         lamp = std::max(lamp, std::abs(l.speed));
     const double lampRows = lamp * kThemeSpeed / pn.glyphs.pitch; // rows a second
 
-    pn.lanes = {{pn.lanes[0].x, pn.lanes[0].y0, 60, 1}}; // one fall, so that its head is the last row lit
+    pn.lanes = {{pn.lanes[0].x, pn.lanes[0].y0, 60, 1}}; // one fall, so that there is one head
     double slowest = 1e9, fastest = 0;
     int    measured = 0;
     for (unsigned seed = 1; seed <= 40; ++seed)
         for (double travelled = 0; travelled < 6000; travelled += 15) {
             // From a head well inside the column to five seconds later: it cannot have run off the end by then.
-            const Look from = lookAt(pn, travelled, 0.0, seed);
-            if (from.last < 8 || from.last > 34)
+            const Column from = columnAt(pn, travelled, seed);
+            if (from.heads.empty())
                 continue;
-            const Look   to   = lookAt(pn, travelled + kThemeSpeed * kSeconds, 0.0, seed);
-            const double rate = (to.last - from.last) / kSeconds;
+            const double start = rowOf(pn, from.heads[0]);
+            if (start < 8 || start > 34)
+                continue;
+            const Column to = columnAt(pn, travelled + kThemeSpeed * kSeconds, seed);
+            CHECK(!to.heads.empty());
+            if (to.heads.empty())
+                break;
+            const double rate = (rowOf(pn, to.heads[0]) - start) / kSeconds;
             slowest           = std::min(slowest, rate);
             fastest           = std::max(fastest, rate);
             ++measured;
+
+            // At every tick in the next second it is a row or two of pixels further down, never none and never many.
+            int y = from.heads[0].y;
+            for (double t = travelled + kTick; t <= travelled + 60; t += kTick) {
+                const Column step = columnAt(pn, t, seed);
+                CHECK(!step.heads.empty());
+                if (step.heads.empty())
+                    break;
+                const int dy = step.heads[0].y - y;
+                CHECK(dy >= 1 && dy <= 3);
+                y = step.heads[0].y;
+            }
             break;
         }
     CHECK(measured == 40);
@@ -1589,13 +1944,17 @@ void testRainIsCalm() {
 }
 
 void testGlyphChanges() {
-    const auto draw = [](int id, int alpha, int heat = 0, int glyph = 1) { return GlyphDraw{id, 10 * id, 20, glyph, alpha, heat}; };
+    const auto draw = [](int id, int alpha, int heat = 0, int glyph = 1, int size = 0, int y = 20) {
+        return GlyphDraw{id, 10 * id, y, glyph, alpha, heat, size};
+    };
 
-    const std::vector<GlyphDraw> before = {draw(0, 5), draw(2, 8), draw(3, 9, 1), draw(6, 12)};
-    const std::vector<GlyphDraw> after  = {draw(0, 5), draw(2, 9), draw(4, 7), draw(6, 12, 0, 2), draw(7, 3)};
+    const std::vector<GlyphDraw> before = {draw(0, 5), draw(2, 8), draw(3, 9, 1), draw(6, 12), draw(8, 5), draw(9, 4)};
+    const std::vector<GlyphDraw> after  = {draw(0, 5), draw(2, 9), draw(4, 7), draw(6, 12, 0, 2), draw(7, 3), draw(8, 5, 0, 1, 0, 30), draw(9, 4, 0, 1, 1)};
 
-    // 2 changed, 3 went, 4 came, 6 became another character, 7 came: each as it is in the list it is in.
-    const std::vector<GlyphDraw> expect = {draw(2, 9), draw(3, 9, 1), draw(4, 7), draw(6, 12, 0, 2), draw(7, 3)};
+    // 2 changed, 3 went, 4 came, 6 became another character, 7 came, 8 moved, 9 became another size: each as it is in
+    // the list it is in, and the one that moved both where it was, to be taken away, and where it is.
+    const std::vector<GlyphDraw> expect = {draw(2, 9),          draw(3, 9, 1), draw(4, 7),          draw(6, 12, 0, 2),
+                                           draw(7, 3),          draw(8, 5),    draw(8, 5, 0, 1, 0, 30), draw(9, 4, 0, 1, 1)};
     CHECK(glyphChanges(before, after) == expect);
 
     CHECK(glyphChanges(before, before).empty());
@@ -1642,9 +2001,13 @@ int main() {
     testLamps();
     testLampPose();
     testRainDraws();
-    testRainFalls();
+    testRainHeads();
+    testRainBands();
+    testRainTrail();
     testRainTails();
-    testRainRhythm();
+    testRainSmooth();
+    testRainHeadsApart();
+    testRainVariety();
     testRainIsCalm();
     testGlyphChanges();
     return finish("test_panel");

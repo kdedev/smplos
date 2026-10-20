@@ -1,5 +1,6 @@
 """Optional Hyprland window effects: corner shape, shadow tint, inner glow, border animation."""
 
+import colorsys
 import os
 from pathlib import Path
 import re
@@ -41,6 +42,7 @@ HUD = (
     ("hud_sweep_speed", "hud_sweep_speed", "themeHudSweepSpeed"),
     ("hud_sweep_length", "hud_sweep_length", "themeHudSweepLength"),
     ("hud_hide_border", "hud_hide_border_flag", "themeHudHideBorder"),
+    ("hud_glyph_color", "hud_glyph_color", "themeHudGlyphColor"),
 )
 EFFECT_KEYS = tuple(key for key, _, _ in EFFECTS + HUD)
 EFFECT_VARS = tuple(var for _, _, var in EFFECTS + HUD)
@@ -67,6 +69,7 @@ CLASSIC = {
     "themeHudSweepSpeed": "80",
     "themeHudSweepLength": "180",
     "themeHudHideBorder": "0",
+    "themeHudGlyphColor": "none",
 }
 
 # Evaluates the real looknfeel.lua (and theme.lua) against a recording hl stub.
@@ -372,6 +375,31 @@ class StockThemeEffectTests(unittest.TestCase):
         self.assertTrue(frame and glow)
         self.assertEqual(frame & glow, set(), "the frame and the glow must not share a colour")
 
+    def test_matrix_hud_characters_are_the_green_of_the_film_not_the_teal_of_the_line(self):
+        variables = hypr_vars((THEMES / "matrix-hud/hyprland.conf").read_text())
+        digits = re.fullmatch(r"rgb\(([0-9a-f]{6})\)", variables["themeHudGlyphColor"])
+        self.assertTrue(digits, variables["themeHudGlyphColor"])
+
+        def hue(rgb):
+            r, g, b = (int(rgb[i:i + 2], 16) / 255 for i in (0, 2, 4))
+            return colorsys.rgb_to_hsv(r, g, b)[0] * 360
+
+        # The film's code is hue 112 to 116 degrees: a green with a little yellow in it.
+        self.assertTrue(100 <= hue(digits.group(1)) <= 130, hue(digits.group(1)))
+        self.assertGreaterEqual(max(int(digits.group(1)[i:i + 2], 16) for i in (0, 2, 4)), 0xe0)
+        # The outline and its glow lean towards teal; the characters must read apart from them.
+        outline = re.findall(r"rgba\((\w{6})\w{2}\)", variables["activeBorderColor"] + variables["themeGlowColor"])
+        self.assertTrue(outline)
+        for rgb in outline:
+            with self.subTest(outline=rgb):
+                self.assertGreaterEqual(abs(hue(rgb) - hue(digits.group(1))), 10)
+
+    def test_other_hud_themes_leave_their_characters_the_colours_of_the_line(self):
+        for name in ("neon", "amber-hud"):
+            with self.subTest(theme=name):
+                variables = hypr_vars((THEMES / name / "hyprland.conf").read_text())
+                self.assertEqual(variables["themeHudGlyphColor"], "none")
+
     def test_matrix_hud_is_translucent_unlike_opaque_matrix(self):
         matrix, hud = (
             hypr_vars((THEMES / name / "hyprland.conf").read_text()) for name in ("matrix", "matrix-hud")
@@ -601,19 +629,19 @@ class EffectGenerationTests(unittest.TestCase):
         variables = self.variables()
         self.assertEqual(
             [variables[var] for _, _, var in HUD],
-            ["0", "scifi", "5", "10", "3", "0", "0", "80", "180", "0"],
+            ["0", "scifi", "5", "10", "3", "0", "0", "80", "180", "0", "none"],
         )
         result = self.generate(
             'hud_frame = "true"\nhud_style = "minimal"\nhud_gap = "6"\n'
             'hud_chamfer = "0"\nhud_line_width = "2.5"\nhud_float_glow_range = "14"\n'
             'hud_sweep = "true"\nhud_sweep_speed = "120"\nhud_sweep_length = "240"\n'
-            'hud_hide_border = "true"\n'
+            'hud_hide_border = "true"\nhud_glyph_color = "rgb(3cff28)"\n'
         )
         self.assertEqual(result.returncode, 0, result.stderr)
         variables = self.variables()
         self.assertEqual(
             [variables[var] for _, _, var in HUD],
-            ["1", "minimal", "6", "0", "2.5", "14", "1", "120", "240", "1"],
+            ["1", "minimal", "6", "0", "2.5", "14", "1", "120", "240", "1", "rgb(3cff28)"],
         )
 
     def test_hidden_border_gives_hyprland_no_border_but_keeps_the_configured_width(self):
@@ -680,6 +708,30 @@ class EffectGenerationTests(unittest.TestCase):
                         f"fixture: {key} must be an integer from {low} to {high}", result.stderr,
                     )
                     self.assertFalse((self.theme / "hyprland.conf").exists())
+
+    def test_hud_glyph_color_accepts_rgb_and_none(self):
+        for value in ("none", "rgb(3cff28)", "rgb(3CFF28)", "rgb(000000)", "rgb(ffffff)"):
+            with self.subTest(value=value):
+                result = self.generate(f'hud_glyph_color = "{value}"\n')
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(self.variables()["themeHudGlyphColor"], value)
+
+    def test_hud_glyph_color_rejects_everything_else(self):
+        bad = ("#3cff28", "3cff28", "rgb(3cff2)", "rgb(3cff288)", "rgb(3cff2g)", "rgba(3cff28ff)", "rgb( 3cff28)", "None", "green", "")
+        for value in bad:
+            with self.subTest(value=value):
+                result = self.generate(f'hud_glyph_color = "{value}"\n')
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("fixture: hud_glyph_color must be none or rgb(rrggbb)", result.stderr)
+                self.assertFalse((self.theme / "hyprland.conf").exists())
+
+    def test_hud_glyph_color_is_never_left_as_a_placeholder(self):
+        # The sed expansion skips an empty value, so an unset key must still be written as `none`.
+        result = self.generate()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        text = (self.theme / "hyprland.conf").read_text()
+        self.assertNotIn("{{", text)
+        self.assertEqual(self.variables()["themeHudGlyphColor"], "none")
 
     def test_hud_style_accepts_style_names(self):
         for value in ("scifi", "minimal", "my-style_2", "a"):

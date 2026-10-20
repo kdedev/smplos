@@ -54,10 +54,13 @@ Hyprland config reload, which `theme-set` triggers. Values are clamped.
 | `$themeHudSweep` | `hud_sweep` | `false` | `true` / `false`; a soft glow drifts along the focused window's outline, the dots of a `panel` move along its lines, and the characters of a `matrix` fall and its lamps drift along its top and bottom; `false` keeps all of them still, so a `matrix` shows only its outline and halo |
 | `$themeHudSweepSpeed` | `hud_sweep_speed` | `80` | 10 to 400 px per second (the dots of a `panel` run 1.6 times as fast, the characters of a `matrix` fall 0.6 times as fast) |
 | `$themeHudSweepLength` | `hud_sweep_length` | `180` | 40 to 600 px along the line; for a `matrix`, the longest a lamp gets, which also decides how many fit on an edge |
+| `$themeHudGlyphColor` | `hud_glyph_color` | `none` | `rgb(rrggbb)` or `none`; the colour of the characters of a glyph style such as `matrix` (their heads are it lightened, their glow it too); `none` leaves them the colours of the line. Anything else is ignored |
 
 Frame and glow colours are not keys of their own: the plugin paints with each
 window's own border gradient (`border_active` / `border_inactive`) and glow gradient
-(`glow_color`), including their focus fades and `border_animation` rotation. See
+(`glow_color`), including their focus fades and `border_animation` rotation. The one
+exception is the characters of a glyph style, which can have a colour of their own
+(`hud_glyph_color`). See
 "Glow, Shadow and Animated Borders" in `CREATING_MODIFYING_A_THEME.md` for how the
 keys interact with `gaps_in`, `rounding` and `rounding_power`.
 
@@ -190,7 +193,7 @@ A style is one entry in `kStyles[]` in `geometry.cpp`; the fields are documented
 | `scifi` | Outline, halos on both sides, corner brackets, mid-edge tabs |
 | `minimal` | Outline and halos only |
 | `panel` | Notched outline with a step, a ghost line and a cut corner, circuit traces ending in beads, two dots circling the outline in opposite directions and a dot bouncing along each trace; the circling dots glow as they near a bouncing dot or each other (`amber-hud`) |
-| `matrix` | The `panel`'s outline alone, as one line with its glow: Matrix characters fall down both sides in two columns, one on each side of the line inside its glow, and a few slow glows (lamps) pulse and drift to and fro along the top and the bottom (`matrix-hud`) |
+| `matrix` | The `panel`'s outline alone, as one line with its glow: Matrix characters fall down both sides in two columns, one on each side of the line inside its glow, each a bright head that glides down keeping one shape for four or five rows and a tail of other characters it leaves behind, and a few slow glows (lamps) pulse and drift to and fro along the top and the bottom (`matrix-hud`) |
 
 For the ring styles (`scifi`, `minimal`) the corner shape is not part of the
 style: the outline follows the window's own `rounding` and `rounding_power` at a
@@ -295,24 +298,34 @@ and the scale), the columns the characters fall in (`placeRain()`,
   size. The outer column reaches out into the gap between two frames and clears
   the neighbour's line by only a couple of pixels at the 18 px `matrix-hud` leaves
   between the lines, so do not narrow that gap (see Limits).
-- **Rain.** `glyphDraws()` is a pure function of the clock, how far the window has
-  focus (`intensity`, 0 to 1) and a per-window seed, so the tests and `make preview`
-  can ask for any moment. Characters stay where they are and only their look
-  changes. Each column has one to three falls (one for every twenty characters),
-  and a fall is a bright head that goes down a row at a time, never up, and a tail
-  behind it that dims with every row. It fades in at the top of the column and out
-  at the bottom, runs off the end, and after a pause begins again at the top. Every
-  fall has its own speed and pause, and every pass of it a tail of its own length,
-  eight to twenty-eight characters (a column of fewer than 47 allows three fifths
-  of its length, and never fewer than three). A pass lasts as long as the longest
-  tail needs, so a short tail only rests longer, and no pass is cut off by the
-  next. The nearest rows are overdrawn in the Bright colour, the head changes
-  character about three times a second, and every other character changes by
-  itself every two and a half to seven and a half seconds. The whole rain is as
-  slow as the lamps (the characters fall 0.6 times as fast as `hud_sweep_speed`,
-  each fall at three quarters to one and a third of that), so that it stays at the
-  edge of the eye and does not draw it from the work.
-  Characters that no fall lights are not drawn, and at intensity 0 none are.
+- **Rain.** `glyphDraws()` is a pure function of how far the columns have fallen,
+  how far the window has focus (`intensity`, 0 to 1) and a per-window seed, so the
+  tests and `make preview` can ask for any moment. Each column has one to three
+  falls (one for every twenty characters). A fall is a **head**, one bright
+  character that glides down the column smoothly, never up, and keeps its shape
+  for four or five rows before it turns into another one (over about two thirds of
+  a row, the old shape fading as the new one comes up), and a **tail** behind it:
+  every cell the head passes is given a character of its own, different from the
+  head's, which comes up as the head gets clear of the cell and then dims, more
+  slowly the longer the tail. The next head to reach a cell replaces whatever is
+  in it, and nothing ever changes by itself. A fall fades in at the top of the
+  column and out at the bottom, runs off the end, and after a pause begins again
+  at the top. Every fall has its own speed (0.75 to 1.35 times the column's) and
+  pause, and every pass a tail of its own length, eight to
+  twenty-eight rows (a column of fewer than 47 allows three fifths of its length,
+  and never fewer than three). A pass lasts as long as the longest tail needs, so
+  a short tail only rests longer, and no pass is cut off by the next. Two heads
+  that come within a row of each other do not run together: one of the pair (always
+  the same one) fades out as they close in, and is gone when they are less than a
+  third of a row apart. No two characters are quite alike: every
+  head and every character left behind has a brightness (a head at least 85% of
+  the full one, the others at least 70% of their own) and one of three sizes
+  (84%, 92% or 100% of the face's, for 30%, 40% and 30% of them), too little to
+  look like another font. The nearest rows behind a head are overdrawn in the
+  Bright colour. The whole rain is as slow as the lamps (the heads fall 0.6 times
+  as fast as `hud_sweep_speed`, each fall at 0.75 to 1.35 times that), so that it
+  stays at the edge of the eye and does not draw it from the
+  work. Characters that no fall lights are not drawn, and at intensity 0 none are.
 - **Lamps.** The glows along the top and the bottom are up to two ellipses on each
   edge (`placeLamps()`, `lampPose()`), as many as fit in the edge at one and a half
   times `hud_sweep_length` each, none if the edge is shorter than one. Each goes to
@@ -324,13 +337,21 @@ and the scale), the columns the characters fall in (`placeRain()`,
 - **How it is drawn.** A lit character is one textured quad from the shared stamp
   cache, keyed on the glyph, its alpha and heat step (32 and 8 of them), size and
   colours; the characters are the most numerous images, which is why the cache
-  holds 2048. (A style with a `glyphKnock` above 0 also bakes a dark plate behind
-  each character that dims the line it stands on; `matrix` has none, because its
-  characters stand beside the line and not on it.) A lamp is the travelling glow's
-  sprite, with a cache of its own and its own length and strength. Characters never
-  move: they light up, change and fade where they stand. `glyphChanges()` lists
-  what differs between two moments, and at each step of the one shared timer only
-  those characters' boxes are damaged, and the boxes a lamp leaves and enters.
+  holds 2048. Each is baked in the size it was given (`glyphFaceOf()`). (A style
+  with a `glyphKnock` above 0 also bakes a dark plate behind each character that
+  dims the line it stands on; `matrix` has none, because its characters stand
+  beside the line and not on it.) The colours are those of the line where the
+  character stands and of the glow, or, with `hud_glyph_color`, that colour for
+  the character (at the opacity the line has there), the same for its glow, and
+  that colour lightened by the style's `brightWhiten` for what is overdrawn in the
+  Bright colour. A lamp is the travelling glow's sprite, with a cache of its own
+  and its own length and strength. The characters a head has left stay where they
+  are and only light up and fade; a head glides, a whole pixel at a time, and while
+  it turns into another character it is two entries, the one it is turning from
+  and the one it has (`kGlyphHeadId`). `glyphChanges()` lists what differs between
+  two moments (a character that has moved is listed as it was and as it is), and
+  at each step of the one shared timer only those characters' boxes are damaged,
+  and the boxes a lamp leaves and enters.
 - **Focus and cost.** Only the focused window moves, fading in and out over half a
   second like the travelling glow; the others keep their outline and halo. The
   timer steps at the pace of `hud_sweep_speed` (the characters fall 0.6 times as
@@ -343,7 +364,9 @@ and the scale), the columns the characters fall in (`placeRain()`,
   session) three windows took about 3% of one core with the frames moving, against
   0.6% without the plugin.
 - **Preview.** `build/preview matrix 900 560 1 1 0 700 3.0 matrix 1 3 > matrix.ppm`
-  draws a focused frame three seconds into its run, and
+  draws a focused frame with the rain 700 px of travel into its fall (the seventh
+  argument, which alone decides where the characters are) and the lamps three
+  seconds into their run (the eighth), and
   `build/preview glyphs 4 matrix > glyphs.ppm` every character.
 
 ### Adding a style

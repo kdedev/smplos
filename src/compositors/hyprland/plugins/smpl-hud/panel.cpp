@@ -600,11 +600,13 @@ namespace {
 
 constexpr double kTwoPi = 2 * std::numbers::pi;
 
-// A column of characters has a few falls. A fall is a bright head that goes down
-// a row at a time, never up, with a tail behind it that dims with every row. It
-// begins at the top of the column, grows its tail, runs off the bottom, and
-// after a pause begins again. Every fall has its own speed, and every pass of it
-// a tail of its own: a long one, a short one, and everything between.
+// A column of characters has a few falls. A fall is a head, one bright character
+// that glides down the column, never up, and a tail: the characters the head
+// leaves in the cells it passes, which come up as it gets clear of them and dim
+// with every row it gets further. It begins at the top of the column, runs off
+// the bottom, and after a pause begins again. Every fall has its own speed, and
+// every pass of it a tail of its own: a long one, a short one, and everything
+// between.
 constexpr double kFallSpeedMin  = 0.75; // relative to the speed of the column
 constexpr double kFallSpeedSpan = 0.6;
 constexpr int    kTailMin       = 8; // rows
@@ -615,20 +617,58 @@ constexpr double kPauseMin      = 0.2; // of the length of the column ...
 constexpr double kPauseSpan     = 0.5;
 constexpr int    kPauseRows     = 2; // ... and this many rows more
 constexpr double kFall          = 1.3; // how fast a tail dims: 1 is linearly
-constexpr double kHeadRows      = 2.5; // the rows this near the head are also drawn in the bright colour
 constexpr double kEdgeRows      = 2.5; // a fall fades in and out over this many rows at the ends of the column
 
-// A character changes into another one every few seconds, each at its own pace;
-// the rain is meant to stay at the edge of the eye without drawing it, so both
-// the changes and the fall are as slow as the lamps are.
-constexpr double    kChangeMin   = 2.5; // seconds
-constexpr double    kChangeSpan  = 5.0;
-constexpr double    kFlickerHz   = 3.0; // how often a head changes
-constexpr double    kFlickerHeat = 0.4; // how hot a character must be to do so
-constexpr long long kFlickerBase = 1LL << 40;
+// A head keeps its character for kBandRows rows, or one more, then turns into
+// another over kBandBlend rows. How far into the first of them it begins differs
+// from pass to pass.
+constexpr int    kBandRows  = 4;
+constexpr double kBandBlend = 0.7;
+
+// Heads that are closer than kYieldFar rows to each other get in each other's
+// way: of two, the later one in the column's list of falls is drawn in full,
+// the other fades out the closer they get, and is gone within kYieldNear rows.
+constexpr double kYieldNear = 0.3;
+constexpr double kYieldFar  = 1.0;
+
+// The character left in a cell comes up between kBirthStart and kBirthStart +
+// kBirthSpan rows behind the head, which is as soon as the head's own character
+// is clear of the cell. It is overdrawn in the bright colour for the first
+// kHeatRows rows after kHeatStart, and is never as bright as a head.
+constexpr double kBirthStart = 0.8;
+constexpr double kBirthSpan  = 0.8;
+constexpr double kHeatStart  = 1.0;
+constexpr double kHeatRows   = 1.5;
+constexpr double kTrailPeak  = 0.85;
+constexpr double kTrailHeat  = 0.9;
+
+// No two characters are quite as bright: a head is at least kHeadBrightMin of
+// the full brightness, a character left behind kTrailBrightMin of its own.
+constexpr double kHeadBrightMin  = 0.85;
+constexpr double kTrailBrightMin = 0.7;
+
+// The sizes of the characters, as shares of the face's own; the smallest is
+// kSmallShare of them, the middle one kMediumShare and the largest the rest.
+constexpr double kGlyphScale[kGlyphSizes] = {0.84, 0.92, 1.0};
+constexpr double kSmallShare              = 0.3;
+constexpr double kMediumShare             = 0.4;
 
 // Different things to draw from the same seed.
-enum Salt : uint32_t { kSaltSpeed = 1, kSaltTail, kSaltPause, kSaltPhase, kSaltGlyph, kSaltChange, kSaltRhythm, kSaltStart, kSaltBeat, kSaltPeriod };
+enum Salt : uint32_t {
+    kSaltSpeed = 1,
+    kSaltTail,
+    kSaltPause,
+    kSaltPhase,
+    kSaltGlyph,
+    kSaltStart = 8,
+    kSaltBeat,
+    kSaltPeriod,
+    kSaltBand,
+    kSaltBright,
+    kSaltTrail,
+    kSaltTrailBright,
+    kSaltSize,
+};
 
 uint32_t mix(uint32_t x) {
     x ^= x >> 16;
@@ -664,11 +704,88 @@ double smooth(double t) {
     return t * t * (3 - 2 * t);
 }
 
-int glyphAt(uint32_t seed, uint32_t id, long long epoch) {
-    return int(hashOf(seed, id, kSaltGlyph, uint32_t(epoch)) % uint32_t(glyphCount()));
+// The stretches of a pass in which a head keeps one character.
+struct Bands {
+    int    rows   = kBandRows;
+    double offset = 0; // rows into the first one at the top of the column
+};
+
+// A fall at one moment.
+struct Fall {
+    uint32_t  key   = 0;
+    double    speed = 1; // relative to the column's
+    double    cycle = 1; // rows from the head entering the column to the next head doing so
+    double    head  = 0; // rows from the first cell: where the head's character is
+    long long pass  = 0;
+    int       tail  = 0; // rows, in this pass
+    Bands     bands;
+};
+
+Bands bandsOf(uint32_t seed, uint32_t key, long long pass) {
+    const uint32_t h    = hashOf(seed, key, kSaltBand, uint32_t(pass));
+    const int      rows = kBandRows + int(h & 1);
+    return {rows, unit(mix(h)) * rows};
+}
+
+Fall fallAt(uint32_t seed, uint32_t key, int cells, double fallen) {
+    Fall f;
+    f.key   = key;
+    f.speed = kFallSpeedMin + kFallSpeedSpan * unit(hashOf(seed, key, kSaltSpeed));
+
+    const int pause = int(std::floor(cells * (kPauseMin + kPauseSpan * unit(hashOf(seed, key, kSaltPause))))) + kPauseRows;
+
+    // A pass is as long as the longest tail allows, so that a short tail only rests for longer.
+    const int tailMax = std::clamp(int(std::floor(cells * kTailOfColumn)), kTailLeast, kTailMax);
+    const int tailMin = std::min(kTailMin, tailMax);
+    f.cycle           = double(cells) + tailMax + pause;
+
+    const double run  = fallen * f.speed / f.cycle + unit(hashOf(seed, key, kSaltPhase));
+    const double pass = std::floor(run);
+    f.pass            = (long long)pass;
+    f.head            = (run - pass) * f.cycle;
+    f.tail            = tailMin + int(hashOf(seed, key, kSaltTail, uint32_t(f.pass)) % uint32_t(tailMax - tailMin + 1));
+    f.bands           = bandsOf(seed, key, f.pass);
+    return f;
+}
+
+// The band of the pass that a head `row` rows down is in, and how many rows into it.
+int bandAt(const Bands& bands, double row, double& into) {
+    const double at   = (row + bands.offset) / bands.rows;
+    const double band = std::floor(at);
+    into              = (at - band) * bands.rows;
+    return int(band);
+}
+
+// What a head looks like in a band of a pass.
+uint32_t bandSalt(long long pass, int band) {
+    return mix(uint32_t(pass)) + uint32_t(band);
+}
+
+int shapeOf(uint32_t seed, uint32_t key, long long pass, int band) {
+    return int(hashOf(seed, key, kSaltGlyph, bandSalt(pass, band)) % uint32_t(glyphCount()));
+}
+
+int sizeOfRoll(uint32_t h) {
+    const double v = unit(h);
+    return v < kSmallShare ? 0 : v < kSmallShare + kMediumShare ? 1 : 2;
+}
+
+// 1 in the middle of a column, falling to 0 at the first and the last cell
+// and beyond.
+double edgeFade(double row, int cells) {
+    return smooth((row + 0.5) / kEdgeRows) * smooth((cells - row - 0.5) / kEdgeRows);
 }
 
 } // namespace
+
+GlyphFace glyphFaceOf(const GlyphFace& face, int size) {
+    const double scale = kGlyphScale[std::clamp(size, 0, kGlyphSizes - 1)];
+    GlyphFace    out   = face;
+    out.height *= scale;
+    out.halfWidth *= scale;
+    out.reach *= scale;
+    return out;
+}
 
 LampPose lampPose(const Panel& panel, size_t index, double travelled, double clock, unsigned seed) {
     LampPose out;
@@ -691,64 +808,97 @@ LampPose lampPose(const Panel& panel, size_t index, double travelled, double clo
     return out;
 }
 
-std::vector<GlyphDraw> glyphDraws(const Panel& panel, double travelled, double clock, double intensity, unsigned seed) {
-    std::vector<GlyphDraw> out;
+std::vector<GlyphDraw> glyphDraws(const Panel& panel, double travelled, double intensity, unsigned seed) {
+    std::vector<GlyphDraw> out, heads;
     const GlyphFace&       face = panel.glyphs;
     intensity                   = std::clamp(intensity, 0.0, 1.0);
     if (!face.on() || face.pitch <= 0 || intensity <= 0)
         return out;
-    clock           = std::max(clock, 0.0);
     const double fallen = std::max(travelled, 0.0) * face.fall / face.pitch; // rows
 
-    std::vector<double> alpha, heat;
-    uint32_t            base = 0; // the id of the first character of the column
+    std::vector<Fall> falls;
+    uint32_t          base = 0; // the id of the first cell of the column
+    uint32_t          next = 0; // the number of the next fall, which its head's ids come from
     for (size_t l = 0; l < panel.lanes.size(); ++l) {
         const RainLane& lane = panel.lanes[l];
         if (lane.cells <= 0)
             continue;
-        const uint32_t cells = uint32_t(lane.cells);
-        alpha.assign(cells, 0.0);
-        heat.assign(cells, 0.0);
+        const auto y = [&](double row) { return int(std::lround(lane.y0 + row * face.pitch)); };
 
-        for (int k = 0; k < std::max(1, lane.streams); ++k) {
-            const uint32_t key   = uint32_t(l) * 16 + uint32_t(k);
-            const double   speed = kFallSpeedMin + kFallSpeedSpan * unit(hashOf(seed, key, kSaltSpeed));
-            const int      pause = int(std::floor(cells * (kPauseMin + kPauseSpan * unit(hashOf(seed, key, kSaltPause))))) + kPauseRows;
-
-            // A pass is as long as the longest tail allows, so that a short tail only rests for longer.
-            const int      tailMax = std::clamp(int(std::floor(cells * kTailOfColumn)), kTailLeast, kTailMax);
-            const int      tailMin = std::min(kTailMin, tailMax);
-            const double   cycle   = double(cells) + tailMax + pause;
-            const double   run     = fallen * speed / cycle + unit(hashOf(seed, key, kSaltPhase));
-            const double   pass    = std::floor(run);
-            const int      head    = int(std::floor((run - pass) * cycle));
-            const int      tail    = tailMin + int(hashOf(seed, key, kSaltTail, uint32_t((long long)pass)) % uint32_t(tailMax - tailMin + 1));
-
-            for (int i = 0; i < tail; ++i) {
-                const int row = head - i;
-                if (row < 0 || row >= lane.cells)
-                    continue;
-                const double fade = smooth((row + 0.5) / kEdgeRows) * smooth((lane.cells - row - 0.5) / kEdgeRows);
-                alpha[size_t(row)] = std::max(alpha[size_t(row)], std::pow(1.0 - double(i) / tail, kFall) * fade);
-                heat[size_t(row)]  = std::max(heat[size_t(row)], smooth(1.0 - i / kHeadRows) * fade);
-            }
-        }
+        falls.clear();
+        for (int k = 0; k < std::max(1, lane.streams); ++k)
+            falls.push_back(fallAt(seed, uint32_t(l) * 16 + uint32_t(k), lane.cells, fallen));
 
         for (int row = 0; row < lane.cells; ++row) {
-            const int a = steps(alpha[size_t(row)] * intensity, kGlyphAlphaSteps);
+            // A cell has what the head that has passed it last left in it. One that has not
+            // got to it yet is in its pause, and what it left has gone out long since.
+            const Fall* owner = nullptr;
+            double      ago = 0, age = 0; // rows the head has gone beyond the cell, and the time that took
+            for (const Fall& f : falls) {
+                const double rows = f.head >= row ? f.head - row : f.head - row + f.cycle;
+                if (!owner || rows / f.speed < age) {
+                    owner = &f;
+                    ago   = rows;
+                    age   = rows / f.speed;
+                }
+            }
+            if (ago >= owner->tail)
+                continue;
+            const double rise = smooth((ago - kBirthStart) / kBirthSpan);
+            if (rise <= 0)
+                continue;
+
+            const uint32_t id    = base + uint32_t(row);
+            const uint32_t visit = mix(uint32_t(owner->pass)) + owner->key;
+            double         look  = kTrailPeak * rise * std::pow(1.0 - ago / owner->tail, kFall) * edgeFade(row, lane.cells);
+            look *= kTrailBrightMin + (1 - kTrailBrightMin) * unit(hashOf(seed, id, kSaltTrailBright, visit));
+            for (const Fall& f : falls) {
+                // What a head is about to take the place of fades out as it gets there.
+                const double ahead = row - f.head;
+                if (&f != owner && ahead > 0 && ahead < 1)
+                    look *= smooth(ahead);
+            }
+            const int a = steps(look * intensity, kGlyphAlphaSteps);
             if (a <= 0)
                 continue;
 
-            const uint32_t id     = base + uint32_t(row);
-            const double   change = kChangeMin + kChangeSpan * unit(hashOf(seed, id, kSaltChange));
-            const double   cycle  = clock / change + unit(hashOf(seed, id, kSaltRhythm));
-            long long      epoch  = (long long)std::floor(cycle);
-            if (heat[size_t(row)] >= kFlickerHeat)
-                epoch = kFlickerBase + (long long)std::floor(clock * kFlickerHz);
-            out.push_back({int(id), lane.x, int(std::lround(lane.y0 + row * face.pitch)), glyphAt(seed, id, epoch), a, steps(heat[size_t(row)] * intensity, kGlyphHeatSteps)});
+            // Never the character of the head that left it.
+            double    into  = 0;
+            int       glyph = int(hashOf(seed, id, kSaltTrail, visit) % uint32_t(glyphCount()));
+            if (glyph == shapeOf(seed, owner->key, owner->pass, bandAt(owner->bands, row, into)))
+                glyph = (glyph + 1) % glyphCount();
+
+            const double heat = kTrailHeat * rise * smooth(1.0 - (ago - kHeatStart) / kHeatRows);
+            out.push_back({int(id), lane.x, y(row), glyph, a, steps(heat * intensity, kGlyphHeatSteps), sizeOfRoll(hashOf(seed, id, kSaltSize, visit))});
         }
-        base += cells;
+        base += uint32_t(lane.cells);
+
+        for (size_t i = 0; i < falls.size(); ++i, ++next) {
+            const Fall& f    = falls[i];
+            double      look = edgeFade(f.head, lane.cells);
+            for (size_t j = i + 1; j < falls.size(); ++j)
+                look *= smooth((std::fabs(f.head - falls[j].head) - kYieldNear) / (kYieldFar - kYieldNear));
+            look *= kHeadBrightMin + (1 - kHeadBrightMin) * unit(hashOf(seed, f.key, kSaltBright, uint32_t(f.pass)));
+            if (look <= 0)
+                continue;
+
+            // For a moment, as it turns into the character of the next band, it is both.
+            double       into   = 0;
+            const int    band   = bandAt(f.bands, f.head, into);
+            const double turned = band > 0 ? smooth(into / kBandBlend) : 1.0;
+            const auto   put    = [&](uint32_t which, int shape, double share) {
+                const int a = steps(look * share * intensity, kGlyphAlphaSteps);
+                if (a > 0)
+                    heads.push_back({kGlyphHeadId + int(2 * next + which), lane.x, y(f.head), shapeOf(seed, f.key, f.pass, shape), a, steps(intensity, kGlyphHeatSteps),
+                                     sizeOfRoll(hashOf(seed, f.key, kSaltSize, bandSalt(f.pass, shape)))});
+            };
+            if (turned < 1)
+                put(0, band - 1, 1 - turned);
+            put(1, band, turned);
+        }
     }
+
+    out.insert(out.end(), heads.begin(), heads.end());
     return out;
 }
 
@@ -761,8 +911,11 @@ std::vector<GlyphDraw> glyphChanges(std::span<const GlyphDraw> before, std::span
         } else if (i == before.size() || after[j].id < before[i].id) {
             out.push_back(after[j++]);
         } else {
-            if (!(before[i] == after[j]))
+            if (!(before[i] == after[j])) {
+                if (before[i].x != after[j].x || before[i].y != after[j].y)
+                    out.push_back(before[i]);
                 out.push_back(after[j]);
+            }
             ++i;
             ++j;
         }

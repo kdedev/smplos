@@ -39,3 +39,4 @@ $themeHudSweep = {{ hud_sweep_flag }}
 $themeHudSweepSpeed = {{ hud_sweep_speed }}
 $themeHudSweepLength = {{ hud_sweep_length }}
 $themeHudHideBorder = {{ hud_hide_border_flag }}
+$themeHudGlyphColor = {{ hud_glyph_color }}

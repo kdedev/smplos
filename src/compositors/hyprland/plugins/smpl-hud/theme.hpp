@@ -4,9 +4,17 @@
 // file (~/.config/hypr/theme.conf) as `$themeHud...` variables, so the plugin
 // reads them straight from there and needs no compositor config hooks.
 
+#include <cstdint>
+#include <optional>
 #include <string>
 
 namespace smplhud {
+
+struct Rgb8 {
+    uint8_t r = 0, g = 0, b = 0;
+
+    bool operator==(const Rgb8&) const = default;
+};
 
 struct Theme {
     bool        frame          = false; // $themeHudFrame
@@ -19,6 +27,7 @@ struct Theme {
     double      sweepSpeed     = 80;    // $themeHudSweepSpeed, logical px per second
     double      sweepLength    = 180;   // $themeHudSweepLength, logical px along the line
     bool        hideBorder     = false; // $themeHudHideBorder, Hyprland's own border is off so the frame is the only line
+    std::optional<Rgb8> glyphColour;    // $themeHudGlyphColor, `rgb(rrggbb)`: the colour of the characters of a glyph style; `none` or absent leaves them the colours of the line
 
     bool operator==(const Theme&) const = default;
 };
