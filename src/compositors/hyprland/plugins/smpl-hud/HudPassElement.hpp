@@ -5,6 +5,7 @@
 #include <array>
 #include <memory>
 #include <optional>
+#include <string>
 #include <vector>
 
 #include <hyprland/src/config/shared/complex/ComplexDataTypes.hpp>
@@ -77,6 +78,10 @@ struct SHudFrame {
 // shared by all windows. They are baked again when next needed.
 void clearHudStamps();
 
+// Drops the frames of the scanner's loop that are kept on the GPU, shared by all
+// windows. They are baked again when next needed.
+void clearScannerFrames();
+
 class CHudPassElement : public IPassElement {
   public:
     explicit CHudPassElement(SHudFrame frame);
@@ -103,9 +108,12 @@ class CHudPassElement : public IPassElement {
 
 // The scanner image uploaded to the GPU, kept for as long as the spec it was
 // drawn for stays the same: a frozen scanner is drawn from it again and again.
-// The plate under it is kept the same way; it changes only with the colours.
+// A moving one takes each frame from the loop that all windows share, or bakes
+// its own while its colours are on the move. The plate under it is kept the same
+// way as the picture; it changes only with the colours.
 struct SScannerCache {
     smplhud::ScannerSpec spec;
+    std::string          look; // what the frames of the loop depend on, as of the last frame drawn
     SP<Render::ITexture> texture;
     smplhud::PlateSpec   plateSpec;
     SP<Render::ITexture> plate;

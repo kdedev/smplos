@@ -394,6 +394,8 @@ void damageAllScanners() {
 }
 
 void stopHudScanners() {
+    clearScannerFrames(); // nothing shows them any more
+
     if (!g_timer)
         return;
 

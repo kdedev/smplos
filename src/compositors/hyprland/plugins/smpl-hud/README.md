@@ -36,10 +36,11 @@ it has no border line at all.
 | `stamp.{hpp,cpp}` | Compositor-free. Turns the lines, dots and characters of a panel into small images the compositor can draw as textured quads: cuts a stroke into strips and tiles (`cutStroke`), bakes them (`bakeStrip`, `bakeTile`, `bakeBead`, `bakeGlyph`) and gives each a cache key. |
 | `place.{hpp,cpp}` | Compositor-free. `fitWithFrame()`: where the box of a floating window has to go so that its whole frame stays inside a monitor's usable area. It moves the box in from the edges and shrinks it only when it cannot fit. `parseFitRequest()` reads the window address out of a `hyprctl smplhud fit` request. The compositor side is `placeHudWindow()` and `runHudCommand()` (see "Floating windows"). |
 | `theme.{hpp,cpp}` | Compositor-free. Reads the `$themeHud*` variables from the generated `theme.conf`. |
-| `scanner.{hpp,cpp}` | Compositor-free. The scanner of a window (`hud_scanner`): its size and layout (`scannerSize`, `scannerLayout`), what a frame depends on (`ScannerSpec`, which the compositor side compares to know when to repaint) and the rasteriser (`renderScanner`): the rings, the ship, the sweeping arm and the contacts, as one premultiplied RGBA image. Also the plate under that picture where the outline has made a pod for it (`plateOf`, `renderPlate`): dark glass, a halo and a bezel. |
+| `scanner.{hpp,cpp}` | Compositor-free. The scanner of a window (`hud_scanner`): its size and layout (`scannerSize`, `scannerLayout`), what a frame depends on (`ScannerSpec`, which the compositor side compares to know when to repaint) and the rasteriser (`renderScanner`): the rings, the ship, the sweeping arm and the contacts, as one premultiplied RGBA image. The animation is a loop of `kScannerLoop` (22 s, 660 frames): `scannerLoopFrame` says which frame a spec shows, `scannerLookOf` what the frames depend on besides that, and `renderScannerClock` draws a moment of the loop by its clock. Also the plate under that picture where the outline has made a pod for it (`plateOf`, `renderPlate`): dark glass, a halo and a bezel. |
+| `flipbook.hpp` | Compositor-free, header only. `Flipbook<Frame>`: the frames of a picture that comes round again, kept by number for every window that shows it, within a budget of bytes. A picture that nobody has asked for in a while makes room for another; one that is being asked for never does. |
 | `HudDecoration.{hpp,cpp}` | `IHyprWindowDecoration` on every window: reports the HUD's extents, caches the layout, collects the window's live (animated) border and glow gradients and queues a pass element. Owns the one timer that advances the focused window's travelling glow, dots, lamps and falling characters, and decides whose `border_animation` loops keep turning (see "Focus only"). Also keeps floating windows' frames on screen (see "Floating windows"). |
 | `ScannerDecoration.{hpp,cpp}` | A second `IHyprWindowDecoration` on every window, on the layer over the window, which reserves no room: the scanner (see "The scanner"), in the pod of the frame where the window has one. Owns its own timer, which advances the focused window's scanner, fades it between focus and rest and steps it aside from the pointer. |
-| `HudPassElement.{hpp,cpp}` | Draws the layout with the compositor's border shader and plain rects, or the panel's cached images, then the travelling glow's (or each lamp's) cached sprite and the dots or characters. Its second element draws the plate under a scanner, blurring what lies under its glass where the theme and the compositor allow it, and then the scanner's cached image. |
+| `HudPassElement.{hpp,cpp}` | Draws the layout with the compositor's border shader and plain rects, or the panel's cached images, then the travelling glow's (or each lamp's) cached sprite and the dots or characters. Its second element draws the plate under a scanner, blurring what lies under its glass where the theme and the compositor allow it, and then the scanner's frame, taken from the loop of frames that every window shares. |
 | `main.cpp` | Plugin entry points: ABI check, event listeners (window open, floating, moved to another workspace, active window, fullscreen, config reload, tick), the `hyprctl smplhud` command, cleanup. |
 | `tests/` | Unit tests for the compositor-free parts, and `preview.cpp`, which renders a panel, a matrix frame or the character set to a PPM image so a look can be judged without a compositor. |
 
@@ -516,10 +517,15 @@ that float above or below the disc on thin stalks and drift across it). It is
 
 - **A picture, not geometry.** `renderScanner()` (`scanner.cpp`) makes the whole
   frame on the CPU from its `ScannerSpec` alone (size, frame of the clock, seed
-  and three colours rounded to 5 bits a channel), so a frame is always the same,
-  `tests/test_scanner.cpp` can check it, and the image is kept and uploaded again
-  only when the spec changes. The seed puts the scanners of different windows out
-  of step with each other.
+  and three colours rounded to 5 bits a channel), so a frame is always the same
+  and `tests/test_scanner.cpp` can check it. The animation is a loop: the arm, the
+  pulse, the ship's sway and the flights of the contacts all come round again
+  every 22 s (`kScannerLoop`; 660 frames at 30 a second), so a frame is made once
+  and kept as a GPU texture (`flipbook.hpp`) for every window that shows it, at
+  whatever point of the loop that window is. The seed only puts the scanners of
+  different windows out of step with each other. While the colours it is drawn in
+  change (a fade, a drifting `border_animation` gradient) a frame is made for that
+  moment alone and not kept.
 - **Colours.** The rim, rings and stalks take the colour of the window's `Line`
   paint where the scanner is, the ship, arm and markers its `Bright` paint and the
   halo its `Glow` paint, so it follows the theme, the focus fade and
@@ -566,17 +572,33 @@ that float above or below the disc on thin stalks and drift across it). It is
   scanner. It steps 30 times a second while a scanner moves or fades (on the beats
   of the glow's timer where that is running, so that one frame is not drawn twice)
   and polls ten times a second otherwise, which is also how it sees the pointer
-  come near. A scanner at rest repaints nothing. Measured in a throwaway headless
-  Hyprland on a desktop GPU, with three windows and one of them focused (six runs
-  of 20 s for each case), the compositor took 1.3 % of one CPU core with
-  `hud_scanner = 0` (the rest of the frame still drawn), 3.4 % with the scanner and
-  `hud_scanner_blur = false`, and 4.8 % with the blur. Each difference is more than
-  twice its standard error (about 0.6 points), so it is real, and it is small; the
-  GPU load stayed within the noise of its reading (1 to 2 %). The blur is the
-  dearest part.
+  come near. A scanner at rest repaints nothing, and only the focused window's
+  moves, so the cost does not grow with the number of windows. A frame of the loop
+  is made (about a millisecond of CPU) the first time any window shows it and is a
+  lookup from then on: the 660 frames are all made within about 75 s of a scanner
+  moving, after which a beat is one textured draw. The frames of
+  a loop are 10 MiB of GPU memory at the default width and 41 MiB at twice the
+  scale. All loops together are held to 128 MiB (a dozen looks of the scanner, or
+  three at twice the scale), a loop that nothing has shown for 10 s makes room for
+  another, and they are all freed when the theme no longer has a scanner or the
+  plugin is unloaded.
+  Measured in a throwaway headless Hyprland on a desktop GPU shared with a compute
+  job, with three windows and one of them focused: the scanner's draw took 2.2 ms
+  of CPU per second with the blur and 0.3 ms with `hud_scanner_blur = false`
+  (14 ms when every beat made its picture afresh), and by GPU timer queries 0.9 ms
+  and 0.03 ms of GPU time per second. The compositor as a whole, in % of one CPU
+  core (six runs of 20 s for each case, mean ± standard error), took 1.08 ± 0.05
+  with `hud_scanner = 0` (the rest of the frame still drawn), 1.23 ± 0.03 with the
+  flat glass and 1.53 ± 0.04 with the blur: 0.15 and 0.45 points more, about 0.01
+  and 0.02 % of a 20-core machine. Each is more than twice the error of the
+  difference, so it is real, and it is small. Those two were run with a build that
+  held the picture still but drew it at every beat, a stand-in for a lookup;
+  making it afresh at every beat took 2.79 ± 0.09. The blur is the dearest part.
 - **Preview.** `build/preview scanner 4 amber 72 1 0 0 8 3 0.4 > scanner.ppm`
   draws a 72 px scanner at 4 times its size, eight moments 0.4 s apart over a dark,
-  a grey and a light window, to judge the look without a compositor. The pod it
+  a grey and a light window, to judge the look without a compositor, and
+  `build/preview scanner 3 amber 72 1 0 0 16 1 1.375 > loop.ppm` sixteen moments
+  1.375 s apart, which is the whole of the 22 s loop. The pod it
   stands in is drawn by `build/preview panel 1280 720 1 1 0 0 0 amber 1 0 15 1 1 0 72 > pod.ppm`
   (the last 72 is the scanner's width; the arguments are listed at the top of
   `tests/preview.cpp`).

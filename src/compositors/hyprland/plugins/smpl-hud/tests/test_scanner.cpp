@@ -8,6 +8,8 @@
 #include <cstdlib>
 #include <limits>
 #include <set>
+#include <string>
+#include <utility>
 #include <vector>
 
 using namespace smplhud;
@@ -938,6 +940,165 @@ void testPlateConstants() {
     CHECK(kPlateHaloAlpha > 0 && kPlateHaloAlpha < kPlateGlassBlurred);
 }
 
+// The angle between two directions, 0 to pi.
+double turnBetween(double a, double b) {
+    const double d = std::fmod(std::fabs(a - b), 2 * kPi);
+    return std::min(d, 2 * kPi - d);
+}
+
+// After `kScannerLoop` seconds everything is where it was, for any seed.
+void testLoopRepeats() {
+    CHECK_NEAR(kScannerLoop * kScannerFps, double(kScannerLoopFrames), 1e-9);
+
+    for (double width : {24.0, 96.0}) {
+        const ScannerLayout l = scannerLayout(scannerSize(width, 1));
+        for (uint32_t seed : {0u, 1u, 99u, 0xdeadbeefu})
+            for (double clock = 0; clock < kScannerLoop; clock += 0.29)
+                for (int loops : {1, 2, 9}) {
+                    const double later = clock + loops * kScannerLoop;
+                    CHECK(turnBetween(scannerArm(clock, seed), scannerArm(later, seed)) < 1e-6);
+
+                    const auto a = scannerContacts(l, clock, seed), b = scannerContacts(l, later, seed);
+                    CHECK(a.size() == b.size());
+                    for (size_t i = 0; i < std::min(a.size(), b.size()); ++i) {
+                        CHECK(a[i].slot == b[i].slot && a[i].shape == b[i].shape);
+                        CHECK_NEAR(a[i].foot.x, b[i].foot.x, 1e-6);
+                        CHECK_NEAR(a[i].foot.y, b[i].foot.y, 1e-6);
+                        CHECK_NEAR(a[i].marker.y, b[i].marker.y, 1e-6);
+                        CHECK_NEAR(a[i].alpha, b[i].alpha, 1e-6);
+                        CHECK_NEAR(a[i].flash, b[i].flash, 1e-6);
+                    }
+                }
+    }
+}
+
+// Which frame of the loop a spec shows, and what its picture does and does not depend on.
+void testLoopFrames() {
+    const ScannerSize size = scannerSize(48, 1);
+    const auto        at   = [&](long frame, uint32_t seed, const ScannerPalette& p = amber()) { return scannerSpecOfFrame(size, frame, seed, p); };
+
+    for (uint32_t seed : {0u, 1u, 77u})
+        for (long f : {0L, 1L, 329L, 659L, 660L, 661L, 100000L}) {
+            const long here = scannerLoopFrame(at(f, seed));
+            CHECK(here >= 0 && here < kScannerLoopFrames);
+            CHECK(scannerLoopFrame(at(f + 1, seed)) == (here + 1) % kScannerLoopFrames);
+            CHECK(scannerLoopFrame(at(f + kScannerLoopFrames, seed)) == here);
+        }
+
+    // windows are out of step with each other
+    std::set<long> starts;
+    for (uint32_t n = 0; n < 50; ++n)
+        starts.insert(scannerLoopFrame(at(0, n * 2654435761U)));
+    CHECK(starts.size() > 40);
+
+    // The picture is a matter of the frame of the loop, the size and the colours and of nothing else: two windows
+    // at the same point of the loop show the same image, and so does one a whole loop later.
+    const ScannerSpec x = at(100, 3);
+    long              f = 0;
+    while (scannerLoopFrame(at(f, 9)) != scannerLoopFrame(x))
+        ++f;
+    const ScannerSpec y = at(f, 9);
+    CHECK(!(x == y));
+    CHECK(scannerLookOf(x) == scannerLookOf(y));
+    CHECK(renderScanner(x).rgba == renderScanner(y).rgba);
+    CHECK(renderScanner(x).rgba == renderScanner(at(100 + kScannerLoopFrames, 3)).rgba);
+    CHECK(renderScanner(x).rgba == renderScanner(at(100 + 7 * kScannerLoopFrames, 3)).rgba);
+    CHECK(renderScanner(x).rgba != renderScanner(at(101, 3)).rgba);
+    CHECK(renderScanner(x).rgba != renderScanner(at(100, 3, green())).rgba);
+}
+
+// What the frames of a loop are looked up by.
+void testLook() {
+    const ScannerSize size = scannerSize(48, 1);
+    const auto        at   = [&](const ScannerSize& s, long frame, uint32_t seed, const ScannerPalette& p = amber()) { return scannerSpecOfFrame(s, frame, seed, p); };
+    const std::string look = scannerLookOf(at(size, 5, 3));
+
+    // where in the loop a window is does not matter
+    CHECK(look == scannerLookOf(at(size, 500, 3)));
+    CHECK(look == scannerLookOf(at(size, 5, 4)));
+
+    // the size does, in each of its bytes
+    CHECK(look != scannerLookOf(at(scannerSize(48, 2), 5, 3)));
+    CHECK(look != scannerLookOf(at({48, 37}, 5, 3)));
+    CHECK(look != scannerLookOf(at({49, 36}, 5, 3)));
+    CHECK(scannerLookOf(at({256, 36}, 0, 0)) != scannerLookOf(at({0, 36}, 0, 0)));
+    CHECK(scannerLookOf(at({48, 256}, 0, 0)) != scannerLookOf(at({48, 0}, 0, 0)));
+
+    // so does each colour, to the step, and none inside one
+    ScannerPalette p = amber();
+    p.line.g         = 0.702f;
+    CHECK(look == scannerLookOf(at(size, 5, 3, p)));
+    p = amber();
+    p.line.g += 0.05f;
+    const std::string line = scannerLookOf(at(size, 5, 3, p));
+    p                      = amber();
+    p.bright.b -= 0.05f;
+    const std::string bright = scannerLookOf(at(size, 5, 3, p));
+    p                        = amber();
+    p.glow.r -= 0.05f;
+    const std::string glow = scannerLookOf(at(size, 5, 3, p));
+    CHECK(line != look && bright != look && glow != look);
+    CHECK(line != bright && line != glow && bright != glow);
+
+    // and the look tells specs apart exactly as the size and the colours do
+    std::set<std::string>         looks;
+    std::set<std::pair<int, int>> sizes;
+    for (double width : {24.0, 48.0, 72.0})
+        for (double scale : {1.0, 1.25, 2.0})
+            for (const ScannerPalette& palette : {amber(), green()})
+                for (long frame : {0L, 7L, 4000L})
+                    for (uint32_t seed : {0u, 5u}) {
+                        const ScannerSize s = scannerSize(width, scale);
+                        sizes.insert({s.w, s.h});
+                        looks.insert(scannerLookOf(at(s, frame, seed, palette)));
+                    }
+    CHECK(sizes.size() == 8); // 24 wide at 2x is as big as 48 at 1x
+    CHECK(looks.size() == 2 * sizes.size());
+}
+
+// How far apart two images of a size are, in levels a px and channel.
+double differenceOf(const Image& a, const Image& b) {
+    double sum = 0;
+    for (size_t i = 0; i < a.rgba.size() && i < b.rgba.size(); ++i)
+        sum += std::abs(int(a.rgba[i]) - int(b.rgba[i]));
+    return a.rgba.empty() ? 0 : sum / double(a.rgba.size());
+}
+
+// The most any px and channel of two images of a size differs by, in levels.
+int worstDifferenceOf(const Image& a, const Image& b) {
+    int worst = a.rgba.size() == b.rgba.size() ? 0 : 255;
+    for (size_t i = 0; i < a.rgba.size() && i < b.rgba.size(); ++i)
+        worst = std::max(worst, std::abs(int(a.rgba[i]) - int(b.rgba[i])));
+    return worst;
+}
+
+// The whole picture goes round once in a loop, the ship and the pulse as much as the arm and the contacts,
+// between the frames as on them: so the last frame of the loop goes over into the first as smoothly as any
+// frame into the next, and there is no jump once a loop. Only the rounding of a level may differ.
+void testLoopIsPeriodic() {
+    for (double width : {48.0, 72.0}) {
+        const ScannerSpec spec = scannerSpecOfFrame(scannerSize(width, 1), 0, 0, amber());
+        double            moved = 0;
+        int               seen  = 0;
+        for (double clock = 0; clock < kScannerLoop; clock += 0.173) {
+            const Image a = renderScannerClock(spec, clock);
+            CHECK(!a.rgba.empty());
+            for (int loops : {1, 4})
+                CHECK(worstDifferenceOf(a, renderScannerClock(spec, clock + loops * kScannerLoop)) <= 1);
+
+            moved += differenceOf(a, renderScannerClock(spec, clock + 0.5));
+            ++seen;
+        }
+        CHECK(seen > 100);
+        CHECK(moved / seen > 0.05); // it is not the same picture all the time
+
+        // the frames are those of the clock at their own time
+        for (long f : {0L, 1L, 300L, kScannerLoopFrames - 1})
+            CHECK(renderScanner(scannerSpecOfFrame(spec.size, f - scannerLoopFrame(spec) + kScannerLoopFrames, 0, amber())).rgba ==
+                  renderScannerClock(spec, double(f) / kScannerFps).rgba);
+    }
+}
+
 } // namespace
 
 int main() {
@@ -965,5 +1126,9 @@ int main() {
     testPlateInvalid();
     testSpecOfFrame();
     testPlateConstants();
+    testLoopRepeats();
+    testLoopFrames();
+    testLook();
+    testLoopIsPeriodic();
     return finish("test_scanner");
 }

@@ -1,6 +1,7 @@
 #include "HudPassElement.hpp"
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <string>
 #include <unordered_map>
@@ -10,6 +11,7 @@
 #include <hyprland/src/render/OpenGL.hpp>
 #include <hyprland/src/render/Renderer.hpp>
 
+#include "flipbook.hpp"
 #include "gradient.hpp"
 #include "stamp.hpp"
 
@@ -73,6 +75,21 @@ namespace {
             g_stamps.clear();
         g_stamps.emplace(key, texture);
         return texture;
+    }
+
+    // The frames of the scanner's loop (see flipbook.hpp), on the GPU and shared by all windows that show
+    // them. A frame is baked the first time any window needs it, and is a lookup from then on; the
+    // loop is 22 s long, so what a scanner costs when it moves falls to nearly nothing once its frames
+    // have been seen. A loop is 660 frames, 10 MB at the default width and 41 MB at twice the scale, so
+    // 128 MiB hold a dozen looks of the scanner, or three at twice the scale; a loop that is not shown
+    // for 10 s makes room for another.
+    constexpr size_t kLoopBytes = size_t(128) << 20;
+    constexpr double kLoopIdle  = 10.0;
+
+    smplhud::Flipbook<SP<Render::ITexture>> g_loop(kLoopBytes, kLoopIdle);
+
+    double steadySeconds() {
+        return std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
     }
 
     // `box` grown to whole px, for a box that need not sit on the pixel grid.
@@ -360,6 +377,10 @@ void clearHudStamps() {
     g_stamps.clear();
 }
 
+void clearScannerFrames() {
+    g_loop.clear();
+}
+
 std::vector<UP<IPassElement>> CHudPassElement::draw() {
     if (!m_frame.layout)
         return {};
@@ -507,6 +528,49 @@ namespace {
         else
             scope.draw(cache.plate, box, damage, alpha);
     }
+
+    // What the pod's picture is made of, on the GPU, and how big that is.
+    struct SBaked {
+        SP<Render::ITexture> texture;
+        size_t               bytes = 0;
+    };
+
+    SBaked bakeScanner(const smplhud::ScannerSpec& spec) {
+        auto image = smplhud::renderScanner(spec);
+        if (image.empty())
+            return {};
+
+        auto texture = g_pHyprRenderer->createTexture(DRM_FORMAT_ABGR8888, image.rgba.data(), uint32_t(image.w) * 4, {double(image.w), double(image.h)});
+        if (!texture || !texture->ok())
+            return {};
+
+        return {texture, image.rgba.size()};
+    }
+
+    // The picture `spec` asks for. A picture that stands still is the one the scanner has already. A
+    // moving one is a frame of the loop, kept for every window; but only while its colours stay as they
+    // are (`steady`), as a fade or a drifting gradient would fill the loops with frames that are never
+    // shown again, and that one is baked for itself.
+    SP<Render::ITexture> scannerPicture(SScannerCache& cache, const smplhud::ScannerSpec& spec, const std::string& look, bool steady) {
+        if (cache.texture && cache.spec == spec)
+            return cache.texture;
+
+        if (!steady)
+            return bakeScanner(spec).texture;
+
+        const auto   at  = size_t(smplhud::scannerLoopFrame(spec));
+        const double now = steadySeconds();
+        if (const auto* kept = g_loop.find(look, at, now))
+            return *kept;
+
+        auto baked = bakeScanner(spec);
+        if (!baked.texture)
+            return nullptr;
+
+        if (const auto* kept = g_loop.keep(look, at, size_t(smplhud::kScannerLoopFrames), baked.texture, baked.bytes, now))
+            return *kept;
+        return baked.texture;
+    }
 }
 
 std::vector<UP<IPassElement>> CScannerPassElement::draw() {
@@ -536,18 +600,19 @@ std::vector<UP<IPassElement>> CScannerPassElement::draw() {
     if (!damage.empty()) {
         const auto spec  = smplhud::scannerSpecOfFrame(frame.size, frame.frame, frame.seed, palette);
         auto&      cache = *frame.cache;
-        if (!cache.texture || !(cache.spec == spec)) {
-            cache.texture.reset();
 
-            auto image = smplhud::renderScanner(spec);
-            if (!image.empty()) {
-                cache.texture = g_pHyprRenderer->createTexture(DRM_FORMAT_ABGR8888, image.rgba.data(), uint32_t(image.w) * 4, {double(image.w), double(image.h)});
-                cache.spec    = spec;
-            }
-        }
+        // The colours are steady once they have been the same for two frames running and no fade is on.
+        const auto look   = smplhud::scannerLookOf(spec);
+        const bool fading = std::any_of(frame.paints.begin(), frame.paints.end(), [](const SHudPaint& paint) { return paint.fading; });
+        const bool steady = !fading && look == cache.look;
+        cache.look        = look;
 
-        if (cache.texture && cache.texture->ok())
-            scope.draw(cache.texture, frame.box, damage, alpha);
+        const auto picture = scannerPicture(cache, spec, look, steady);
+        cache.texture      = picture;
+        cache.spec         = spec;
+
+        if (picture && picture->ok())
+            scope.draw(picture, frame.box, damage, alpha);
     }
 
     g_pHyprOpenGL->scissor(nullptr);

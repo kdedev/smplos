@@ -21,8 +21,9 @@ constexpr double kPlateRim   = 7; // how far the lit rim just inside the bezel r
 
 constexpr double kLongestClock = 1e9; // seconds; a clock past that, 31 years, stays there
 
-constexpr double kArmPeriod  = 4.4; // seconds a turn
-constexpr double kPingPeriod = 5.8;
+// How often each thing that goes round does so in a loop: whole times, so that the loop has no seam.
+constexpr double kArmPeriod  = kScannerLoop / 5; // seconds a turn
+constexpr double kPingPeriod = kScannerLoop / 4;
 constexpr double kPingLength = 1.9;
 
 // Also for NaN, which becomes 0.
@@ -66,6 +67,11 @@ double chance(uint32_t seed, uint32_t a, uint32_t b = 0, uint32_t c = 0) {
 double wrapTurn(double angle) {
     angle = std::fmod(angle, 2 * kPi);
     return angle < 0 ? angle + 2 * kPi : angle;
+}
+
+// How fast something goes that comes round `count` times in the loop, in radians a second.
+constexpr double perLoop(int count) {
+    return 2 * kPi * count / kScannerLoop;
 }
 
 Rgba mixColour(const Rgba& a, const Rgba& b, double t) {
@@ -249,6 +255,22 @@ ScannerSpec scannerSpecOfFrame(const ScannerSize& size, long frame, uint32_t see
     return s;
 }
 
+long scannerLoopFrame(const ScannerSpec& spec) {
+    const long start = long(chance(spec.seed, 0x61) * kScannerLoopFrames);
+    return (std::max(spec.frame, 0L) + start) % kScannerLoopFrames;
+}
+
+std::string scannerLookOf(const ScannerSpec& spec) {
+    std::string out;
+    for (int v : {spec.size.w, spec.size.h}) {
+        out += char(v & 0xff);
+        out += char((v >> 8) & 0xff);
+    }
+    for (const auto* level : {spec.line, spec.bright, spec.glow})
+        out.append(reinterpret_cast<const char*>(level), 3);
+    return out;
+}
+
 double scannerArm(double clock, uint32_t seed) {
     const double turns = clock / kArmPeriod + chance(seed, 0x51);
     return 2 * kPi * (turns - std::floor(turns));
@@ -262,12 +284,13 @@ std::vector<ScannerContact> scannerContacts(const ScannerLayout& l, double clock
     const double arm = scannerArm(clock, seed);
 
     for (int s = 0; s < kScannerSlots; ++s) {
-        const double period = 8.0 + 4.0 * chance(seed, 0x100 + uint32_t(s));
-        const double t      = clock / period + chance(seed, 0x200 + uint32_t(s));
-        const double whole  = std::floor(t);
-        const double p      = t - whole;
-        const auto   cycle  = uint32_t(int64_t(whole));
-        const auto   r      = [&](uint32_t k) { return chance(seed, 0x1000 + uint32_t(s), k, cycle); };
+        // A slot goes through 2 or 3 flights in the loop, and flies the same ones again in the next.
+        const int    flights = chance(seed, 0x100 + uint32_t(s)) < 0.5 ? 3 : 2;
+        const double t       = clock / kScannerLoop * flights + chance(seed, 0x200 + uint32_t(s));
+        const double whole   = std::floor(t);
+        const double p       = t - whole;
+        const auto   cycle   = uint32_t((int64_t(whole) % flights + flights) % flights);
+        const auto   r       = [&](uint32_t k) { return chance(seed, 0x1000 + uint32_t(s), k, cycle); };
 
         // Most things come at the ship from far ahead, as they do when it flies; some go by across. Each slot has a
         // lane of its own, so that the contacts spread over the disc instead of clumping.
@@ -320,6 +343,10 @@ std::vector<ScannerContact> scannerContacts(const ScannerLayout& l, double clock
 }
 
 Image renderScanner(const ScannerSpec& spec) {
+    return renderScannerClock(spec, double(scannerLoopFrame(spec)) / kScannerFps);
+}
+
+Image renderScannerClock(const ScannerSpec& spec, double clock) {
     Image               img;
     const ScannerLayout l = scannerLayout(spec.size);
     if (!l.valid())
@@ -330,16 +357,15 @@ Image renderScanner(const ScannerSpec& spec) {
     img.rgba.assign(size_t(l.w) * size_t(l.h) * 4, 0);
 
     const double u = l.u, cx = l.centre.x, cy = l.centre.y, rx = l.rx, ry = l.ry;
-    const double clock = double(spec.frame) / kScannerFps;
 
     const Rgba line = colourOf(spec.line), bright = colourOf(spec.bright), glow = colourOf(spec.glow);
     const Rgba plateLow = scaled(line, 0.12), plateRim = scaled(line, 0.42), lipColour = scaled(line, 0.28);
     const Rgba white = mixColour(bright, {1.f, 1.f, 1.f, 1.f}, 0.75);
 
-    const double arm  = scannerArm(clock, spec.seed);
+    const double arm  = scannerArm(clock, kScannerLoopSeed);
     const double armX = cx + rx * std::cos(arm), armY = cy + ry * std::sin(arm);
 
-    const std::vector<ScannerContact> contacts = scannerContacts(l, clock, spec.seed);
+    const std::vector<ScannerContact> contacts = scannerContacts(l, clock, kScannerLoopSeed);
 
     // The pieces of each contact, made once for the frame.
     struct Marker {
@@ -360,11 +386,12 @@ Image renderScanner(const ScannerSpec& spec) {
         markers.push_back(m);
     }
 
-    // The ship: an arrowhead that sways a little as it flies, with a flame that flickers.
-    const double roll  = 0.2 * std::sin(2 * kPi * 0.17 * clock) + 0.07 * std::sin(2 * kPi * 0.61 * clock + 1.0);
-    const double sway  = 1.1 * u * std::sin(2 * kPi * 0.11 * clock + 0.5);
-    const double bob   = 0.5 * u * std::sin(2 * kPi * 0.23 * clock + 1.3);
-    const double flick = 0.5 + 0.5 * std::sin(2 * kPi * 3.1 * clock) * std::sin(2 * kPi * 1.7 * clock + 0.6);
+    // The ship: an arrowhead that sways a little as it flies, with a flame that flickers. Each of these
+    // goes round a whole number of times in the loop.
+    const double roll  = 0.2 * std::sin(perLoop(4) * clock) + 0.07 * std::sin(perLoop(13) * clock + 1.0);
+    const double sway  = 1.1 * u * std::sin(perLoop(2) * clock + 0.5);
+    const double bob   = 0.5 * u * std::sin(perLoop(5) * clock + 1.3);
+    const double flick = 0.5 + 0.5 * std::sin(perLoop(68) * clock) * std::sin(perLoop(37) * clock + 0.6);
     const auto   shipAt = [&](double x, double y) -> Vec2 {
         const double c = std::cos(roll), s = std::sin(roll);
         return {cx + sway + (x * c - y * s) * u, cy + bob + (x * s + y * c) * u};
@@ -376,7 +403,7 @@ Image renderScanner(const ScannerSpec& spec) {
     const Poly   tail  = [&] { const Vec2 v[3] = {shipAt(-0.9, 1.5), shipAt(0.9, 1.5), {shipAt(0, 1.5).x, shipAt(0, 1.5).y + flame}}; return polyOf(v, 3); }();
 
     // An expanding ring now and then, as if the ship sent out a pulse.
-    const double pingAt   = std::fmod(clock + kPingPeriod * chance(spec.seed, 0x77), kPingPeriod);
+    const double pingAt   = std::fmod(clock + kPingPeriod * chance(kScannerLoopSeed, 0x77), kPingPeriod);
     const double pingX    = pingAt / kPingLength;
     const bool   pinging  = pingAt < kPingLength;
     const double pingRho  = pinging ? 1 - (1 - pingX) * (1 - pingX) : 0;

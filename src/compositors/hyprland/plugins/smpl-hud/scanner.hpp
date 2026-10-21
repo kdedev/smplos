@@ -8,13 +8,17 @@
 //
 // It is a picture made on the CPU one frame at a time from nothing but its
 // `ScannerSpec`, so that a frame is always the same, can be tested and can be
-// kept for as long as its spec does not change. Nothing here touches Hyprland.
+// kept for as long as its spec does not change. The animation repeats exactly
+// every `kScannerLoop` seconds, so that only that many frames ever exist, and
+// each is made once and kept for every window that shows it. Nothing here
+// touches Hyprland.
 
 #include "geometry.hpp"
 #include "gradient.hpp"
 #include "stamp.hpp"
 
 #include <cstdint>
+#include <string>
 #include <vector>
 
 namespace smplhud {
@@ -25,6 +29,14 @@ constexpr int kScannerMaxWidth = 160;
 
 // How many frames a second a moving scanner is drawn at.
 constexpr int kScannerFps = 30;
+
+// After this many seconds everything that moves in the picture, the arm, the pulse, the contacts and
+// the ship, is where it was at the start, so that the animation goes round and round without a seam.
+constexpr double kScannerLoop       = 22.0;
+constexpr long   kScannerLoopFrames = long(kScannerLoop * kScannerFps);
+
+// The seed of the one loop that every window shows, each at a point of its own in it.
+constexpr uint32_t kScannerLoopSeed = 0;
 
 // How many contacts there are at a time, at most.
 constexpr int kScannerSlots = 4;
@@ -73,6 +85,15 @@ struct ScannerSpec {
     bool operator==(const ScannerSpec&) const = default;
 };
 
+// Which frame of the loop, 0 up to but not including `kScannerLoopFrames`, a spec shows. The image
+// depends on this, the size and the colours and on nothing else: the frame and the seed only say
+// where in the loop the window is, so windows are out of step with each other and share their frames.
+long scannerLoopFrame(const ScannerSpec& spec);
+
+// What the frames of the loop of a spec depend on besides the number of the frame: its size and its
+// colours, as a string. Two specs with the same look show frames of the same loop.
+std::string scannerLookOf(const ScannerSpec& spec);
+
 ScannerSpec scannerSpecOf(const ScannerSize& size, double clock, uint32_t seed, const ScannerPalette& palette);
 
 // The same for a frame number, for a caller that keeps the frame it shows apart from the clock.
@@ -80,6 +101,12 @@ ScannerSpec scannerSpecOfFrame(const ScannerSize& size, long frame, uint32_t see
 
 // Premultiplied RGBA like the other images; empty if the size is.
 Image renderScanner(const ScannerSpec& spec);
+
+// The picture of a spec's size and colours `clock` seconds into the loop, on a frame or between two. The
+// clock is not taken round the loop first, so a test can see that the picture of `clock + kScannerLoop`
+// is that of `clock`, which `renderScanner` never has to rely on at a frame but is what makes the loop
+// end without a seam. The spec's frame and seed are not used.
+Image renderScannerClock(const ScannerSpec& spec, double clock);
 
 // The plate under the scanner's picture where a panel style has made a pod for it (`Pod` in
 // geometry.hpp): dark glass over the window, held by the outline where it meets the frame and edged
@@ -137,7 +164,8 @@ struct ScannerContact {
     int    shape = 0;          // 0 square, 1 arrow up, 2 arrow down, 3 diamond
 };
 
-// The contacts that can be seen at a time, those at the back first.
+// The contacts that can be seen at a time, those at the back first. Every `kScannerLoop` seconds
+// they are the same again, whatever the seed.
 std::vector<ScannerContact> scannerContacts(const ScannerLayout& layout, double clock, uint32_t seed);
 
 // Where the arm points, in radians 0..2pi counted from the disc's right, round the way the hands of a clock go.
