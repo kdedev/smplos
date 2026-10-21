@@ -543,19 +543,11 @@ Image renderPlate(const PlateSpec& s) {
 
             // How far the px is outside each side. The sides on the outline are moved in by the thickness of its
             // line, which the frame draws; the sides of the bezel are not, as the bezel is drawn here.
-            double best = -1e30, second = -1e30, plain = -1e30;
-            int    bestAt = 0;
+            double best = -1e30, plain = -1e30;
             for (int i = 0; i < poly.n; ++i) {
                 const double d = poly.nx[i] * px + poly.ny[i] * py - poly.c[i];
-                const double v = i < s.bezel ? d : d + hw;
                 plain          = std::max(plain, d);
-                if (v > best) {
-                    second = best;
-                    best   = v;
-                    bestAt = i;
-                } else if (v > second) {
-                    second = v;
-                }
+                best           = std::max(best, i < s.bezel ? d : d + hw);
             }
 
             // how far the px is from the bezel itself, the sides it has and no more
@@ -584,7 +576,7 @@ Image renderPlate(const PlateSpec& s) {
             double cover = 0;
             for (int i = 0; i < s.bezel; ++i) {
                 const double d = poly.nx[i] * px + poly.ny[i] * py - poly.c[i];
-                cover          = std::max(cover, std::min(strokeCover(d + hw, 2 * hw), fillCover(i == bestAt ? second : best)));
+                cover          = std::max(cover, std::min(strokeCover(d + hw, 2 * hw), fillCover(best)));
             }
             out.over(line, cover * 0.95);
 

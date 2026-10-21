@@ -4,16 +4,18 @@
 //
 // A panel is a closed outline of straight and 45 degree runs round the window:
 // chamfered corners, a notch and a step on the top edge, a raised and a ghost
-// line on the bottom edge and a bigger cut at the bottom left. Everything is
+// line on the bottom edge and a bigger cut at the bottom left. Where the theme
+// has a scanner (`scannerW` > 0) the bottom right corner is not cut but bulges
+// out into a pod round the plate of the scanner (see `Pod`). Everything is
 // measured in physical px from the top-left corner of the window box and
 // snapped so that lines land on whole pixels; see stamp.hpp for how the lines
 // become images. Two looks are made of it:
 //
 //  - Amber: three thin traces run beyond the outline and end in beads. While
 //    the window has focus, dots move along the lines: two go round the outline
-//    in opposite directions and one bounces back and forth between the beads of
-//    each trace. A dot going round glows brighter when a bouncing dot or the
-//    other one comes close.
+//    in opposite directions, skirting the pod, and one bounces back and forth
+//    between the beads of each trace. A dot going round glows brighter when a
+//    bouncing dot or the other one comes close.
 //
 //  - Matrix: the outline alone, standing on the window's edge and as faint down its two
 //    sides and along its top and bottom as the theme says (sideOpacity, edgeOpacity), so

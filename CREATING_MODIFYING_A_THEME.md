@@ -167,7 +167,7 @@ Most themes never need overrides. Use `term_N` only when a terminal slot should 
 
 - **Decoration**: `rounding`, `app_rounding` (optional), `blur_size`, `blur_passes`, `opacity_active`, `opacity_inactive`, `app_background_opacity`, `term_opacity_active`, `term_opacity_inactive`, `popup_opacity`, `messenger_opacity`, `browser_opacity`
 - **Layout**: `gaps_in`, `gaps_out`, `border_size`, `border_active` (optional), `border_inactive` (optional)
-- **Effects** (optional, Hyprland only): `rounding_power`, `shadow_range`, `shadow_render_power`, `shadow_color`, `shadow_color_inactive`, `glow`, `glow_range`, `glow_render_power`, `glow_color`, `glow_color_inactive`, `border_animation`, `hud_frame`, `hud_hide_border`, `hud_style`, `hud_gap`, `hud_chamfer`, `hud_line_width`, `hud_float_glow_range`, `hud_sweep`, `hud_sweep_speed`, `hud_sweep_length`, `hud_glyph_color`, `hud_side_opacity`, `hud_edge_opacity`, `hud_underglow`, `hud_scanner`
+- **Effects** (optional, Hyprland only): `rounding_power`, `shadow_range`, `shadow_render_power`, `shadow_color`, `shadow_color_inactive`, `glow`, `glow_range`, `glow_render_power`, `glow_color`, `glow_color_inactive`, `border_animation`, `hud_frame`, `hud_hide_border`, `hud_style`, `hud_gap`, `hud_chamfer`, `hud_line_width`, `hud_float_glow_range`, `hud_sweep`, `hud_sweep_speed`, `hud_sweep_length`, `hud_glyph_color`, `hud_side_opacity`, `hud_edge_opacity`, `hud_underglow`, `hud_scanner`, `hud_scanner_blur`
 - **App selectors**: `app_theme_nvim`, `app_theme_vscode`
 
 Example:
@@ -204,7 +204,8 @@ unchanged. niri and other compositors ignore them.
 | `hud_side_opacity` | `"1"` | Decimal from `"0"` to `"1"`: how visible the outline of a `panel` or `matrix` frame is down its left and right sides, its halo beside it with it; the corners fade between that and the top and the bottom edge's (`hud_edge_opacity`). Dim it where characters fall so that they stand out: `matrix-hud` uses `"0.1"`, almost unseen, and `"0"` draws no line there at all. `"1"` is as strong as the rest. The ring styles ignore it |
 | `hud_edge_opacity` | `"1"` | Decimal from `"0"` to `"1"`: the same along the top and the bottom edge of a `panel` or `matrix` frame. `"1"` is the full line; `matrix-hud` uses `"0.1"`, as dark as its sides, and `"0"` draws no line there at all (the lamps of a `matrix` and the underglow are not dimmed by it). The ring styles ignore it |
 | `hud_underglow` | `"0"` | Decimal from `"0"` to `"1"`: how bright a glow with no line is along the window's own top and bottom edge, fading out away from it, as if the light shone from under the window (an opaque window hides the half of it that lies under it, a see-through one shows it). `matrix-hud` uses `"0.3"`; `"0"` has none. The ring styles ignore it |
-| `hud_scanner` | `"0"` | `"0"` (none) or an integer from `"24"` to `"160"`: the width in px of a small animated scanner in the bottom right corner of every framed window, like the radar of a space game (a flat disc seen at a slant, three rings, the ship in the middle, an arm that sweeps round and lights the contacts it passes). It is painted over the window's content in the colors of the frame, so keep it small; it moves only in the focused window (the others show it dimmed, where it stopped), steps aside while the pointer is near it, and is left out of fullscreen and unframed windows and of windows smaller than five times its size. `amber-hud` uses `"48"` (about half an inch) |
+| `hud_scanner` | `"0"` | `"0"` (none) or an integer from `"24"` to `"160"`: the width in px of a small animated scanner in the bottom right corner of every framed window, like the radar of a space game (a flat disc seen at a slant, three rings, the ship in the middle, an arm that sweeps round and lights the contacts it passes). In a `panel` frame the outline bulges out into a pod to hold it, in place of the bottom right cut, and the dots skirt the pod; elsewhere it stands in the corner of the window. It is painted over the window's content in the colors of the frame, so keep it small; it moves only in the focused window (the others show it dimmed, where it stopped), steps aside while the pointer is near it, and is left out of fullscreen and unframed windows and of windows smaller than five times its size. `amber-hud` uses `"72"` (about three quarters of an inch) |
+| `hud_scanner_blur` | `"true"` | `"true"` or `"false"`: whether the glass of the scanner's pod blurs what lies under it, as a translucent window does. It blurs only while the compositor's own blur (`decoration:blur:enabled`) is on and `xray` is off; with `"false"`, or without a pod, the glass is flat and more opaque, which also costs a little less. `amber-hud` uses `"true"` |
 
 Gradients use the same syntax as `border_active`: one or more `rgba(rrggbbaa)`
 stops and an optional angle, e.g. `"rgba(00f0ffb0) rgba(2f7bff80) 45deg"`.
@@ -281,7 +282,9 @@ stops and an optional angle, e.g. `"rgba(00f0ffb0) rgba(2f7bff80) 45deg"`.
   circle the outline in opposite directions and one dot bounces back and forth
   along each trace, between the beads at its ends; a circling dot glows as it
   nears a bouncing dot, and both glow as they near each other, as if about to
-  merge. The window itself stays a chamfered rectangle (`rounding`,
+  merge. With a `hud_scanner` the bottom right corner is not cut but bulges out
+  into a pod round the scanner (the window must be five times the scanner's size
+  for it), and the dots skirt the pod. The window itself stays a chamfered rectangle (`rounding`,
   `rounding_power`); the shape lives in the lines around it, and the bottom-left
   cut can only be as deep as the window's own corner cut, so raise `rounding` (and
   `hud_gap`) for a bigger one. It needs room: keep `hud_gap` at 13 or more for

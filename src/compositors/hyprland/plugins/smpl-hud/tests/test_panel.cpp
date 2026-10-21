@@ -51,9 +51,16 @@ constexpr int   kSizes[][2] = {{40, 40}, {41, 300}, {300, 41}, {100, 100}, {400,
 constexpr float kScales[]   = {1.f, 1.25f, 1.5f, 2.f};
 
 std::string label(const Params& p) {
-    char buf[96];
-    std::snprintf(buf, sizeof buf, "%dx%d @%g%s, line %g", p.width, p.height, double(p.scale), p.floating ? ", floating" : "", p.lineWidth);
+    char buf[128];
+    std::snprintf(buf, sizeof buf, "%dx%d @%g%s, line %g%s", p.width, p.height, double(p.scale), p.floating ? ", floating" : "", p.lineWidth, p.scannerW > 0 ? ", scanner" : "");
     return buf;
+}
+
+// The same window with a scanner of 72 x 54 px at scale 1 to make room for, as the plugin asks for it.
+Params scanned(Params p, int w = 72, int h = 54) {
+    p.scannerW = int(std::lround(w * double(p.scale)));
+    p.scannerH = int(std::lround(h * double(p.scale)));
+    return p;
 }
 
 // The thickness of the line in physical px, the way the builder rounds it.
@@ -122,6 +129,39 @@ double distToWindow(Vec2 q, int w, int h, int cut) {
 
 bool overlap(const IBox& a, const IBox& b) {
     return a.x < b.x + b.w && b.x < a.x + a.w && a.y < b.y + b.h && b.y < a.y + a.h;
+}
+
+// Positive when the polygon runs clockwise on the screen (y points down).
+double signedArea(const std::vector<Vec2>& pts) {
+    double sum = 0;
+    for (size_t i = 0; i < pts.size(); ++i) {
+        const Vec2& a = pts[i];
+        const Vec2& b = pts[(i + 1) % pts.size()];
+        sum += a.x * b.y - b.x * a.y;
+    }
+    return sum / 2;
+}
+
+// How far a point is outside a convex polygon that runs clockwise on the screen: as far as it is
+// outside the side it is furthest outside of; 0 or less on or inside it.
+double beyond(const std::vector<Vec2>& poly, Vec2 q) {
+    double worst = -kInf;
+    for (size_t i = 0; i < poly.size(); ++i) {
+        const Vec2   a = poly[i], b = poly[(i + 1) % poly.size()];
+        const double len = std::hypot(b.x - a.x, b.y - a.y);
+        worst            = std::max(worst, -((b.x - a.x) * (q.y - a.y) - (b.y - a.y) * (q.x - a.x)) / len);
+    }
+    return worst;
+}
+
+// How far a point is from a convex polygon, clockwise on the screen; 0 inside it.
+double distToPolygon(const std::vector<Vec2>& poly, Vec2 q) {
+    if (beyond(poly, q) <= 0)
+        return 0;
+    double best = kInf;
+    for (size_t i = 0; i < poly.size(); ++i)
+        best = std::min(best, distToSegment(q, poly[i], poly[(i + 1) % poly.size()]));
+    return best;
 }
 
 // The face of the characters of the column a lane is in.
@@ -258,8 +298,10 @@ void checkLayout(const Layout& lay, const Params& p) {
     }
     CHECK_NEAR(lay.centre.x, x0, 1e-9);
     CHECK_NEAR(lay.centre.y, y0, 1e-9);
-    CHECK_NEAR(lay.centre.w, x1 - x0, 1e-9);
-    CHECK_NEAR(lay.centre.h, y1 - y0, 1e-9);
+    // The bulge of the pod at the bottom right corner is not part of the rectangle.
+    const double poke = lay.pod.on && lay.pod.plate.size() == 8 ? lay.pod.plate[4].x - lay.pod.plate[3].x : 0;
+    CHECK_NEAR(lay.centre.w, x1 - poke - x0, 1e-9);
+    CHECK_NEAR(lay.centre.h, y1 - poke - y0, 1e-9);
     CHECK(lay.centre.reachIn >= 0 && lay.centre.reachOut > outline.halfWidth);
 
     for (const Bead& b : lay.panel.beads) {
@@ -299,6 +341,101 @@ void checkLayout(const Layout& lay, const Params& p) {
         std::fprintf(stderr, "  ^ %s\n", label(p).c_str());
 }
 
+// The pod at the bottom right corner, which `none`, the same window without a scanner, has no pod at.
+void checkPod(const Layout& lay, const Params& p, const Layout& none) {
+    const int before = g_failures;
+    const Pod& pod   = lay.pod;
+
+    CHECK(pod.on && pod.bezel == 3 && pod.plate.size() == 8);
+    CHECK(!none.pod.on && none.pod.plate.empty());
+    if (!pod.on || pod.plate.size() != 8 || lay.panel.empty() || none.panel.empty()) {
+        std::fprintf(stderr, "  ^ %s\n", label(p).c_str());
+        return;
+    }
+
+    const std::vector<Vec2>& v       = pod.plate;
+    const Stroke&            outline = lay.panel.strokes[0];
+    const double             hw      = outline.halfWidth;
+    CHECK_NEAR(pod.halfWidth, hw, 1e-9);
+
+    // A convex shape clockwise, whose edges are upright, flat or at 45 degrees, going up the left of it and round.
+    CHECK(signedArea(v) > 0);
+    for (size_t i = 0; i < 8; ++i) {
+        const Vec2 a = v[i], b = v[(i + 1) % 8], c = v[(i + 2) % 8];
+        CHECK((b.x - a.x) * (c.y - b.y) - (b.y - a.y) * (c.x - b.x) > 0);
+    }
+    const auto edge = [&](size_t i) { return Vec2{v[(i + 1) % 8].x - v[i].x, v[(i + 1) % 8].y - v[i].y}; };
+    CHECK_NEAR(edge(0).x, 0, 1e-9);
+    CHECK(edge(0).y < 0); // up
+    CHECK_NEAR(edge(1).x, -edge(1).y, 1e-9);
+    CHECK(edge(1).x > 0); // up and right
+    CHECK_NEAR(edge(2).y, 0, 1e-9);
+    CHECK(edge(2).x > 0); // right
+    CHECK_NEAR(edge(3).x, edge(3).y, 1e-9);
+    CHECK(edge(3).x > 0); // down and right
+    CHECK_NEAR(edge(4).x, 0, 1e-9);
+    CHECK(edge(4).y > 0); // down
+    CHECK_NEAR(edge(5).x, -edge(5).y, 1e-9);
+    CHECK(edge(5).y > 0); // down and left
+    CHECK_NEAR(edge(6).y, 0, 1e-9);
+    CHECK(edge(6).x < 0); // left
+    CHECK_NEAR(edge(7).x, edge(7).y, 1e-9);
+    CHECK(edge(7).x < 0); // up and left
+
+    // It steps out past the frame, whose right and bottom line it starts from, by the same amount all round.
+    double right = -kInf, bottom = -kInf;
+    for (const Vertex& q : none.panel.strokes[0].pts) {
+        right  = std::max(right, q.x);
+        bottom = std::max(bottom, q.y);
+    }
+    const double poke = v[4].x - v[3].x;
+    CHECK_NEAR(poke, std::max(2.0, std::round(8.0 * double(p.scale))), 1e-9);
+    CHECK_NEAR(v[3].x, right, 1e-9);
+    CHECK_NEAR(v[0].y, bottom, 1e-9);
+    CHECK_NEAR(v[4].x, right + poke, 1e-9);
+    CHECK_NEAR(v[6].y, bottom + poke, 1e-9);
+
+    // The outline goes round it: the edges on its right and bottom are the outline's own, which has the
+    // vertices of them in a row, and four more than the one without a pod, which is chamfered there.
+    CHECK(outline.pts.size() == none.panel.strokes[0].pts.size() + 4);
+    const size_t n = outline.pts.size();
+    size_t       at = n;
+    for (size_t i = 0; i < n; ++i)
+        if (outline.pts[i].x == v[3].x && outline.pts[i].y == v[3].y)
+            at = i;
+    CHECK(at < n);
+    if (at < n) {
+        const size_t order[6] = {3, 4, 5, 6, 7, 0};
+        for (size_t k = 0; k < 6; ++k) {
+            const Vertex& q = outline.pts[(at + k) % n];
+            CHECK(q.x == v[order[k]].x && q.y == v[order[k]].y);
+            CHECK(q.alpha > 0);
+        }
+    }
+    for (size_t i : {3, 4, 5, 6, 7})
+        for (double t : {0.0, 0.25, 0.5, 0.75, 1.0}) {
+            const Vec2 a = v[i], b = v[(i + 1) % 8];
+            CHECK(distToStroke(outline, {a.x + (b.x - a.x) * t, a.y + (b.y - a.y) * t}) < 1e-6);
+        }
+
+    // The bezel's corners lie on the window, well away from the outline, so that its line is no part of it.
+    CHECK(distToStroke(outline, v[1]) > 2 * hw + 2);
+    CHECK(distToStroke(outline, v[2]) > 2 * hw + 2);
+
+    // The picture is the size it was asked to be, with the same room round it on the left and the right and
+    // above and below, and room for the line of the outline between it and the edge.
+    const IBox& pic = pod.picture;
+    CHECK(pic.w == p.scannerW && pic.h == p.scannerH);
+    const double leftRoom = pic.x - v[0].x, rightRoom = v[4].x - (pic.x + pic.w);
+    const double topRoom = pic.y - v[3].y, bottomRoom = v[6].y - (pic.y + pic.h);
+    CHECK(rightRoom >= hw + 1.5 - 1e-9 && bottomRoom >= hw + 1.5 - 1e-9);
+    CHECK(leftRoom >= hw + 0.5 && topRoom >= hw + 0.5);
+    CHECK(std::fabs(leftRoom - rightRoom) <= 1 + 1e-9 && std::fabs(topRoom - bottomRoom) <= 1 + 1e-9);
+
+    if (g_failures != before)
+        std::fprintf(stderr, "  ^ %s\n", label(p).c_str());
+}
+
 void testStyle() {
     const Style* st = styleFor("panel");
     CHECK(st != nullptr);
@@ -309,6 +446,9 @@ void testStyle() {
     CHECK(st->lineAlpha > 0 && st->lineAlpha <= 1 && st->haloAlpha > 0 && st->haloAlpha <= 1);
     CHECK(st->haloReach > 0 && st->floatBoost >= 1);
     CHECK(st->glyphHeight == 0 && st->glyphPitch == 0 && st->glyphFall == 0 && st->lamps == 0 && st->glyphColumns == 1);
+
+    // The dots go round at half the speed they had (1.6).
+    CHECK_NEAR(st->runnerSpeed, 0.8, 1e-6);
 
     // The matrix style is the panel's outline alone, with characters falling down its sides
     // in three columns and glows going to and fro along its top and bottom.
@@ -349,10 +489,18 @@ void testLayouts() {
         for (const auto& size : kSizes)
             for (float s : kScales)
                 for (bool floating : {false, true})
-                    for (double lineWidth : {2.0, 3.0}) {
-                        const Params p = params(size[0], size[1], s, floating, lineWidth);
-                        checkLayout(buildLayout(*st, p), p);
-                    }
+                    for (double lineWidth : {2.0, 3.0})
+                        for (bool scanner : {false, true}) {
+                            const Params p = params(size[0], size[1], s, floating, lineWidth);
+                            const Params q = scanner ? scanned(p) : p;
+                            const Layout lay = buildLayout(*st, q);
+                            checkLayout(lay, q);
+                            if (lay.pod.on)
+                                checkPod(lay, q, buildLayout(*st, p));
+                            else
+                                CHECK(lay.pod.plate.empty());
+                            CHECK(!lay.pod.on || scanner);
+                        }
 }
 
 void testFrameKinds() {
@@ -400,30 +548,32 @@ void testFrameKinds() {
 // allowed inside the line is really free.
 void testClearOfWindow() {
     const Style& st = panelStyle();
-    for (const auto& size : {std::pair{100, 100}, {240, 180}, {700, 400}, {900, 600}, {1920, 1080}})
+    for (const auto& size : {std::pair{100, 100}, {240, 180}, {400, 300}, {700, 400}, {900, 600}, {1920, 1080}})
         for (float s : kScales)
             for (bool floating : {false, true})
-                for (double lineWidth : {2.0, 3.0}) {
-                    const Params p   = params(size.first, size.second, s, floating, lineWidth);
-                    const Layout lay = buildLayout(st, p);
-                    double       nearest = kInf;
-                    for (const Stroke& stroke : lay.panel.strokes)
-                        eachSegment(stroke, [&](const Vertex& a, const Vertex& b) {
-                            if (!visible(stroke, a, b))
-                                return;
-                            const int n = int(std::ceil(std::hypot(b.x - a.x, b.y - a.y) * 4));
-                            for (int i = 0; i <= n; ++i) {
-                                const double t = double(i) / n;
-                                nearest        = std::min(nearest, distToWindow({a.x + (b.x - a.x) * t, a.y + (b.y - a.y) * t}, p.width, p.height, p.cut));
-                            }
-                        });
-                    const double hw = lay.panel.strokes[0].halfWidth;
-                    CHECK(nearest >= hw + 0.5);
-                    if (lay.centre.reachIn > 0)
-                        CHECK(lay.centre.reachIn + hw + 1 <= nearest + 0.2);
-                    if (g_failures)
-                        std::fprintf(stderr, "  %s: nearest %g, reachIn %g, half width %g\n", label(p).c_str(), nearest, lay.centre.reachIn, hw);
-                }
+                for (double lineWidth : {2.0, 3.0})
+                    for (bool scanner : {false, true}) {
+                        const Params base = params(size.first, size.second, s, floating, lineWidth);
+                        const Params p    = scanner ? scanned(base) : base;
+                        const Layout lay  = buildLayout(st, p);
+                        double       nearest = kInf;
+                        for (const Stroke& stroke : lay.panel.strokes)
+                            eachSegment(stroke, [&](const Vertex& a, const Vertex& b) {
+                                if (!visible(stroke, a, b))
+                                    return;
+                                const int n = int(std::ceil(std::hypot(b.x - a.x, b.y - a.y) * 4));
+                                for (int i = 0; i <= n; ++i) {
+                                    const double t = double(i) / n;
+                                    nearest        = std::min(nearest, distToWindow({a.x + (b.x - a.x) * t, a.y + (b.y - a.y) * t}, p.width, p.height, p.cut));
+                                }
+                            });
+                        const double hw = lay.panel.strokes[0].halfWidth;
+                        CHECK(nearest >= hw + 0.5);
+                        if (lay.centre.reachIn > 0)
+                            CHECK(lay.centre.reachIn + hw + 1 <= nearest + 0.2);
+                        if (g_failures)
+                            std::fprintf(stderr, "  %s: nearest %g, reachIn %g, half width %g\n", label(p).c_str(), nearest, lay.centre.reachIn, hw);
+                    }
 }
 
 void testBeadsAndRunners() {
@@ -473,6 +623,10 @@ void testBeadsAndRunners() {
     CHECK(pn.flare.radius > dot.radius);
     CHECK(pn.flare.reach > dot.reach);
     CHECK(pn.flare.haloAlpha >= dot.haloAlpha && pn.flare.haloAlpha <= 1);
+    // Clearly bigger and brighter than the dot, so that two dots passing each other are seen to light up.
+    CHECK(pn.flare.radius >= 1.5 * dot.radius);
+    CHECK(pn.flare.reach >= 2 * dot.reach);
+    CHECK(pn.flare.haloAlpha >= std::min(1.0, 1.5 * double(dot.haloAlpha)) - 1e-6);
     CHECK(pn.touch.near > 0 && pn.touch.far > pn.touch.near);
     CHECK(pn.merge.near > 0 && pn.merge.far > pn.merge.near);
     CHECK(pn.merge.far <= 0.35 * strokeLength(pn.strokes[0]) + 1e-9);
@@ -756,10 +910,14 @@ void testGlowOnPanels() {
         int   w, h;
         float scale;
         bool  floating;
+        bool  scanner = false;
     };
-    for (const Case& c : {Case{900, 600, 1.f, false}, {1100, 640, 1.f, false}, {1920, 1080, 1.f, true}, {1920, 1080, 1.5f, false}, {3840, 2160, 2.f, false}, {400, 300, 1.f, false}}) {
+    for (const Case& c : {Case{900, 600, 1.f, false}, {1100, 640, 1.f, false}, {1920, 1080, 1.f, true}, {1920, 1080, 1.5f, false}, {3840, 2160, 2.f, false}, {400, 300, 1.f, false},
+                          // the same with a scanner, which takes the corner the dots go round
+                          {900, 600, 1.f, false, true}, {1100, 640, 1.f, false, true}, {1920, 1080, 1.f, true, true}, {1920, 1080, 1.5f, false, true}, {3840, 2160, 2.f, false, true}, {400, 300, 1.f, false, true}}) {
         const int    before = g_failures;
-        const Params p      = params(c.w, c.h, c.scale, c.floating);
+        const Params base   = params(c.w, c.h, c.scale, c.floating);
+        const Params p      = c.scanner ? scanned(base) : base;
         const Layout lay    = buildLayout(panelStyle(), p);
         const Panel& pn     = lay.panel;
         const double lap    = strokeLength(pn.strokes[0]) / std::fabs(pn.runners[1].speed);
@@ -883,7 +1041,220 @@ void testExtents() {
                 CHECK(e.right >= e.left); // the traces run out on the right
                 for (const auto& size : kSizes)
                     CHECK(buildLayout(*st, params(size[0], size[1], s, floating)).extents == e);
+
+                // With a scanner the pod bulges out at the bottom right corner, so there is more room there
+                // and none more elsewhere, whether or not the window is big enough for the pod.
+                const Extents pod = extentsFor(*st, scanned(params(1000, 700, s, floating)));
+                CHECK(pod.left == e.left && pod.top == e.top);
+                CHECK(pod.right >= e.right && pod.bottom > e.bottom);
+                for (const auto& size : kSizes)
+                    CHECK(buildLayout(*st, scanned(params(size[0], size[1], s, floating))).extents == pod);
             }
+}
+
+// A window has a pod when it is five times as wide and as high as the scanner's picture, and one that has not
+// is just as it is without a scanner.
+void testPodOnAndOff() {
+    struct Case {
+        int   w, h;
+        float scale;
+        bool  on;
+    };
+    for (const Case& c : {Case{400, 300, 1.f, true},  {360, 270, 1.f, true},  {700, 400, 1.f, true},  {1920, 1080, 1.f, true}, {1920, 1080, 1.25f, true}, {1920, 1080, 1.5f, true},
+                          {1920, 1080, 2.f, true},    {3840, 2160, 1.f, true}, {3840, 2160, 2.f, true}, {720, 540, 2.f, true},   {359, 400, 1.f, false},    {400, 269, 1.f, false},
+                          {300, 300, 1.f, false},     {1000, 200, 1.f, false}, {40, 40, 1.f, false},    {719, 600, 2.f, false}, {900, 539, 2.f, false},    {400, 300, 2.f, false}}) {
+        const Params base = params(c.w, c.h, c.scale);
+        const Params p    = scanned(base);
+        const Layout none = buildLayout(panelStyle(), base), lay = buildLayout(panelStyle(), p);
+        CHECK(none.valid && lay.valid);
+        CHECK(!none.pod.on && none.pod.plate.empty());
+        CHECK(lay.pod.on == c.on);
+        if (lay.pod.on != c.on)
+            std::fprintf(stderr, "  ^ %s\n", label(p).c_str());
+        if (lay.pod.on) {
+            checkPod(lay, p, none);
+            continue;
+        }
+
+        CHECK(lay.pod.plate.empty() && lay.pod.picture == IBox{});
+        CHECK(lay.panel.strokes.size() == none.panel.strokes.size());
+        for (size_t i = 0; i < std::min(lay.panel.strokes.size(), none.panel.strokes.size()); ++i)
+            CHECK(same(lay.panel.strokes[i], none.panel.strokes[i]));
+        CHECK(lay.panel.beads.size() == none.panel.beads.size());
+        CHECK(lay.panel.runners.size() == none.panel.runners.size());
+        CHECK(lay.panel.lanes.size() == none.panel.lanes.size());
+    }
+
+    // Whatever the size of the scanner and the scale, a window has a pod as soon as it is that big, and not a
+    // pixel before.
+    for (int width : {32, 48, 72, 160})
+        for (float s : kScales) {
+            const int sw = int(std::lround(width * double(s))), sh = int(std::lround(width * 3 / 4 * double(s)));
+            const int gw = 5 * sw, gh = 5 * sh;
+            struct Window {
+                int  w, h;
+                bool on;
+            };
+            for (const Window& win : {Window{gw, gh, true}, {gw + 1, gh + 7, true}, {2 * gw, 2 * gh, true}, {gw, 4 * gh, true}, {4 * gw, gh, true}, {gw - 1, 3 * gh, false}, {3 * gw, gh - 1, false}}) {
+                const Params base = params(win.w, win.h, s);
+                const Params p    = scanned(base, width, width * 3 / 4);
+                const Layout none = buildLayout(panelStyle(), base), lay = buildLayout(panelStyle(), p);
+                CHECK(lay.pod.on == win.on);
+                if (lay.pod.on != win.on) {
+                    std::fprintf(stderr, "  ^ %s, scanner %dx%d\n", label(p).c_str(), p.scannerW, p.scannerH);
+                    continue;
+                }
+                if (lay.pod.on) {
+                    checkLayout(lay, p);
+                    checkPod(lay, p, none);
+                } else {
+                    CHECK(lay.pod.plate.empty());
+                    CHECK(lay.panel.strokes.size() == none.panel.strokes.size());
+                }
+            }
+        }
+}
+
+// The dots go round the pod and never over it, and pass every corner of the outline round it.
+void testDotsSkirtPod() {
+    int on = 0;
+    for (const auto& size : {std::pair{400, 300}, {700, 400}, {900, 600}, {1920, 1080}})
+        for (float s : kScales) {
+            const Params p   = scanned(params(size.first, size.second, s));
+            const Layout lay = buildLayout(panelStyle(), p);
+            if (!lay.pod.on)
+                continue;
+            ++on;
+
+            const int                before = g_failures;
+            const Panel&             pn     = lay.panel;
+            const std::vector<Vec2>& plate  = lay.pod.plate;
+            const double             len    = strokeLength(pn.strokes[0]);
+            const size_t             corners[6] = {3, 4, 5, 6, 7, 0};
+            for (const Runner& r : pn.runners) {
+                if (r.stroke != 0)
+                    continue;
+                const double lap = len / std::fabs(r.speed);
+                double       nearest[6] = {kInf, kInf, kInf, kInf, kInf, kInf};
+                for (double t = 0; t < lap; t += 0.25) {
+                    const RunnerPose pose = runnerPose(pn, r, t);
+                    CHECK(beyond(plate, pose.pos) > -1e-6);
+                    if (pose.alpha < 0.999f)
+                        continue;
+                    for (int k = 0; k < 6; ++k)
+                        nearest[k] = std::min(nearest[k], std::hypot(pose.pos.x - plate[corners[k]].x, pose.pos.y - plate[corners[k]].y));
+                }
+                for (double d : nearest)
+                    CHECK(d < 0.5);
+            }
+            if (g_failures != before)
+                std::fprintf(stderr, "  ^ %s\n", label(p).c_str());
+        }
+    CHECK(on >= 8);
+}
+
+// The traces, the beads at their ends and the columns of characters stay clear of the pod.
+void testTracesClearOfPod() {
+    int on = 0;
+    for (const auto& size : {std::pair{700, 400}, {900, 600}, {1920, 1080}, {3840, 2160}})
+        for (float s : kScales) {
+            const Params p   = scanned(params(size.first, size.second, s));
+            const Layout lay = buildLayout(panelStyle(), p);
+            if (!lay.pod.on)
+                continue;
+            ++on;
+
+            const int                before = g_failures;
+            const Panel&             pn     = lay.panel;
+            const std::vector<Vec2>& plate  = lay.pod.plate;
+            CHECK(pn.strokes.size() >= 4);
+            for (size_t i = 1; i < pn.strokes.size(); ++i) {
+                if (pn.strokes[i].alpha <= 0)
+                    continue; // the underglow has no line
+                for (const Vertex& v : pn.strokes[i].pts)
+                    CHECK(distToPolygon(plate, {v.x, v.y}) >= 3.0 * double(s));
+            }
+            for (const Bead& b : pn.beads)
+                CHECK(distToPolygon(plate, b.pos) >= b.radius + 1);
+            if (g_failures != before)
+                std::fprintf(stderr, "  ^ %s\n", label(p).c_str());
+        }
+    CHECK(on >= 8);
+
+    // The column of characters on the right ends above the pod. The one on the left goes as far as it does without one.
+    for (float s : kScales) {
+        const Params p     = scanned(params(900, 600, s));
+        const Layout lay   = buildLayout(matrixStyle(), p);
+        const Layout none  = buildLayout(matrixStyle(), params(900, 600, s));
+        CHECK(lay.pod.on && lay.pod.plate.size() == 8 && lay.panel.lanes.size() == none.panel.lanes.size());
+        if (!lay.pod.on || lay.pod.plate.size() != 8 || lay.panel.lanes.size() != none.panel.lanes.size())
+            continue;
+        for (size_t i = 0; i < lay.panel.lanes.size(); ++i) {
+            const RainLane&  lane = lay.panel.lanes[i];
+            const GlyphFace& face = faceOf(lay.panel, lane);
+            const GlyphSize  gs   = glyphSize(face);
+            const double     last = double(std::lround(lane.y0 + (lane.cells - 1) * face.pitch)) + gs.h / 2.0;
+            if (lane.x > p.width / 2.0) {
+                CHECK(last <= lay.pod.plate[3].y);
+                CHECK(lane.cells <= none.panel.lanes[i].cells);
+            } else {
+                CHECK(lane.cells == none.panel.lanes[i].cells);
+            }
+        }
+    }
+}
+
+// The two dots that go round the outline light each other up as they pass, the more the closer they are, at the
+// pod as anywhere else; they are both as bright as it gets where they meet.
+void testGlowWhenPassing() {
+    int counted = 0;
+    for (bool scanner : {false, true})
+        for (const auto& size : {std::pair{400, 300}, {900, 600}, {1920, 1080}})
+            for (float s : {1.f, 2.f}) {
+                const Params base = params(size.first, size.second, s);
+                const Params p    = scanner ? scanned(base) : base;
+                const Layout lay  = buildLayout(panelStyle(), p);
+                const Panel& pn   = lay.panel;
+                CHECK(pn.runners.size() >= 2 && pn.flare.radius > 0);
+                if (pn.runners.size() < 2)
+                    continue;
+
+                const Runner &a = pn.runners[0], &b = pn.runners[1];
+                const double len     = strokeLength(pn.strokes[0]);
+                const double closing = a.speed - b.speed; // px they gain on each other for every one they travel
+                CHECK(a.stroke == 0 && b.stroke == 0 && closing > 0 && pn.merge.far > 0);
+                const double dt = 0.5 * pn.merge.far / closing;
+
+                const int before = g_failures;
+                for (int n = 0; n < 24; ++n) {
+                    const double t     = (n + b.offset - a.offset) * len / closing;
+                    const auto   meet  = runnerPoses(pn, t);
+                    const auto   close = runnerPoses(pn, t - dt);
+                    CHECK(meet.size() == pn.runners.size() && close.size() == pn.runners.size());
+                    if (meet.size() != pn.runners.size() || close.size() != pn.runners.size())
+                        return;
+
+                    CHECK_NEAR(meet[0].pos.x, meet[1].pos.x, 1e-6);
+                    CHECK_NEAR(meet[0].pos.y, meet[1].pos.y, 1e-6);
+                    CHECK(meet[0].glow >= 0 && meet[1].glow >= 0);
+
+                    // Where the line is there for both to be seen, both light each other up all the way where they meet, and half
+                    // way as far as the glow reaches the glow is as the distance says.
+                    if (meet[0].alpha >= 1.f) {
+                        CHECK_NEAR(meet[0].glow, 1, kGlowTol);
+                        CHECK_NEAR(meet[1].glow, 1, kGlowTol);
+                        ++counted;
+                    }
+                    if (close[0].alpha >= 1.f && close[1].alpha >= 1.f) {
+                        const double expect = lit(0.5 * pn.merge.far, pn.merge);
+                        CHECK(close[0].glow >= expect - kGlowTol && close[1].glow >= expect - kGlowTol);
+                        CHECK(close[0].glow < meet[0].glow + kGlowTol);
+                    }
+                }
+                if (g_failures != before)
+                    std::fprintf(stderr, "  ^ %s\n", label(p).c_str());
+            }
+    CHECK(counted >= 40);
 }
 
 // ---------------------------------------------------------------------------
@@ -2673,6 +3044,10 @@ int main() {
     testFloating();
     testDeterministic();
     testExtents();
+    testPodOnAndOff();
+    testDotsSkirtPod();
+    testTracesClearOfPod();
+    testGlowWhenPassing();
     testGlyphFace();
     testLanes();
     testFewerColumns();

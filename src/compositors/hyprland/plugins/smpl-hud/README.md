@@ -9,7 +9,9 @@ columns of Matrix characters falling beside each of its sides, each further one
 smaller, dimmer and softer, as if it were further away, and slow green glows
 drifting along its top and bottom (the look of `matrix-hud`). Any of them can add
 a small animated scanner, like the radar of a space game, in the bottom right
-corner of every window (`hud_scanner`, which `amber-hud` uses).
+corner of every window (`hud_scanner`, which `amber-hud` uses). In a panel the
+outline bulges out round it, so that the corner is a small pod for it, and the
+dots that circle the outline skirt it.
 
 It is a **window decoration inside the compositor's own render pass**. It moves,
 resizes, animates, fades and stacks together with its window, so it never lags
@@ -29,15 +31,15 @@ it has no border line at all.
 | `geometry.{hpp,cpp}` | Compositor-free. The **style registry** (`kStyles[]`) and `buildLayout()`, which turns a style plus a window size into a list of concentric border rings and flat fills (ring styles) or a `Panel` of polylines and dots (panel styles), in physical pixels, and the centre line of the outline the travelling glow follows. |
 | `gradient.{hpp,cpp}` | Compositor-free. CPU port of Hyprland's `gradient.glsl`, so flat shapes (edge tabs, the lines of a panel) take the colour the border shader would paint at that point. Keep it in step with the shader. |
 | `sweep.{hpp,cpp}` | Compositor-free. The travelling glow, which is also what a lamp of the `matrix` style is drawn with: the outline's centre path (`buildPath` for a rounded rectangle or a polyline, `pointAt`), the sprite rasteriser (`renderSweep`), its bounds, and the speed, tick-rate and fade-in/out maths. |
-| `panel.{hpp,cpp}` | Compositor-free. The notched outline of a `Kind::Panel` style (`buildPanel`) and, for `amber-hud`, its traces and dots: where each dot is once it has travelled so far and how much it glows (`runnerPoses`). For the `matrix` style, the columns the characters fall in (`RainLane`), which characters are lit and how brightly (`glyphDraws`, `glyphChanges`), and where each lamp is, how long and how strong (`lampPose`). |
+| `panel.{hpp,cpp}` | Compositor-free. The notched outline of a `Kind::Panel` style (`buildPanel`), which bulges out round the scanner at the bottom right corner when the theme has one (`measurePod`, the `Pod` of the `Layout`), and, for `amber-hud`, its traces and dots: where each dot is once it has travelled so far and how much it glows (`runnerPoses`). For the `matrix` style, the columns the characters fall in (`RainLane`), which characters are lit and how brightly (`glyphDraws`, `glyphChanges`), and where each lamp is, how long and how strong (`lampPose`). |
 | `glyph.{hpp,cpp}` | Compositor-free. The characters of the `matrix` style: sixty half-width katakana, digits and signs, each a few strokes on a 4 × 6 grid, so no font is needed. |
 | `stamp.{hpp,cpp}` | Compositor-free. Turns the lines, dots and characters of a panel into small images the compositor can draw as textured quads: cuts a stroke into strips and tiles (`cutStroke`), bakes them (`bakeStrip`, `bakeTile`, `bakeBead`, `bakeGlyph`) and gives each a cache key. |
 | `place.{hpp,cpp}` | Compositor-free. `fitWithFrame()`: where the box of a floating window has to go so that its whole frame stays inside a monitor's usable area. It moves the box in from the edges and shrinks it only when it cannot fit. `parseFitRequest()` reads the window address out of a `hyprctl smplhud fit` request. The compositor side is `placeHudWindow()` and `runHudCommand()` (see "Floating windows"). |
 | `theme.{hpp,cpp}` | Compositor-free. Reads the `$themeHud*` variables from the generated `theme.conf`. |
-| `scanner.{hpp,cpp}` | Compositor-free. The scanner of a window (`hud_scanner`): its size and layout (`scannerSize`, `scannerLayout`), what a frame depends on (`ScannerSpec`, which the compositor side compares to know when to repaint) and the rasteriser (`renderScanner`): the rings, the ship, the sweeping arm and the contacts, as one premultiplied RGBA image. |
+| `scanner.{hpp,cpp}` | Compositor-free. The scanner of a window (`hud_scanner`): its size and layout (`scannerSize`, `scannerLayout`), what a frame depends on (`ScannerSpec`, which the compositor side compares to know when to repaint) and the rasteriser (`renderScanner`): the rings, the ship, the sweeping arm and the contacts, as one premultiplied RGBA image. Also the plate under that picture where the outline has made a pod for it (`plateOf`, `renderPlate`): dark glass, a halo and a bezel. |
 | `HudDecoration.{hpp,cpp}` | `IHyprWindowDecoration` on every window: reports the HUD's extents, caches the layout, collects the window's live (animated) border and glow gradients and queues a pass element. Owns the one timer that advances the focused window's travelling glow, dots, lamps and falling characters, and decides whose `border_animation` loops keep turning (see "Focus only"). Also keeps floating windows' frames on screen (see "Floating windows"). |
-| `ScannerDecoration.{hpp,cpp}` | A second `IHyprWindowDecoration` on every window, on the layer over the window, which reserves no room: the scanner (see "The scanner"). Owns its own timer, which advances the focused window's scanner, fades it between focus and rest and steps it aside from the pointer. |
-| `HudPassElement.{hpp,cpp}` | Draws the layout with the compositor's border shader and plain rects, or the panel's cached images, then the travelling glow's (or each lamp's) cached sprite and the dots or characters. Its second element draws a scanner's cached image. |
+| `ScannerDecoration.{hpp,cpp}` | A second `IHyprWindowDecoration` on every window, on the layer over the window, which reserves no room: the scanner (see "The scanner"), in the pod of the frame where the window has one. Owns its own timer, which advances the focused window's scanner, fades it between focus and rest and steps it aside from the pointer. |
+| `HudPassElement.{hpp,cpp}` | Draws the layout with the compositor's border shader and plain rects, or the panel's cached images, then the travelling glow's (or each lamp's) cached sprite and the dots or characters. Its second element draws the plate under a scanner, blurring what lies under its glass where the theme and the compositor allow it, and then the scanner's cached image. |
 | `main.cpp` | Plugin entry points: ABI check, event listeners (window open, floating, moved to another workspace, active window, fullscreen, config reload, tick), the `hyprctl smplhud` command, cleanup. |
 | `tests/` | Unit tests for the compositor-free parts, and `preview.cpp`, which renders a panel, a matrix frame or the character set to a PPM image so a look can be judged without a compositor. |
 
@@ -63,7 +65,8 @@ Hyprland config reload, which `theme-set` triggers. Values are clamped.
 | `$themeHudSideOpacity` | `hud_side_opacity` | `1` | 0 to 1; how visible the outline of a `panel` or `matrix` is down its left and right sides, its halo beside it with it, and the corners fade between that and the top and the bottom edge's (`hud_edge_opacity`). A theme whose characters fall there dims it so that they stand out: `0.1` leaves it almost unseen, `0` none at all, `1` as strong as the rest. The ring styles ignore it; not a number, it is ignored |
 | `$themeHudEdgeOpacity` | `hud_edge_opacity` | `1` | 0 to 1; the same along the top and the bottom edge of a `panel` or `matrix` outline: `1` is the full line, `0.1` as dark as the sides of `matrix-hud`, `0` none at all (the lamps of a `matrix`, which have a track of their own, and the underglow are not dimmed by it). The ring styles ignore it; not a number, it is ignored |
 | `$themeHudUnderglow` | `hud_underglow` | `0` | 0 to 1; how bright a glow is along the window's own top and bottom edge that fades out away from the window, so that the light seems to come from under it. It has no line, reaches as far out as the outline's halo, dies away towards the corners and is as still as the outline. `0` has none; the ring styles ignore it; not a number, it is ignored |
-| `$themeHudScanner` | `hud_scanner` | `0` | `0` or 24 to 160 px; how wide the scanner in the bottom right corner of every framed window is (three quarters as high), or `0` for none. See "The scanner"; not a number, it is ignored |
+| `$themeHudScanner` | `hud_scanner` | `0` | `0` or 24 to 160 px; how wide the scanner in the bottom right corner of every framed window is (three quarters as high), or `0` for none. `amber-hud` has 72. See "The scanner"; not a number, it is ignored |
+| `$themeHudScannerBlur` | `hud_scanner_blur` | `true` | `true` / `false`; whether the glass of the pod round the scanner blurs what lies under it, so that the window's text does not show through. It blurs only while the compositor's own blur is on (`decoration:blur:enabled`) and is not `xray`; otherwise, and with `false`, the glass is flat and more opaque. A scanner with no pod has no glass. Anything else is ignored |
 
 Frame and glow colours are not keys of their own: the plugin paints with each
 window's own border gradient (`border_active` / `border_inactive`) and glow gradient
@@ -97,7 +100,8 @@ the focus, the first two in `HudDecoration.cpp`, the third in `ScannerDecoration
   The others show it where it stopped, at 40 % of its strength, and it comes up to
   full and goes back down in half a second as focus moves.
 
-None of them adds a theme key beyond the one that turns the scanner on:
+None of them adds a theme key beyond the one that turns the scanner on
+(`hud_scanner_blur` only decides whether its glass blurs what is under it):
 `hud_sweep` and `border_animation` stay the switches of the first two, `hud_scanner`
 alone decides the scanner (`hud_sweep = "false"` does not still it), and the cost no
 longer grows with the number of windows.
@@ -232,6 +236,21 @@ corner.
   The notches are 9 px deep with `hud_gap` 13 or more, shrink below that and are
   gone under 7. The bottom-left cut is limited by the window's own corner cut
   (`rounding`), so a window with a larger `rounding` gets a deeper one.
+- **The pod.** With a scanner (`hud_scanner`, see "The scanner") the corner at the
+  bottom right is not chamfered: the outline steps out from the right side, runs
+  down the right edge of a plate for the scanner's picture, round its corner and
+  back along its bottom, and steps in to the bottom edge again (`bottomRight()`).
+  The dots that go round the outline skirt it, and the trace on the right side
+  ends 4 px above it. At scale 1 it pokes 8 px beyond the frame, its outer corner
+  is cut 14 px, the plate reaches 3 px beyond the picture all round and its bezel,
+  the edge on the window's side, has a corner cut 9 px (`measurePod()`,
+  `Layout::pod`). It is also in the plain outline of a small frame. A window gets
+  one only if it is five times as wide, and as high, as the picture and the plate
+  fits inside the frame without crowding the notches (a pod that would leave them
+  no room gives way to them); otherwise it keeps the chamfer, and the scanner
+  stands in the corner by itself. The frame's extents, which do not depend on the
+  window's size, always have room for the pod, and the gradient the lines take
+  their colour from is measured over a box that holds the pod too.
 - **Three traces** run beyond the outline and end in beads (a style with a
   `traceOffset` of 0, like `matrix`, has none). A window whose frame
   (the window plus the outline's clearance) is smaller than 480 × 160 logical px,
@@ -251,7 +270,7 @@ corner.
 - **Glow.** A dot going round lights up as it nears a dot bouncing on a trace
   (straight-line distance, `Panel::touch`: fully lit within 14 px, not at all from
   70 px, at scale 1) and as it nears the other dot going round (distance along the
-  outline, `Panel::merge`: from an eighth of the outline's length away, but from
+  outline, `Panel::merge`: from 12% of the outline's length away, but from
   no less than 200 and no more than 500 px at scale 1 and never from more than
   35% of the outline, and fully lit within a tenth of that), so both of the two
   swell and brighten as they close in on each other, are brightest as they pass and
@@ -493,7 +512,7 @@ right corner: a flat disc seen at a slant, like the radar of a space game, with
 three rings inside a brighter rim, a bright arrow for the ship in the middle, an
 arm that sweeps round and lights the contacts it passes (up to four small markers
 that float above or below the disc on thin stalks and drift across it). It is
-`hud_scanner` px wide and three quarters of that high; `amber-hud` has 48.
+`hud_scanner` px wide and three quarters of that high; `amber-hud` has 72.
 
 - **A picture, not geometry.** `renderScanner()` (`scanner.cpp`) makes the whole
   frame on the CPU from its `ScannerSpec` alone (size, frame of the clock, seed
@@ -506,12 +525,30 @@ that float above or below the disc on thin stalks and drift across it). It is
   halo its `Glow` paint, so it follows the theme, the focus fade and
   `border_animation`'s rotation like the frame does. While those animate the
   scanner is repainted with them.
-- **Where.** It stands in the corner of the window, `max(6, 0.3 * rounding + 2)`
-  logical px in from both edges, clear of the rounding of the corner. It is a
-  decoration on the layer over the window (`DECORATION_LAYER_OVER`), drawn right
-  after the window's own picture, so it lies on the window's content; windows
-  above it and popups still cover it. It reserves no room around the window and
-  takes no input.
+- **Where.** In a `panel` style it stands in the pod the frame has made for it (see
+  "The `panel` style"), a plate in the bottom right corner whose right and bottom
+  edge are the outline itself, so that the corner is a part of the frame and not
+  something laid over it. Where there is no pod (the ring styles, a window too small
+  for one) it stands in the corner of the window, `max(6, 0.3 * rounding + 2)`
+  logical px in from both edges, clear of the rounding of the corner, with no
+  plate. Either way it is a decoration on the layer over the window
+  (`DECORATION_LAYER_OVER`), drawn right after the window's own picture, so it lies
+  on the window's content; windows above it and popups still cover it. It reserves
+  no room around the window and takes no input.
+- **The glass.** The plate of a pod is a picture of its own (`plateOf()`,
+  `renderPlate()`), drawn under the scanner's: dark glass over the window, tinted a
+  little with the line's colour and held by the outline along the right and bottom
+  edge, with a bezel along the sides that are on the window: a line as thick as the
+  outline's, a halo outside it on the window and a faint rim lit just inside. It
+  depends on nothing but the pod's shape, the scale and the colours of the line and
+  the glow where it stands, so it is made again only when one of those changes, and
+  is kept for each window. The glass is 85 % opaque, or 62 % where it blurs what
+  lies under it: with `hud_scanner_blur` on (the default), the compositor's
+  `decoration:blur:enabled` on and `decoration:blur:xray` off, `drawBlurred()` lays
+  the frame so far, blurred, under every px of the plate that is more opaque than
+  its halo, so the window's text does not show through (the halo stays clear);
+  without any of those it is flat glass. The blur uses the compositor's own blur
+  settings, as for a translucent window. A scanner with no pod has no glass.
 - **Where not.** Windows without a frame, fullscreen windows, and windows less
   than five times as wide, or as high, as the scanner have none. A window on a
   screen that is off, or on a locked session, advances nothing.
@@ -519,20 +556,30 @@ that float above or below the disc on thin stalks and drift across it). It is
   they stopped at 40 % of their strength, and moving the focus fades one down and
   the other up over half a second.
 - **The pointer.** The scanner lies over the window's content, so it gives way:
-  while the pointer is within three quarters of the scanner's width of it, it
-  fades out in 0.15 s, and when the pointer has gone it fades back in over 0.6 s,
+  while the pointer is within 0.4 of the scanner's width of it (of its plate, where
+  it has one), it fades out in 0.15 s, and when the pointer has gone it fades back in over 0.6 s,
   slowly so that a pointer passing by does not make it flicker. Nothing is drawn or
   repainted while it is out of the way. It steps aside for the pointer only, not
   for the keyboard: a status line in the corner of a terminal is under it (turn it
   off with `hud_scanner = 0` if that is in the way).
 - **Cost.** One timer (`ScannerDecoration.cpp`) runs only while the theme has a
-  scanner. It steps 30 times a second while a scanner moves or fades and polls ten
-  times a second otherwise, which is also how it sees the pointer come near.
-  Rendering costs about as much as the rain of `matrix-hud` while a window is
-  focused and nothing otherwise.
-- **Preview.** `build/preview scanner 6 amber 48 1 0 0 8 3 0.4 > scanner.ppm`
-  draws a 48 px scanner at 6 times its size, eight moments 0.4 s apart over a dark,
-  a grey and a light window, to judge the look without a compositor.
+  scanner. It steps 30 times a second while a scanner moves or fades (on the beats
+  of the glow's timer where that is running, so that one frame is not drawn twice)
+  and polls ten times a second otherwise, which is also how it sees the pointer
+  come near. A scanner at rest repaints nothing. Measured in a throwaway headless
+  Hyprland on a desktop GPU, with three windows and one of them focused (six runs
+  of 20 s for each case), the compositor took 1.3 % of one CPU core with
+  `hud_scanner = 0` (the rest of the frame still drawn), 3.4 % with the scanner and
+  `hud_scanner_blur = false`, and 4.8 % with the blur. Each difference is more than
+  twice its standard error (about 0.6 points), so it is real, and it is small; the
+  GPU load stayed within the noise of its reading (1 to 2 %). The blur is the
+  dearest part.
+- **Preview.** `build/preview scanner 4 amber 72 1 0 0 8 3 0.4 > scanner.ppm`
+  draws a 72 px scanner at 4 times its size, eight moments 0.4 s apart over a dark,
+  a grey and a light window, to judge the look without a compositor. The pod it
+  stands in is drawn by `build/preview panel 1280 720 1 1 0 0 0 amber 1 0 15 1 1 0 72 > pod.ppm`
+  (the last 72 is the scanner's width; the arguments are listed at the top of
+  `tests/preview.cpp`).
 
 ## ABI and delivery
 
@@ -597,8 +644,9 @@ session you work in, and load a build by path with
 - Without the plugin, a theme with `hud_hide_border` has no border line at all
   (the others keep Hyprland's own border).
 - A `panel` or `matrix` is a frame, not a window shape: the window itself stays a uniformly
-  chamfered rectangle (`rounding`, `rounding_power`), and the notches, the step and
-  the bottom-left cut are lines drawn in the margin around it.
+  chamfered rectangle (`rounding`, `rounding_power`), and the notches, the step, the
+  bottom-left cut and the pod are lines drawn in the margin around it. Only the glass
+  of the pod lies on the window's corner (see "The scanner").
 - The scanner lies over the window's content (see "The scanner"), so it can hide
   what is in the bottom right corner of a window, such as a status line or the
   last button of a toolbar. It steps aside for the pointer, not for the keyboard,

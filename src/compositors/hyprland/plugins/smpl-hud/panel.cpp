@@ -697,9 +697,11 @@ void buildPanel(const Style& style, const Params& p, Layout& out) {
     const int    right = std::max({logical(std::ceil(f.c + f.tau) + room), logical(std::ceil(f.c + poke) + room), logical(columns)});
     out.extents        = {std::max(side, logical(columns)), side, right, logical(std::ceil(f.c + poke) + room)};
 
+    // The gradient is measured over a box that holds the whole outline: the pod's too, where it is.
     const double clear = minClearance(f);
     const int    edge  = int(std::ceil(f.c + f.hw));
-    out.sampleBox      = {-edge, -edge, p.width + 2 * edge, p.height + 2 * edge};
+    const int    more  = pod.on ? int(std::ceil(f.c + pod.p + f.hw)) - edge : 0;
+    out.sampleBox      = {-edge, -edge, p.width + 2 * edge + more, p.height + 2 * edge + more};
     out.centre         = {f.left, f.top, f.fw(), f.fh(), f.a, 1.0, std::max(0.0, clear - f.hw - 1), f.hw + reach};
     out.valid          = true;
 }

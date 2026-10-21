@@ -84,8 +84,8 @@ Image renderScanner(const ScannerSpec& spec);
 // The plate under the scanner's picture where a panel style has made a pod for it (`Pod` in
 // geometry.hpp): dark glass over the window, held by the outline where it meets the frame and edged
 // by a bezel, a line like the outline's, along the sides that are on the window. It depends on
-// nothing but the pod's shape, the scale and the colours, not on where the window is, so the image
-// of one window serves every other one.
+// nothing but the pod's shape, the scale and the colours, not on where the window is, so equal
+// specs make equal images and a window keeps its plate for as long as the spec stays the same.
 // How opaque the glass is, 0..1. Where the compositor blurs what lies under the glass the blur does
 // part of the hiding, so it can be lighter than where it is flat.
 constexpr double kPlateGlassFlat    = 0.85;
