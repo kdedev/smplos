@@ -15,6 +15,10 @@ constexpr double kDiscAspect  = 0.42;
 constexpr double kPad         = 3.5; // room round the disc for its glow, in u
 constexpr int    kMaxWidth    = 2048;
 
+// The plate of a pod, at scale 1, in px.
+constexpr double kPlateReach = 5; // how far the halo of the bezel reaches out onto the window
+constexpr double kPlateRim   = 7; // how far the lit rim just inside the bezel reaches in
+
 constexpr double kLongestClock = 1e9; // seconds; a clock past that, 31 years, stays there
 
 constexpr double kArmPeriod  = 4.4; // seconds a turn
@@ -24,6 +28,11 @@ constexpr double kPingLength = 1.9;
 // Also for NaN, which becomes 0.
 double clamp01(double v) {
     return v > 0 ? (v < 1 ? v : 1) : 0;
+}
+
+// How far the bezel's halo reaches out onto the window at this scale, whole px.
+int plateReachOf(double scale) {
+    return std::max(1, int(std::lround(kPlateReach * scale)));
 }
 
 double mixd(double a, double b, double t) {
@@ -89,6 +98,15 @@ struct Px {
         b                 = c.b * alpha + b * keep;
         a                 = alpha + a * keep;
     }
+
+    // Premultiplied bytes at `d`.
+    void store(uint8_t* d) const {
+        const int alpha = int(std::lround(clamp01(a) * 255));
+        d[3]            = uint8_t(alpha);
+        d[0]            = uint8_t(std::min(alpha, int(std::lround(clamp01(r) * 255))));
+        d[1]            = uint8_t(std::min(alpha, int(std::lround(clamp01(g) * 255))));
+        d[2]            = uint8_t(std::min(alpha, int(std::lround(clamp01(b) * 255))));
+    }
 };
 
 // How much of a px is covered by a stroke `w` px wide whose middle is `d` px from the px's middle.
@@ -120,14 +138,17 @@ double segmentDist(double x, double y, double ax, double ay, double bx, double b
     return std::hypot(x - (ax + t * dx), y - (ay + t * dy));
 }
 
-// A convex shape of up to 4 corners, kept as the lines of its sides.
+// A convex shape of up to 8 corners, kept as the lines of its sides.
+constexpr int kMaxCorners = 8;
+
 struct Poly {
     int    n = 0;
-    double nx[4]{}, ny[4]{}, c[4]{};
+    double nx[kMaxCorners]{}, ny[kMaxCorners]{}, c[kMaxCorners]{};
 };
 
 Poly polyOf(const Vec2* v, int n) {
-    Poly   p;
+    Poly p;
+    n   = std::clamp(n, 0, kMaxCorners);
     p.n = n;
     Vec2 mid{};
     for (int i = 0; i < n; ++i) {
@@ -209,9 +230,13 @@ ScannerLayout scannerLayout(const ScannerSize& size) {
 }
 
 ScannerSpec scannerSpecOf(const ScannerSize& size, double clock, uint32_t seed, const ScannerPalette& palette) {
+    return scannerSpecOfFrame(size, clock > 0 ? long(std::floor(std::min(clock, kLongestClock) * kScannerFps)) : 0, seed, palette);
+}
+
+ScannerSpec scannerSpecOfFrame(const ScannerSize& size, long frame, uint32_t seed, const ScannerPalette& palette) {
     ScannerSpec s;
     s.size  = size;
-    s.frame = clock > 0 ? long(std::floor(std::min(clock, kLongestClock) * kScannerFps)) : 0;
+    s.frame = std::clamp(frame, 0L, long(kLongestClock * kScannerFps));
     s.seed  = seed;
 
     const Rgba* from[3] = {&palette.line, &palette.bright, &palette.glow};
@@ -440,12 +465,130 @@ Image renderScanner(const ScannerSpec& spec) {
                 if (m.c.foot.y > cy)
                     drawMarker(out, m, x, y);
 
-            uint8_t* d  = &img.rgba[(size_t(py) * size_t(l.w) + size_t(pxi)) * 4];
-            const int a = int(std::lround(clamp01(out.a) * 255));
-            d[3]        = uint8_t(a);
-            d[0]        = uint8_t(std::min(a, int(std::lround(clamp01(out.r) * 255))));
-            d[1]        = uint8_t(std::min(a, int(std::lround(clamp01(out.g) * 255))));
-            d[2]        = uint8_t(std::min(a, int(std::lround(clamp01(out.b) * 255))));
+            uint8_t* d = &img.rgba[(size_t(py) * size_t(l.w) + size_t(pxi)) * 4];
+            out.store(d);
+        }
+    }
+
+    return img;
+}
+
+IBox plateBox(const Pod& pod, double scale) {
+    const size_t n = pod.plate.size();
+    if (!pod.on || n < 4 || n > size_t(kMaxCorners) || pod.bezel < 1 || size_t(pod.bezel) >= n || !(scale > 0))
+        return {};
+
+    const int reach = plateReachOf(scale);
+
+    double minX = pod.plate[0].x, maxX = minX, minY = pod.plate[0].y, maxY = minY;
+    for (const Vec2& v : pod.plate) {
+        minX = std::min(minX, v.x);
+        maxX = std::max(maxX, v.x);
+        minY = std::min(minY, v.y);
+        maxY = std::max(maxY, v.y);
+    }
+    // Whole px, with room for the halo, so that where the image goes does not depend on where the window is.
+    const int x0 = int(std::floor(minX)) - reach, y0 = int(std::floor(minY)) - reach;
+    const int x1 = int(std::ceil(maxX)) + reach, y1 = int(std::ceil(maxY)) + reach;
+    return {x0, y0, x1 - x0, y1 - y0};
+}
+
+Plate plateOf(const Pod& pod, double scale, const ScannerPalette& palette, double glass) {
+    Plate      out;
+    const IBox box = plateBox(pod, scale);
+    if (box.w <= 0 || box.h <= 0)
+        return out;
+
+    PlateSpec& s = out.spec;
+    s.w          = box.w;
+    s.h          = box.h;
+    for (const Vec2& v : pod.plate)
+        s.pts.push_back({v.x - box.x, v.y - box.y});
+    s.bezel       = pod.bezel;
+    s.halfWidth16 = std::max(1, int(std::lround(pod.halfWidth * 16)));
+    s.reach       = plateReachOf(scale);
+    s.glass       = uint8_t(std::lround(clamp01(glass) * 255));
+
+    const Rgba* from[2] = {&palette.line, &palette.glow};
+    uint8_t*    to[2]   = {s.line, s.glow};
+    for (int i = 0; i < 2; ++i) {
+        to[i][0] = levelOf(from[i]->r);
+        to[i][1] = levelOf(from[i]->g);
+        to[i][2] = levelOf(from[i]->b);
+    }
+
+    out.box = box;
+    return out;
+}
+
+Image renderPlate(const PlateSpec& s) {
+    Image        img;
+    const size_t n = s.pts.size();
+    if (s.w <= 0 || s.h <= 0 || n < 4 || n > size_t(kMaxCorners) || s.bezel < 1 || size_t(s.bezel) >= n)
+        return img;
+
+    img.w = s.w;
+    img.h = s.h;
+    img.rgba.assign(size_t(s.w) * size_t(s.h) * 4, 0);
+
+    const Poly   poly  = polyOf(s.pts.data(), int(n));
+    const double hw    = s.halfWidth16 / 16.0;
+    const double reach = std::max(1, s.reach), rim = reach * (kPlateRim / kPlateReach);
+    const double glass = s.glass / 255.0;
+    const Rgba   line = colourOf(s.line), glow = colourOf(s.glow), tint = scaled(line, 0.07);
+
+    for (int y = 0; y < s.h; ++y) {
+        for (int x = 0; x < s.w; ++x) {
+            const double px = x + 0.5, py = y + 0.5;
+
+            // How far the px is outside each side. The sides on the outline are moved in by the thickness of its
+            // line, which the frame draws; the sides of the bezel are not, as the bezel is drawn here.
+            double best = -1e30, second = -1e30, plain = -1e30;
+            int    bestAt = 0;
+            for (int i = 0; i < poly.n; ++i) {
+                const double d = poly.nx[i] * px + poly.ny[i] * py - poly.c[i];
+                const double v = i < s.bezel ? d : d + hw;
+                plain          = std::max(plain, d);
+                if (v > best) {
+                    second = best;
+                    best   = v;
+                    bestAt = i;
+                } else if (v > second) {
+                    second = v;
+                }
+            }
+
+            // how far the px is from the bezel itself, the sides it has and no more
+            double near = 1e30;
+            for (int i = 0; i < s.bezel; ++i)
+                near = std::min(near, segmentDist(px, py, s.pts[size_t(i)].x, s.pts[size_t(i)].y, s.pts[size_t(i) + 1].x, s.pts[size_t(i) + 1].y));
+
+            Px out;
+
+            // the halo of the bezel, out on the window
+            if (plain > 0 && near < reach) {
+                const double k = 1 - near / reach;
+                out.over(glow, kPlateHaloAlpha * k * k);
+            }
+
+            const double fill = fillCover(best);
+            out.over(tint, fill * glass);
+
+            // the rim lit just inside the bezel
+            if (near < rim) {
+                const double k = 1 - near / rim;
+                out.over(line, fill * 0.16 * k * k);
+            }
+
+            // the line of the bezel, as thick as the outline's and just inside the edge of the plate
+            double cover = 0;
+            for (int i = 0; i < s.bezel; ++i) {
+                const double d = poly.nx[i] * px + poly.ny[i] * py - poly.c[i];
+                cover          = std::max(cover, std::min(strokeCover(d + hw, 2 * hw), fillCover(i == bestAt ? second : best)));
+            }
+            out.over(line, cover * 0.95);
+
+            out.store(&img.rgba[(size_t(y) * size_t(s.w) + size_t(x)) * 4]);
         }
     }
 

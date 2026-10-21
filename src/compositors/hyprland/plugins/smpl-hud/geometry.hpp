@@ -20,6 +20,7 @@ struct IBox {
 
 struct Vec2 {
     double x = 0, y = 0;
+    bool   operator==(const Vec2&) const = default;
 };
 
 // How far the HUD paints past each side of the window box, in logical px.
@@ -139,6 +140,11 @@ struct Params {
     double sideOpacity    = 1;   // 0..1: how visible the outline of a panel style is down its left and right sides (1: as everywhere else); the corners fade between a side and an edge
     double edgeOpacity    = 1;   // 0..1: the same along its top and bottom edge
     double underglow      = 0;   // 0..1: how bright a glow is that lies along the top and the bottom edge and fades out away from the window, as if it shone from under it; 0 has none
+
+    // The size, in physical px, of the scanner's picture (the theme's `hud_scanner`): a panel style
+    // bulges its outline out at the bottom right corner to hold it. 0 has no scanner, so no pod.
+    int scannerW = 0;
+    int scannerH = 0;
 };
 
 // The rounded rectangle through the middle of the line: the track the sweep
@@ -299,11 +305,28 @@ struct Panel {
     bool empty() const { return strokes.empty(); }
 };
 
+// The pod: where the outline of a panel style bulges out at the bottom right corner, in place of the
+// chamfer, to hold the scanner. The outline itself goes round it, so the dots that travel along the outline
+// skirt it; the scanner draws the plate inside and a bezel on the window's side of it (scanner.hpp).
+struct Pod {
+    bool on = false; // false: no pod, the corner is chamfered like the others
+
+    IBox picture; // where the scanner's picture goes, window-relative physical px
+
+    // The plate, a convex shape clockwise, window-relative physical px, with the lines of the outline running
+    // along it: its first `bezel` edges (from the first vertex) are the bezel, which is on the window and
+    // has no outline of its own; the rest lie on the centre line of the outline.
+    std::vector<Vec2> plate;
+    int               bezel     = 3;
+    double            halfWidth = 1; // half the thickness of the line, px
+};
+
 struct Layout {
     bool              valid = false;
     std::vector<Ring> rings;  // drawn in order
     std::vector<Fill> fills;  // drawn after all rings, in order
     Panel             panel;  // the shapes of a Kind::Panel style; empty for ring styles
+    Pod               pod;    // the scanner's place in a Kind::Panel style that makes room for one
     IBox              sampleBox; // box the line gradient is normalised over
     Centreline        centre;
     Extents           extents;

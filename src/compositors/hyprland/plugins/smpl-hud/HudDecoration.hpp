@@ -115,6 +115,22 @@ struct SHudColours {
 // None while the window has no frame to take them from.
 std::optional<SHudColours> hudColoursOf(const PHLWINDOW& window);
 
+// The layout of a window's frame as it was last drawn, and what it was built
+// for: the room the frame has made in the window's corner for the scanner is
+// part of it, in physical px from the window's top left corner.
+struct SHudLayout {
+    std::shared_ptr<const smplhud::Layout> layout;
+    float                                  scale = 1;
+    int                                    width = 0, height = 0; // of the window, physical px
+};
+
+// None until the frame has been drawn once, and while it cannot be.
+std::optional<SHudLayout> hudLayoutOf(const PHLWINDOW& window);
+
+// Whether the travelling glow is stepping now, which sets the beat of every
+// other thing that moves with the frame.
+bool hudSweepBeating();
+
 // A window decoration that paints the HUD in the compositor's own render pass,
 // with the window's live animated geometry, so it can never lag behind it and
 // sits in the right place in the window stack. It takes no input.
@@ -139,6 +155,9 @@ class CHudDecoration : public IHyprWindowDecoration {
     // The colours of the frame this decoration drew last, and the box they are
     // spread over; none before the first frame, or while it cannot be drawn.
     std::optional<SHudColours> colours() const;
+
+    // The layout it drew last; none before the first frame, or while it cannot be drawn.
+    std::optional<SHudLayout> layout() const;
 
     PHLWINDOW window() const {
         return m_window.lock();

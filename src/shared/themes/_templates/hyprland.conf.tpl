@@ -44,3 +44,4 @@ $themeHudSideOpacity = {{ hud_side_opacity }}
 $themeHudEdgeOpacity = {{ hud_edge_opacity }}
 $themeHudUnderglow = {{ hud_underglow }}
 $themeHudScanner = {{ hud_scanner }}
+$themeHudScannerBlur = {{ hud_scanner_blur_flag }}

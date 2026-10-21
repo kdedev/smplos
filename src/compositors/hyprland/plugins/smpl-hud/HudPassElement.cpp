@@ -6,6 +6,7 @@
 #include <unordered_map>
 
 #include <drm_fourcc.h>
+#include <hyprland/src/config/ConfigValue.hpp>
 #include <hyprland/src/render/OpenGL.hpp>
 #include <hyprland/src/render/Renderer.hpp>
 
@@ -116,6 +117,24 @@ namespace {
             data.damage   = &damage;
             data.a        = alpha;
             data.allowDim = false;
+            g_pHyprOpenGL->renderTexture(texture, box, data);
+        }
+
+        // Like `draw`, with what lies under the texture blurred first: the frame so far, blurred, is laid
+        // under every px of it that is more opaque than `stencil`. `alpha` fades the blur with the texture.
+        void drawBlurred(const SP<Render::ITexture>& texture, const CBox& box, CRegion& damage, float alpha, float stencil) const {
+            CRegion blurDamage = damage.copy();
+
+            CHyprOpenGLImpl::STextureRenderData data;
+            data.blur                  = true;
+            data.blockBlurOptimization = true; // the window under it is in the frame already, and is what is blurred
+            data.blurredBG             = g_pHyprRenderer->blurMainFramebuffer(1.F, &blurDamage);
+            data.damage                = &damage;
+            data.a                     = 1.F;
+            data.overallA              = alpha;
+            data.allowDim              = false;
+            data.discardMode           = DISCARD_ALPHA;
+            data.discardOpacity        = stencil;
             g_pHyprOpenGL->renderTexture(texture, box, data);
         }
 
@@ -438,6 +457,58 @@ CScannerPassElement::CScannerPassElement(SScannerFrame frame) : m_frame(std::mov
     ;
 }
 
+namespace {
+    // The blur is kept to the glass: it starts above the halo of the bezel, which is not blurred.
+    constexpr float kGlassStencil = float(0.5 * (smplhud::kPlateHaloAlpha + smplhud::kPlateGlassBlurred));
+
+    // Whether the glass of the scanner's plate blurs what lies under it: the
+    // compositor blurs at all, and not only what is behind every window (xray),
+    // which this is not: the plate is on a window, and blurs the window.
+    bool glassBlurs(const SScannerFrame& frame) {
+        static auto PBLUR = CConfigValue<Config::INTEGER>("decoration:blur:enabled");
+        static auto PXRAY = CConfigValue<Config::INTEGER>("decoration:blur:xray");
+        return frame.blur && frame.layout && frame.layout->pod.on && *PBLUR && !*PXRAY;
+    }
+
+    // The plate of the pod, drawn under the picture where the frame has made
+    // room for the scanner: dark glass over the window, held by a bezel. It
+    // blurs what it covers if the glass is to.
+    void drawPlate(const CTextureScope& scope, const SScannerFrame& frame, const smplhud::ScannerPalette& palette, float alpha) {
+        if (!frame.layout || !frame.layout->pod.on)
+            return;
+
+        const bool blur  = glassBlurs(frame);
+        const auto plate = smplhud::plateOf(frame.layout->pod, frame.scale, palette, blur ? smplhud::kPlateGlassBlurred : smplhud::kPlateGlassFlat);
+        if (!plate.valid())
+            return;
+
+        const CBox box    = {frame.window.x + plate.box.x, frame.window.y + plate.box.y, double(plate.box.w), double(plate.box.h)};
+        auto       damage = scope.damageIn(outward(box));
+        if (damage.empty())
+            return;
+
+        auto& cache = *frame.cache;
+        if (!cache.plate || !(cache.plateSpec == plate.spec)) {
+            cache.plate.reset();
+
+            auto image = smplhud::renderPlate(plate.spec);
+            if (image.empty())
+                return;
+
+            cache.plate     = g_pHyprRenderer->createTexture(DRM_FORMAT_ABGR8888, image.rgba.data(), uint32_t(image.w) * 4, {double(image.w), double(image.h)});
+            cache.plateSpec = plate.spec;
+        }
+
+        if (!cache.plate || !cache.plate->ok())
+            return;
+
+        if (blur)
+            scope.drawBlurred(cache.plate, box, damage, alpha, kGlassStencil);
+        else
+            scope.draw(cache.plate, box, damage, alpha);
+    }
+}
+
 std::vector<UP<IPassElement>> CScannerPassElement::draw() {
     const auto& frame = m_frame;
     if (!frame.cache || frame.size.w <= 0 || frame.size.h <= 0 || frame.alpha < 0.002F)
@@ -446,42 +517,45 @@ std::vector<UP<IPassElement>> CScannerPassElement::draw() {
     g_pHyprRenderer->blend(true);
     g_pHyprOpenGL->scissor(nullptr);
 
-    // The picture is premultiplied RGBA and goes only where the damage says.
+    // The pictures are premultiplied RGBA and go only where the damage says.
     const CTextureScope scope;
-    CRegion             damage = scope.damageIn(outward(frame.box));
-    if (damage.empty())
-        return {};
 
     // The colours the frame has where the scanner stands.
     const double x      = frame.box.x + frame.box.width / 2 - frame.window.x;
     const double y      = frame.box.y + frame.box.height / 2 - frame.window.y;
     const auto   colour = [&](smplhud::Paint paint) { return paintAt(frame.paints[size_t(paint)], frame.sampleBox, x, y); };
     const auto   line   = colour(smplhud::Paint::Line);
-    const auto   spec   = smplhud::scannerSpecOf(frame.size, frame.clock, frame.seed, {line, colour(smplhud::Paint::Bright), colour(smplhud::Paint::Glow)});
-
-    auto& cache = *frame.cache;
-    if (!cache.texture || !(cache.spec == spec)) {
-        cache.texture.reset();
-
-        auto image = smplhud::renderScanner(spec);
-        if (image.empty())
-            return {};
-
-        cache.texture = g_pHyprRenderer->createTexture(DRM_FORMAT_ABGR8888, image.rgba.data(), uint32_t(image.w) * 4, {double(image.w), double(image.h)});
-        cache.spec    = spec;
-    }
-
-    if (!cache.texture || !cache.texture->ok())
-        return {};
+    const smplhud::ScannerPalette palette{line, colour(smplhud::Paint::Bright), colour(smplhud::Paint::Glow)};
 
     // Like the line it is a part of, it is as opaque as the line is where it stands.
-    scope.draw(cache.texture, frame.box, damage, frame.alpha * line.a);
+    const float alpha = frame.alpha * line.a;
+
+    drawPlate(scope, frame, palette, alpha);
+
+    CRegion damage = scope.damageIn(outward(frame.box));
+    if (!damage.empty()) {
+        const auto spec  = smplhud::scannerSpecOfFrame(frame.size, frame.frame, frame.seed, palette);
+        auto&      cache = *frame.cache;
+        if (!cache.texture || !(cache.spec == spec)) {
+            cache.texture.reset();
+
+            auto image = smplhud::renderScanner(spec);
+            if (!image.empty()) {
+                cache.texture = g_pHyprRenderer->createTexture(DRM_FORMAT_ABGR8888, image.rgba.data(), uint32_t(image.w) * 4, {double(image.w), double(image.h)});
+                cache.spec    = spec;
+            }
+        }
+
+        if (cache.texture && cache.texture->ok())
+            scope.draw(cache.texture, frame.box, damage, alpha);
+    }
+
     g_pHyprOpenGL->scissor(nullptr);
     return {};
 }
 
 bool CScannerPassElement::needsLiveBlur() {
-    return false;
+    return m_frame.alpha >= 0.002F && glassBlurs(m_frame);
 }
 
 bool CScannerPassElement::needsPrecomputeBlur() {

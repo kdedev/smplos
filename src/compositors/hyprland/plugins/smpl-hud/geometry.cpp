@@ -79,7 +79,7 @@ const Style kStyles[] = {
         .notchDepth      = 9.f,
         .traceOffset     = 7.5f,
         .beadRadius      = 2.5f,
-        .runnerSpeed     = 1.6f,
+        .runnerSpeed     = 0.8f,
     },
     {
         // The panel's outline alone, standing on the window's edge, with a rain

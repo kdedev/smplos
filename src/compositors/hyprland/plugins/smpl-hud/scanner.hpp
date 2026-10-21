@@ -75,8 +75,55 @@ struct ScannerSpec {
 
 ScannerSpec scannerSpecOf(const ScannerSize& size, double clock, uint32_t seed, const ScannerPalette& palette);
 
+// The same for a frame number, for a caller that keeps the frame it shows apart from the clock.
+ScannerSpec scannerSpecOfFrame(const ScannerSize& size, long frame, uint32_t seed, const ScannerPalette& palette);
+
 // Premultiplied RGBA like the other images; empty if the size is.
 Image renderScanner(const ScannerSpec& spec);
+
+// The plate under the scanner's picture where a panel style has made a pod for it (`Pod` in
+// geometry.hpp): dark glass over the window, held by the outline where it meets the frame and edged
+// by a bezel, a line like the outline's, along the sides that are on the window. It depends on
+// nothing but the pod's shape, the scale and the colours, not on where the window is, so the image
+// of one window serves every other one.
+// How opaque the glass is, 0..1. Where the compositor blurs what lies under the glass the blur does
+// part of the hiding, so it can be lighter than where it is flat.
+constexpr double kPlateGlassFlat    = 0.85;
+constexpr double kPlateGlassBlurred = 0.62;
+
+// How opaque the halo of the bezel is at its brightest. It stays under the glass, so the alpha tells
+// the two apart when only the glass is to be blurred.
+constexpr double kPlateHaloAlpha = 0.3;
+
+struct PlateSpec {
+    int               w = 0, h = 0;     // of the image, px
+    std::vector<Vec2> pts;              // the corners clockwise, in px from the image's top left corner
+    int               bezel       = 3;  // how many of the first sides are the bezel
+    int               halfWidth16 = 16; // half the thickness of the outline's line, in 1/16 px
+    int               reach       = 5;  // how far the bezel's halo reaches out onto the window, px
+    uint8_t           line[3]{}, glow[3]{};
+    uint8_t           glass = 0;        // how opaque the glass is, 0..255
+
+    bool operator==(const PlateSpec&) const = default;
+};
+
+// A plate and where its image goes, in px from the window's top left corner.
+struct Plate {
+    PlateSpec spec;
+    IBox      box;
+
+    bool valid() const { return spec.w > 0 && spec.h > 0; }
+};
+
+// Where the plate's image goes, in px from the window's top left corner: the plate's own bounds with room
+// for the bezel's halo. An empty box where `plateOf` is not valid.
+IBox  plateBox(const Pod& pod, double scale);
+
+// The plate of `pod` for the scale and colours; `glass` is how opaque the glass is, 0..1. Not valid without a pod.
+Plate plateOf(const Pod& pod, double scale, const ScannerPalette& palette, double glass);
+
+// Premultiplied RGBA like the other images; empty if the plate is not valid.
+Image renderPlate(const PlateSpec& spec);
 
 // A thing the scanner has found: where it is on the disc, where its marker is
 // (above or below that place, on a stalk) and how it looks.

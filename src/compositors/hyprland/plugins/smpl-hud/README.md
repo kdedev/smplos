@@ -57,7 +57,7 @@ Hyprland config reload, which `theme-set` triggers. Values are clamped.
 | `$themeHudLineWidth` | `hud_line_width` | `3` | 1 to 16 px |
 | `$themeHudFloatGlowRange` | `hud_float_glow_range` | `0` | 0 to 64 px; floating windows' halo reaches at least this far |
 | `$themeHudSweep` | `hud_sweep` | `false` | `true` / `false`; a soft glow drifts along the focused window's outline, the dots of a `panel` move along its lines, and the characters of a `matrix` fall and its lamps drift along its top and bottom; `false` keeps all of them still, so a `matrix` shows only its outline and halo |
-| `$themeHudSweepSpeed` | `hud_sweep_speed` | `80` | 10 to 400 px per second (the dots of a `panel` run 1.6 times as fast, the characters of a `matrix` fall 0.6 times as fast) |
+| `$themeHudSweepSpeed` | `hud_sweep_speed` | `80` | 10 to 400 px per second (the dots of a `panel` run 0.8 times as fast, the characters of a `matrix` fall 0.6 times as fast) |
 | `$themeHudSweepLength` | `hud_sweep_length` | `180` | 40 to 600 px along the line; for a `matrix`, the longest a lamp gets, which also decides how many fit on an edge |
 | `$themeHudGlyphColor` | `hud_glyph_color` | `none` | `rgb(rrggbb)` or `none`; the colour of the characters of a glyph style such as `matrix` and of its lamps (the heads are it lightened, the glow of the characters it too); `none` leaves them the colours of the line. Anything else is ignored |
 | `$themeHudSideOpacity` | `hud_side_opacity` | `1` | 0 to 1; how visible the outline of a `panel` or `matrix` is down its left and right sides, its halo beside it with it, and the corners fade between that and the top and the bottom edge's (`hud_edge_opacity`). A theme whose characters fall there dims it so that they stand out: `0.1` leaves it almost unseen, `0` none at all, `1` as strong as the rest. The ring styles ignore it; not a number, it is ignored |
@@ -251,12 +251,14 @@ corner.
 - **Glow.** A dot going round lights up as it nears a dot bouncing on a trace
   (straight-line distance, `Panel::touch`: fully lit within 14 px, not at all from
   70 px, at scale 1) and as it nears the other dot going round (distance along the
-  outline, `Panel::merge`: from a tenth of the outline's length away, but from
-  no less than 160 and no more than 400 px at scale 1 and never from more than
-  35% of the outline, and fully lit within a tenth of that), so the two seem
-  about to merge when they meet. `runnerPoses` returns the amount
+  outline, `Panel::merge`: from an eighth of the outline's length away, but from
+  no less than 200 and no more than 500 px at scale 1 and never from more than
+  35% of the outline, and fully lit within a tenth of that), so both of the two
+  swell and brighten as they close in on each other, are brightest as they pass and
+  die down as they part. `runnerPoses` returns the amount
   (`RunnerPose::glow`, 0 to 1) and the compositor draws the flare, `Panel::flare`,
-  a bigger and brighter bead, over the dot with that much opacity. Dots on traces
+  a bigger and brighter bead (1.7 times the radius, 3 times the glow), over the dot
+  with that much opacity. Dots on traces
   do not glow, a dot that cannot be seen lights nothing and a half-visible one
   lights half. A `flare` of radius 0 turns the glow off.
 - **How it is drawn.** The compositor can only draw textured quads, so `stamp.cpp`

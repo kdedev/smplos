@@ -83,8 +83,10 @@ generate_theme() {
   # Optional Hyprland window effects (shadow tint, inner glow, animated gradient
   # angle). Every default reproduces the classic look, so a theme that sets none
   # of these renders exactly as before. Flags become 0/1 for hyprlang and Lua.
-  for flag in glow border_animation hud_frame hud_sweep hud_hide_border; do
-    pairs[$flag]="${pairs[$flag]-false}"
+  # The word after each colon is what a theme gets that does not set the flag.
+  for flag_pair in glow:false border_animation:false hud_frame:false hud_sweep:false hud_hide_border:false hud_scanner_blur:true; do
+    flag="${flag_pair%%:*}"
+    pairs[$flag]="${pairs[$flag]-${flag_pair#*:}}"
     if [[ "${pairs[$flag]}" != true && "${pairs[$flag]}" != false ]]; then
       echo "ERROR: $name: $flag must be true or false" >&2
       return 1

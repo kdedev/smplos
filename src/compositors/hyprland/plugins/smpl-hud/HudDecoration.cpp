@@ -80,6 +80,11 @@ namespace {
 
         g_sweepIdle = !all.moved;
 
+        // The scanners move on the beats of the glow: a picture of their own in
+        // between would only make the compositor draw one more.
+        if (all.moved)
+            stepHudScanners();
+
         std::chrono::duration<double> next = kSweepIdlePoll;
         if (all.moved) {
             next = std::chrono::duration<double>(smplhud::sweepInterval(motionSpeed()));
@@ -202,11 +207,19 @@ namespace {
         }
     }
 
+    // The room the scanner takes in the corner of a window, for a theme and a
+    // monitor scale: the frame is laid out round it.
+    smplhud::ScannerSize scannerSizeOf(const SHudSettings& settings, double scale) {
+        return smplhud::scannerSize(smplhud::scannerWidthOf(settings.theme.scanner), scale);
+    }
+
     // Every window registers the same extents, so a theme change is one
     // re-registration. They only have to cover the widest look (floating).
     smplhud::Extents canonicalExtents(const SHudSettings& settings) {
         if (!settings.active())
             return {};
+
+        const auto size = scannerSizeOf(settings, 1.0);
 
         smplhud::Params params;
         params.scale          = 1.F;
@@ -215,6 +228,8 @@ namespace {
         params.lineWidth      = settings.theme.lineWidth;
         params.chamfer        = settings.theme.chamfer;
         params.floatGlowRange = settings.theme.floatGlowRange;
+        params.scannerW       = size.w;
+        params.scannerH       = size.h;
         return smplhud::extentsFor(*settings.style, params);
     }
 
@@ -397,6 +412,18 @@ std::optional<SHudColours> hudColoursOf(const PHLWINDOW& window) {
             return deco->colours();
     }
     return std::nullopt;
+}
+
+std::optional<SHudLayout> hudLayoutOf(const PHLWINDOW& window) {
+    for (const auto* deco : g_decorations) {
+        if (deco->window() == window)
+            return deco->layout();
+    }
+    return std::nullopt;
+}
+
+bool hudSweepBeating() {
+    return g_sweepTimer && !g_sweepIdle;
 }
 
 void placeHudWindow(const PHLWINDOW& window) {
@@ -677,6 +704,13 @@ std::optional<SHudColours> CHudDecoration::colours() const {
     return SHudColours{*paints, m_layout->sampleBox};
 }
 
+std::optional<SHudLayout> CHudDecoration::layout() const {
+    if (!g_settings.active() || !m_layout || !m_layout->valid)
+        return std::nullopt;
+
+    return SHudLayout{m_layout, m_layoutKey.scale, m_layoutKey.width, m_layoutKey.height};
+}
+
 void CHudDecoration::buildSweep(float scale) {
     if (m_sweep.path || !m_layout)
         return;
@@ -850,7 +884,8 @@ void CHudDecoration::draw(PHLMONITOR monitor, const float& a) {
     };
 
     if (!m_layout || !(key == m_layoutKey)) {
-        const auto& theme = g_settings.theme;
+        const auto& theme   = g_settings.theme;
+        const auto  scanner = scannerSizeOf(g_settings, key.scale);
 
         smplhud::Params params;
         params.width          = key.width;
@@ -867,6 +902,8 @@ void CHudDecoration::draw(PHLMONITOR monitor, const float& a) {
         params.sideOpacity    = theme.sideOpacity;
         params.edgeOpacity    = theme.edgeOpacity;
         params.underglow      = theme.underglow;
+        params.scannerW       = scanner.w;
+        params.scannerH       = scanner.h;
 
         m_layout    = std::make_shared<const smplhud::Layout>(smplhud::buildLayout(*g_settings.style, params));
         m_layoutKey = key;

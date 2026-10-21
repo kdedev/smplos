@@ -5,7 +5,7 @@
 // colours are a fixed amber, or a fixed green with the palette "matrix".
 //
 //   make preview
-//   build/preview [style] [width] [height] [scale] [zoom] [floating] [travelled] [clock] [palette] [intensity] [seed] [gap] [side] [edge] [underglow] > panel.ppm
+//   build/preview [style] [width] [height] [scale] [zoom] [floating] [travelled] [clock] [palette] [intensity] [seed] [gap] [side] [edge] [underglow] [scanner] > panel.ppm
 //   build/preview glyphs [zoom] [palette] > glyphs.ppm
 //   build/preview scanner [zoom] [palette] [width] [scale] [clock] [seed] [frames] [backgrounds] [step] > scanner.ppm
 //
@@ -15,7 +15,9 @@
 // stands off the window (`hud_gap`, 15 if not given; the Matrix HUD has 3); `side` and `edge` are how visible
 // the outline is down its left and right sides and along its top and bottom (`hud_side_opacity` and
 // `hud_edge_opacity`, 0 to 1, 1 if not given); `underglow` is how bright the glow is along the top and the
-// bottom (`hud_underglow`, 0 to 1, 0 if not given). `glyphs`
+// bottom (`hud_underglow`, 0 to 1, 0 if not given); `scanner` is how wide the scanner is in logical px
+// (`hud_scanner`, none if not given), which a panel style holds in a pod at the bottom right corner, drawn
+// at the `clock`. `glyphs`
 // draws every character of the matrix style, twelve to a row, in the order of the table. `scanner` draws the
 // scanner of a window (`hud_scanner`) `width` logical px wide, `frames` times in a row, `step` seconds apart from
 // `clock` on, once for each of up to 3 backgrounds (a dark window, a grey one and a light one).
@@ -223,7 +225,7 @@ void writePpm(const Canvas& cv, int zoom) {
     }
 }
 
-Params paramsFor(int width, int height, float scale, bool floating, double gap = 15, double sideOpacity = 1, double edgeOpacity = 1, double underglow = 0) {
+Params paramsFor(int width, int height, float scale, bool floating, double gap = 15, double sideOpacity = 1, double edgeOpacity = 1, double underglow = 0, double scanner = 0) {
     Params p;
     p.width          = width;
     p.height         = height;
@@ -238,6 +240,10 @@ Params paramsFor(int width, int height, float scale, bool floating, double gap =
     p.sideOpacity    = std::clamp(sideOpacity, 0.0, 1.0);
     p.edgeOpacity    = std::clamp(edgeOpacity, 0.0, 1.0);
     p.underglow      = std::clamp(underglow, 0.0, 1.0);
+
+    const ScannerSize size = scannerSize(scanner, scale);
+    p.scannerW             = size.w;
+    p.scannerH             = size.h;
     return p;
 }
 
@@ -336,6 +342,7 @@ int main(int argc, char** argv) {
     const double      side     = argc > 13 ? std::atof(argv[13]) : 1;
     const double      edge     = argc > 14 ? std::atof(argv[14]) : 1;
     const double      under    = argc > 15 ? std::atof(argv[15]) : 0;
+    const double      scanner  = argc > 16 ? std::atof(argv[16]) : 0;
 
     const Style* style = styleFor(name);
     if (!style) {
@@ -343,7 +350,7 @@ int main(int argc, char** argv) {
         return 1;
     }
 
-    const Params p = paramsFor(width, height, scale, floating, gap, side, edge, under);
+    const Params p = paramsFor(width, height, scale, floating, gap, side, edge, under, scanner);
 
     const Layout layout = buildLayout(*style, p);
     if (!layout.valid) {
@@ -425,6 +432,17 @@ int main(int argc, char** argv) {
         for (int x = 0; x < width; ++x)
             if (insideWindow(x + 0.5, y + 0.5, width, height, p.cut))
                 cv.over(left + x, top + y, win);
+
+    // The scanner on its plate in the pod, over the window as the compositor draws it.
+    if (layout.pod.on) {
+        const ScannerPalette colours{pal.line, pal.bright, pal.glow};
+        const Plate          plate = plateOf(layout.pod, scale, colours, 0.8);
+        drawImage(cv, renderPlate(plate.spec), left + plate.box.x, top + plate.box.y, 1.f);
+        const ScannerSize size{layout.pod.picture.w, layout.pod.picture.h};
+        drawImage(cv, renderScanner(scannerSpecOf(size, clock, seed, colours)), left + layout.pod.picture.x, top + layout.pod.picture.y, 1.f);
+    } else if (p.scannerW > 0) {
+        std::fprintf(stderr, "no pod for this window\n");
+    }
 
     writePpm(cv, zoom);
     return 0;

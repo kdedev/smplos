@@ -99,16 +99,18 @@ border_animation = "false"
 # traces end in beads, and the bottom left corner is cut off. Windows that are
 # too small for all of that get a plain chamfered outline. Two dots circle the
 # outline in opposite directions and one bounces along each trace; a circling
-# dot glows as it nears a bouncing one, and both glow as they near each other,
-# as if about to merge. A soft ellipse of light drifts slowly around the
-# focused window's outline (about 60 px/s, the dots 1.6 times as fast), fading
+# dot glows as it nears a bouncing one, and both swell and brighten as they near
+# each other, brightest as they pass. A soft ellipse of light drifts slowly around the
+# focused window's outline (about 60 px/s, the dots 0.8 times as fast), fading
 # in and out as focus comes and goes. Both are small cached sprites, repainted
 # ~20 times a second only where they move, and only while the window is visible.
 # The scanner is a flat disc of rings in the bottom right corner of each window,
 # like the radar of a space game: a small ship at its heart, an arm that sweeps
-# round and lights up the contacts it passes. hud_scanner is its width in px
-# (0 for none, otherwise 24 to 160); it is drawn in the colours of the frame and
-# moves only in the focused window.
+# round and lights up the contacts it passes. The outline bulges out round it to
+# make room, and the dots circling the outline skirt it. hud_scanner is the
+# width of its picture in px (0 for none, otherwise 24 to 160); it moves only in
+# the focused window. hud_scanner_blur makes its glass blur what is under it, as
+# long as the compositor's own blur is on; "false" leaves the glass clear.
 # hud_gap is how far the outline stands off the window: the notches need at least 13.
 hud_frame = "true"
 hud_style = "panel"
@@ -119,7 +121,8 @@ hud_float_glow_range = "14"
 hud_sweep = "true"
 hud_sweep_speed = "60"
 hud_sweep_length = "180"
-hud_scanner = "48"
+hud_scanner = "72"
+hud_scanner_blur = "true"
 
 # -- App Theme Selectors --
 app_theme_nvim = "amber"

@@ -47,6 +47,7 @@ HUD = (
     ("hud_edge_opacity", "hud_edge_opacity", "themeHudEdgeOpacity"),
     ("hud_underglow", "hud_underglow", "themeHudUnderglow"),
     ("hud_scanner", "hud_scanner", "themeHudScanner"),
+    ("hud_scanner_blur", "hud_scanner_blur_flag", "themeHudScannerBlur"),
 )
 # The HUD keys that are a fraction from 0 to 1, with the variable each is written to and the value it
 # has when a theme does not set it.
@@ -85,6 +86,7 @@ CLASSIC = {
     "themeHudEdgeOpacity": "1",
     "themeHudUnderglow": "0",
     "themeHudScanner": "0",
+    "themeHudScannerBlur": "1",
 }
 
 # Evaluates the real looknfeel.lua (and theme.lua) against a recording hl stub.
@@ -445,6 +447,8 @@ class StockThemeEffectTests(unittest.TestCase):
                 if theme.name == "amber-hud":
                     # Wide enough to read as a radar, small enough to leave the window its corner.
                     self.assertTrue(24 <= int(variables["themeHudScanner"]) <= 96, variables["themeHudScanner"])
+                    # Its glass blurs what is under it.
+                    self.assertEqual(variables["themeHudScannerBlur"], "1")
                     # Only the frame is drawn by the plugin, so only a frame can carry a scanner.
                     self.assertEqual(variables["themeHudFrame"], "1")
                 else:
@@ -679,7 +683,7 @@ class EffectGenerationTests(unittest.TestCase):
         variables = self.variables()
         self.assertEqual(
             [variables[var] for _, _, var in HUD],
-            ["0", "scifi", "5", "10", "3", "0", "0", "80", "180", "0", "none", "1", "1", "0", "0"],
+            ["0", "scifi", "5", "10", "3", "0", "0", "80", "180", "0", "none", "1", "1", "0", "0", "1"],
         )
         result = self.generate(
             'hud_frame = "true"\nhud_style = "minimal"\nhud_gap = "6"\n'
@@ -687,13 +691,13 @@ class EffectGenerationTests(unittest.TestCase):
             'hud_sweep = "true"\nhud_sweep_speed = "120"\nhud_sweep_length = "240"\n'
             'hud_hide_border = "true"\nhud_glyph_color = "rgb(3cff28)"\n'
             'hud_side_opacity = "0.1"\nhud_edge_opacity = "0.2"\nhud_underglow = "0.3"\n'
-            'hud_scanner = "64"\n'
+            'hud_scanner = "64"\nhud_scanner_blur = "false"\n'
         )
         self.assertEqual(result.returncode, 0, result.stderr)
         variables = self.variables()
         self.assertEqual(
             [variables[var] for _, _, var in HUD],
-            ["1", "minimal", "6", "0", "2.5", "14", "1", "120", "240", "1", "rgb(3cff28)", "0.1", "0.2", "0.3", "64"],
+            ["1", "minimal", "6", "0", "2.5", "14", "1", "120", "240", "1", "rgb(3cff28)", "0.1", "0.2", "0.3", "64", "0"],
         )
 
     def test_hidden_border_gives_hyprland_no_border_but_keeps_the_configured_width(self):
@@ -788,6 +792,24 @@ class EffectGenerationTests(unittest.TestCase):
         text = (self.theme / "hyprland.conf").read_text()
         self.assertNotIn("{{", text)
         self.assertEqual(self.variables()["themeHudScanner"], "0")
+
+    def test_hud_scanner_blur_is_on_unless_a_theme_turns_it_off(self):
+        for extra, expected in (
+            ("", "1"), ('hud_scanner_blur = "true"\n', "1"), ('hud_scanner_blur = "false"\n', "0"),
+            ('hud_scanner = "72"\nhud_scanner_blur = "false"\n', "0"),
+        ):
+            with self.subTest(extra=extra):
+                result = self.generate(extra)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(self.variables()["themeHudScannerBlur"], expected)
+
+    def test_hud_scanner_blur_rejects_everything_else(self):
+        for value in ("1", "0", "yes", "on", "True", "FALSE", "", "blur", " true"):
+            with self.subTest(value=value):
+                result = self.generate(f'hud_scanner_blur = "{value}"\n')
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("fixture: hud_scanner_blur must be true or false", result.stderr)
+                self.assertFalse((self.theme / "hyprland.conf").exists())
 
     def test_hud_glyph_color_accepts_rgb_and_none(self):
         for value in ("none", "rgb(3cff28)", "rgb(3CFF28)", "rgb(000000)", "rgb(ffffff)"):

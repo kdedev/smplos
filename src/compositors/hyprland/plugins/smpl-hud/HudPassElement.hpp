@@ -103,24 +103,30 @@ class CHudPassElement : public IPassElement {
 
 // The scanner image uploaded to the GPU, kept for as long as the spec it was
 // drawn for stays the same: a frozen scanner is drawn from it again and again.
+// The plate under it is kept the same way; it changes only with the colours.
 struct SScannerCache {
     smplhud::ScannerSpec spec;
     SP<Render::ITexture> texture;
+    smplhud::PlateSpec   plateSpec;
+    SP<Render::ITexture> plate;
 };
 
 // Everything one frame of the scanner of one window needs. Like a frame of the
 // HUD it is copied out of the window when the pass element is queued.
 struct SScannerFrame {
-    std::array<SHudPaint, 3>       paints;    // indexed by smplhud::Paint
-    smplhud::IBox                  sampleBox; // window-relative physical px: what the paints are spread over
-    CBox                           window;    // window box, monitor-local physical px
-    CBox                           box;       // where the scanner goes, monitor-local physical px
-    CBox                           bounds;    // everything it can touch, monitor-local logical px
-    smplhud::ScannerSize           size;
-    double                         clock = 0; // seconds it has been running
-    uint32_t                       seed  = 0;
-    float                          alpha = 1.F;
-    std::shared_ptr<SScannerCache> cache;     // the scanner's own: two scanners never share one
+    std::array<SHudPaint, 3>               paints;    // indexed by smplhud::Paint
+    smplhud::IBox                          sampleBox; // window-relative physical px: what the paints are spread over
+    CBox                                   window;    // window box, monitor-local physical px
+    CBox                                   box;       // where the picture goes, monitor-local physical px
+    CBox                                   bounds;    // everything it can touch, plate and picture, monitor-local logical px
+    smplhud::ScannerSize                   size;
+    long                                   frame = 0; // the frame of the animation it shows
+    uint32_t                               seed  = 0;
+    float                                  alpha = 1.F;
+    std::shared_ptr<const smplhud::Layout> layout;    // the frame's layout, for the pod: its plate goes under the picture; none: the bare picture
+    double                                 scale = 1;
+    bool                                   blur  = false; // whether the glass of the plate may blur what it covers
+    std::shared_ptr<SScannerCache>         cache;     // the scanner's own: two scanners never share one
 };
 
 class CScannerPassElement : public IPassElement {

@@ -34,9 +34,9 @@ constexpr double kBackSpeed  = 0.85;
 constexpr double kBounceStart[3] = {0.0, 0.4, 0.75};
 
 // A dot going round swells into a flare, in terms of the dot's own sizes.
-constexpr double kFlareRadius = 1.3;
-constexpr double kFlareReach  = 2.0;
-constexpr double kFlareHalo   = 1.7;
+constexpr double kFlareRadius = 1.7;
+constexpr double kFlareReach  = 3.0;
+constexpr double kFlareHalo   = 2.0;
 
 // It is fully lit within kTouchNear px of a dot on a trace and not at all from
 // kTouchFar px on (at scale 1).
@@ -47,14 +47,26 @@ constexpr double kTouchFar  = 70;
 // length away, but from no less than kMergeMin and no more than kMergeMax px
 // (at scale 1) and never from more than kMergeCap of it, and fully so within a
 // tenth of that.
-constexpr double kMergeShare = 0.10;
-constexpr double kMergeMin   = 160;
-constexpr double kMergeMax   = 400;
+constexpr double kMergeShare = 0.12;
+constexpr double kMergeMin   = 200;
+constexpr double kMergeMax   = 500;
 constexpr double kMergeCap   = 0.35;
 
 // Frames smaller than this get no notches, no ghost line and no traces.
 constexpr double kFancyWidth  = 480;
 constexpr double kFancyHeight = 160;
+
+// The pod that holds the scanner at the bottom right corner, in place of the chamfer. The outline bulges
+// out there by kPodPoke, with a corner of its own cut kPodCorner; the plate behind the scanner's picture
+// reaches kPodMargin beyond it, and its bezel, on the window's side, has its corner cut kPodBezel. A
+// window has a pod only if it is kPodRoom times as wide, and as high, as the picture, so that the pod never
+// takes much of it.
+constexpr double kPodPoke   = 8;
+constexpr double kPodMargin = 3;
+constexpr double kPodCorner = 14;
+constexpr double kPodBezel  = 9;
+constexpr double kPodRoom   = 5;
+constexpr double kPodTrace  = 4; // how far above the pod a trace on the right side ends
 
 // The characters of a glyph style, in terms of their height.
 constexpr double kGlyphStroke = 0.05; // half the thickness of a stroke
@@ -167,6 +179,50 @@ Frame measure(const Style& st, const Params& p) {
     return f;
 }
 
+// How far a pod pokes out beyond the frame, at this scale.
+double podPoke(const Frame& f) {
+    return std::max(2.0, std::round(kPodPoke * f.s));
+}
+
+// The pod at the bottom right corner: the plate that holds the scanner's picture, whose right and bottom
+// edge are the outline's, which goes round it.
+struct PodShape {
+    bool   on  = false;
+    double p   = 0;           // how far it pokes out beyond the frame
+    double k   = 0;           // leg of the cut at its outer corner
+    double k2  = 0;           // and of the one at the top left corner of the bezel
+    double m   = 0;           // margin of the plate round the picture
+    double x1  = 0, y1 = 0;   // the plate's top left corner
+    double xr  = 0, yb = 0;   // and its bottom right one
+    IBox   picture;
+};
+
+// Off, if there is no scanner, if the window is too small for it, or if the pod would not fit the frame.
+PodShape measurePod(const Frame& f, const Params& p) {
+    PodShape pod;
+    if (p.scannerW <= 0 || p.scannerH <= 0 || p.width < kPodRoom * p.scannerW || p.height < kPodRoom * p.scannerH)
+        return pod;
+
+    pod.p = podPoke(f);
+    pod.m = std::max(std::round(kPodMargin * f.s), std::ceil(f.hw) + 2.0);
+    const double w = p.scannerW + 2 * pod.m, h = p.scannerH + 2 * pod.m;
+    pod.k          = std::min(std::round(kPodCorner * f.s), std::min(w, h) - pod.p - 2.0);
+    pod.k2         = std::min(std::round(kPodBezel * f.s), std::floor(std::min(w, h) / 2.0) - 1.0);
+    if (pod.k < 2 || pod.k2 < 1)
+        return pod;
+
+    pod.xr = f.right + pod.p;
+    pod.yb = f.bottom + pod.p;
+    pod.x1 = pod.xr - w;
+    pod.y1 = pod.yb - h;
+    if (pod.x1 < f.left + f.a + 10 * f.s || pod.y1 < f.top + f.a + 10 * f.s)
+        return pod;
+
+    pod.picture = {int(std::lround(pod.x1 + pod.m)), int(std::lround(pod.y1 + pod.m)), p.scannerW, p.scannerH};
+    pod.on      = true;
+    return pod;
+}
+
 // Where the notches, ramps and gaps sit along the top and bottom edges. The
 // fractions are those of the reference artwork.
 struct Cuts {
@@ -180,8 +236,9 @@ struct Cuts {
     double fade       = 0; // length over which the left-hand baseline fades out
 };
 
-// False when the features would collide.
-bool placeCuts(const Frame& f, Cuts& k) {
+// False when the features would collide. `rightEnd` is where the right-hand baseline has to end: where the
+// corner at the bottom right starts.
+bool placeCuts(const Frame& f, double rightEnd, Cuts& k) {
     const double fw = f.fw(), s = f.s, d = f.d;
     k.notchX     = std::round(f.left + 0.357 * fw);
     k.notchFloor = std::round(std::clamp(0.097 * fw, 50 * s, 160 * s));
@@ -200,22 +257,53 @@ bool placeCuts(const Frame& f, Cuts& k) {
         && k.baseX1 + room < k.endX1 - k.fade                              // left-hand baseline
         && k.ghostX > k.baseX1 - d + room                                  // ghost line starts after the recess line ends
         && k.ghostX + room < k.baseX2 - d                                  //
-        && k.baseX2 + room < f.right - f.a;                                // right-hand baseline
+        && k.baseX2 + room < rightEnd;                                     // right-hand baseline
 }
 
-std::vector<Vertex> plainOutline(const Frame& f) {
+// The outline, and which of its vertices the top and the bottom edge, which the lamps follow, begin and
+// end at.
+struct Outline {
+    std::vector<Vertex> pts;
+    size_t              topFrom = 0, topTo = 0, bottomFrom = 0, bottomTo = 0;
+};
+
+// The bottom right corner of the outline, clockwise: cut off, or, round a pod, which steps out from the
+// right side, runs down along the plate's right edge, round its corner and back along its bottom, and
+// steps in again to the bottom edge. Ends where the bottom edge begins.
+void bottomRight(const Frame& f, const PodShape& pod, std::vector<Vertex>& pts) {
+    if (!pod.on) {
+        pts.push_back({f.right, f.bottom - f.a, 1.f});
+        pts.push_back({f.right - f.a, f.bottom, 1.f});
+        return;
+    }
+    pts.push_back({f.right, pod.y1, 1.f});
+    pts.push_back({pod.xr, pod.y1 + pod.p, 1.f});
+    pts.push_back({pod.xr, pod.yb - pod.k, 1.f});
+    pts.push_back({pod.xr - pod.k, pod.yb, 1.f});
+    pts.push_back({pod.x1 + pod.p, pod.yb, 1.f});
+    pts.push_back({pod.x1, f.bottom, 1.f});
+}
+
+Outline plainOutline(const Frame& f, const PodShape& pod) {
     const double a = f.a;
-    return {
-        {f.left + a, f.top, 1.f},        {f.right - a, f.top, 1.f},    {f.right, f.top + a, 1.f},   {f.right, f.bottom - a, 1.f},
-        {f.right - a, f.bottom, 1.f},    {f.left + a, f.bottom, 1.f},  {f.left, f.bottom - a, 1.f}, {f.left, f.top + a, 1.f},
-    };
+    Outline      o;
+    o.pts   = {{f.left + a, f.top, 1.f}, {f.right - a, f.top, 1.f}, {f.right, f.top + a, 1.f}};
+    o.topTo = 1;
+    bottomRight(f, pod, o.pts);
+    o.bottomFrom = o.pts.size() - 1;
+    o.pts.push_back({f.left + a, f.bottom, 1.f});
+    o.bottomTo = o.pts.size() - 1;
+    o.pts.push_back({f.left, f.bottom - a, 1.f});
+    o.pts.push_back({f.left, f.top + a, 1.f});
+    return o;
 }
 
 // Clockwise from the top edge. The bottom edge doubles back across an invisible
 // segment: the ghost line ends, the left-hand baseline begins.
-std::vector<Vertex> fancyOutline(const Frame& f, const Cuts& k) {
+Outline fancyOutline(const Frame& f, const Cuts& k, const PodShape& pod) {
     const double a = f.a, d = f.d, b = f.b;
-    return {
+    Outline      o;
+    o.pts = {
         {f.left + a, f.top, 1.f},
         {k.notchX, f.top, 1.f},
         {k.notchX + d, f.top + d, 1.f},
@@ -225,8 +313,11 @@ std::vector<Vertex> fancyOutline(const Frame& f, const Cuts& k) {
         {k.stepX + d, f.top + d, 1.f},
         {f.right - a + d, f.top + d, 1.f},
         {f.right, f.top + a, 1.f},
-        {f.right, f.bottom - a, 1.f},
-        {f.right - a, f.bottom, 1.f},
+    };
+    o.topTo = o.pts.size() - 2;
+    bottomRight(f, pod, o.pts);
+    o.bottomFrom = o.pts.size() - 1;
+    o.pts.insert(o.pts.end(), {
         {k.baseX2, f.bottom, 1.f},
         {k.baseX2 - d, f.bottom - d, kRampAlpha},
         {k.ghostX, f.bottom - d, 0.f},
@@ -235,9 +326,11 @@ std::vector<Vertex> fancyOutline(const Frame& f, const Cuts& k) {
         {k.baseX1, f.bottom, 1.f},
         {k.baseX1 - d, f.bottom - d, 1.f},
         {f.left + b, f.bottom - d, 1.f},
-        {f.left, f.bottom - d - b, 1.f},
-        {f.left, f.top + a, 1.f},
-    };
+    });
+    o.bottomTo = o.pts.size() - 1;
+    o.pts.push_back({f.left, f.bottom - d - b, 1.f});
+    o.pts.push_back({f.left, f.top + a, 1.f});
+    return o;
 }
 
 // A trace and the beads at its two ends.
@@ -261,8 +354,9 @@ bool notchTrace(const Frame& f, const Cuts& k, Trace& t) {
 }
 
 // From the step near the top right, along the top, then down the right side
-// beyond the frame, parallel to the corner cut.
-bool stepTrace(const Frame& f, const Cuts& k, Trace& t) {
+// beyond the frame, parallel to the corner cut, to where the corner at the bottom right starts, or the
+// pod, which it ends above.
+bool stepTrace(const Frame& f, const Cuts& k, const PodShape& pod, Trace& t) {
     const double s = f.s, d = f.d;
     const double bx = k.stepX + d + std::round(0.36 * d), by = f.top + 0.1 * d;
     const double xa = bx + 3.5 * s;
@@ -270,7 +364,7 @@ bool stepTrace(const Frame& f, const Cuts& k, Trace& t) {
     const double xv = f.snap(f.right + f.tau);
     const double yv = f.snap(f.top + f.a - (kSqrt2 - 1) * f.tau);
     const double xh = xv - (yv - yh);
-    const double ye = f.bottom - f.a;
+    const double ye = pod.on ? f.snap(pod.y1 - kPodTrace * s) : f.bottom - f.a;
     if (xh - xa < 10 * s || ye - yv < 10 * s)
         return false;
     t.pts  = {{xa, yh, 1.f}, {xh, yh, 1.f}, {xv, yv, 1.f}, {xv, ye, 1.f}};
@@ -386,19 +480,20 @@ void placeLanes(const Panel& panel, double line, double away, double top, double
 
 // The characters' sizes and the columns they fall in: down both sides, between
 // the corners of the outline.
-void placeRain(const Style& style, const Frame& f, double halo, Panel& panel) {
+void placeRain(const Style& style, const Frame& f, const PodShape& pod, double halo, Panel& panel) {
     if (style.glyphHeight <= 0)
         return;
 
     placeFace(style, f, halo, panel);
-    const double leftEnd = f.fancy ? f.bottom - f.d - f.b : f.bottom - f.a;
+    const double leftEnd  = f.fancy ? f.bottom - f.d - f.b : f.bottom - f.a;
+    const double rightEnd = pod.on ? pod.y1 : f.bottom - f.a;
     placeLanes(panel, f.left, -1.0, f.top + f.a, leftEnd, panel.lanes);
-    placeLanes(panel, f.right, 1.0, f.top + f.a, f.bottom - f.a, panel.lanes);
+    placeLanes(panel, f.right, 1.0, f.top + f.a, rightEnd, panel.lanes);
 }
 
-// A vertex of the outline that stands on the left or the right side.
+// A vertex of the outline that stands on the left or the right side, or on the pod's.
 bool onSide(const Vertex& v, const Frame& f) {
-    return v.x == f.left || v.x == f.right;
+    return v.x >= f.right || v.x <= f.left;
 }
 
 // The outline with its sides masked out: what runs along the top and the bottom edge,
@@ -434,11 +529,11 @@ std::vector<Vertex> underglowRun(double width, double y, double taper) {
 
 // The lamps of the top and the bottom edge, going to and fro between the first
 // and the last vertex of the stretch of the track that makes up the edge.
-void placeLamps(const Style& style, const Params& p, const Frame& f, std::vector<Vertex> outline, Panel& panel) {
+void placeLamps(const Style& style, const Params& p, const Frame& f, const Outline& outline, Panel& panel) {
     if (style.lamps <= 0)
         return;
 
-    panel.track = edgeTrack(std::move(outline), f);
+    panel.track = edgeTrack(outline.pts, f);
     std::vector<double> at(panel.track.size(), 0.0); // px along the track at each vertex
     for (size_t i = 1; i < at.size(); ++i)
         at[i] = at[i - 1] + std::hypot(panel.track[i].x - panel.track[i - 1].x, panel.track[i].y - panel.track[i - 1].y);
@@ -447,7 +542,7 @@ void placeLamps(const Style& style, const Params& p, const Frame& f, std::vector
         size_t          first, last;
         const LampLook* looks;
     };
-    const Edge edges[2] = {f.fancy ? Edge{0, 7, kLampsTop} : Edge{0, 1, kLampsTop}, f.fancy ? Edge{10, 18, kLampsBottom} : Edge{4, 5, kLampsBottom}};
+    const Edge edges[2] = {{outline.topFrom, outline.topTo, kLampsTop}, {outline.bottomFrom, outline.bottomTo, kLampsBottom}};
 
     const double longest = p.sweepLength * f.s;
     for (const Edge& edge : edges) {
@@ -466,10 +561,36 @@ void placeLamps(const Style& style, const Params& p, const Frame& f, std::vector
 } // namespace
 
 void buildPanel(const Style& style, const Params& p, Layout& out) {
-    Frame f = measure(style, p);
-    Cuts  cuts;
-    f.fancy = f.d > 0 && f.fw() >= kFancyWidth * f.s && f.fh() >= kFancyHeight * f.s && f.b >= f.a && f.a >= f.d + 6 * f.s &&
-        f.fh() - f.a - f.d - f.b >= 8 * f.s && placeCuts(f, cuts);
+    Frame    f = measure(style, p);
+    Cuts     cuts;
+    PodShape pod = measurePod(f, p);
+
+    // The notches and ramps need room beside the pod; a pod that would leave none of it gives way to them.
+    const auto fancyWith = [&](const PodShape& with) {
+        return f.d > 0 && f.fw() >= kFancyWidth * f.s && f.fh() >= kFancyHeight * f.s && f.b >= f.a && f.a >= f.d + 6 * f.s &&
+            f.fh() - f.a - f.d - f.b >= 8 * f.s && placeCuts(f, with.on ? with.x1 : f.right - f.a, cuts);
+    };
+    f.fancy = fancyWith(pod);
+    if (!f.fancy && pod.on && fancyWith(PodShape{})) {
+        pod     = {};
+        f.fancy = true;
+    }
+
+    out.pod = {};
+    if (pod.on) {
+        out.pod.on        = true;
+        out.pod.picture   = pod.picture;
+        out.pod.halfWidth = f.hw;
+        out.pod.plate     = {{pod.x1, f.bottom},
+                             {pod.x1, pod.y1 + pod.k2},
+                             {pod.x1 + pod.k2, pod.y1},
+                             {f.right, pod.y1},
+                             {pod.xr, pod.y1 + pod.p},
+                             {pod.xr, pod.yb - pod.k},
+                             {pod.xr - pod.k, pod.yb},
+                             {pod.x1 + pod.p, pod.yb}};
+        out.pod.bezel     = 3;
+    }
 
     const double boost = p.floating ? style.floatBoost : 1.0;
     const double reach = std::max(0.0, (p.floating ? std::max<double>(style.haloReach, p.floatGlowRange) : style.haloReach) * f.s);
@@ -489,8 +610,8 @@ void buildPanel(const Style& style, const Params& p, Layout& out) {
 
     Panel& panel = out.panel;
     panel        = {};
-    std::vector<Vertex> outline = f.fancy ? fancyOutline(f, cuts) : plainOutline(f);
-    panel.strokes.push_back(stroke(dimOutline(outline, f, p.sideOpacity, p.edgeOpacity), true, style.lineAlpha, reach, halo));
+    Outline outline = f.fancy ? fancyOutline(f, cuts, pod) : plainOutline(f, pod);
+    panel.strokes.push_back(stroke(dimOutline(outline.pts, f, p.sideOpacity, p.edgeOpacity), true, style.lineAlpha, reach, halo));
 
     // Beads sit at the ends of the traces; dots travel along the outline and the traces.
     Bead bead;
@@ -537,7 +658,7 @@ void buildPanel(const Style& style, const Params& p, Layout& out) {
         t = {};
         add(notchTrace(f, cuts, t));
         t = {};
-        add(stepTrace(f, cuts, t));
+        add(stepTrace(f, cuts, pod, t));
         t = {};
         add(cornerTrace(f, cuts, t));
     }
@@ -552,8 +673,8 @@ void buildPanel(const Style& style, const Params& p, Layout& out) {
     }
 
     // Room for the outline, the traces, the beads and the characters, whatever the window size.
-    placeRain(style, f, halo, panel);
-    placeLamps(style, p, f, std::move(outline), panel);
+    placeRain(style, f, pod, halo, panel);
+    placeLamps(style, p, f, outline, panel);
 
     const double lineRoom = roomAround(f.hw, reach);
     const double dotRoom  = beads ? std::max(beadSize(lookOf(dot)), beadSize(lookOf(panel.flare))) / 2.0 : 0.0;
@@ -569,8 +690,12 @@ void buildPanel(const Style& style, const Params& p, Layout& out) {
             columns = std::max(columns, glyphSize(panel.face(c)).w / 2.0 + 1 - cols.x[c]); // 0 is the window's edge
     }
 
-    const int side = logical(std::ceil(f.c) + room);
-    out.extents    = {std::max(side, logical(columns)), side, std::max(logical(std::ceil(f.c + f.tau) + room), logical(columns)), side};
+    // The pod sticks out beyond the frame at the right and at the bottom, whether or not this window is big
+    // enough for one.
+    const double poke  = p.scannerW > 0 ? podPoke(f) : 0.0;
+    const int    side  = logical(std::ceil(f.c) + room);
+    const int    right = std::max({logical(std::ceil(f.c + f.tau) + room), logical(std::ceil(f.c + poke) + room), logical(columns)});
+    out.extents        = {std::max(side, logical(columns)), side, right, logical(std::ceil(f.c + poke) + room)};
 
     const double clear = minClearance(f);
     const int    edge  = int(std::ceil(f.c + f.hw));
