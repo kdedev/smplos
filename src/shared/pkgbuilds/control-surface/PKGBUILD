@@ -1,6 +1,6 @@
 # Maintainer: smplOS <https://github.com/smpl-os>
-# The keypad app (control-surfaced) for supported macro keypads; see KEYPAD.md
-# and src/shared/keypads/registry.json.
+# Device-triggered keypad and Razer mouse remappers; see KEYPAD.md
+# and UPDATING.md.
 #
 # Source, CI and releases live in smpl-os/smpl-apps (control-surface/). Every
 # smpl-apps release publishes control-surface-<version>-x86_64.tar.gz, a usr/
@@ -12,13 +12,14 @@
 #
 # smplOS ships the user unit and udev rules itself
 # (src/shared/configs/systemd/user/control-surface.service,
-#  src/shared/system/udev/70-smplos-keypads.rules); the release's own copies
+#  src/shared/system/udev/70-smplos-keypads.rules and 70-smplos-mice.rules);
+# the release's own copies
 # stay in /usr/share/control-surface/examples.
 
 pkgname=control-surface
-pkgver=0.8.29
+pkgver=0.8.34
 pkgrel=1
-pkgdesc='Keypad app for CH552 macro keypads: per-app profiles, cheatsheet, Kdenlive API plugin, open firmware images'
+pkgdesc='CH552 keypad and Razer mouse remappers: per-app profiles, shared actions, Kdenlive API and guided mouse setup'
 arch=(x86_64)
 url='https://github.com/smpl-os/smpl-apps/tree/main/control-surface'
 license=('GPL-2.0-or-later' 'CC-BY-SA-3.0')
@@ -29,17 +30,22 @@ optdepends=(
 )
 options=(!strip !debug)
 source=("https://github.com/smpl-os/smpl-apps/releases/download/v${pkgver}/control-surface-${pkgver}-x86_64.tar.gz")
-sha256sums=('9c033ac4fbf76cc4325ebb3a6caff91f72c09323dd75c204c603b3d67aba9ce7')
+sha256sums=('02307f1550c87f25ca41e6429ed7ce3c867d7415c780f7cbf459c289fa0cb031')
 
 check() {
   # Verify the release's real runtime ABI before pacman can install it.
-  local home="$srcdir/keypad-runtime-home"
+  local daemon home="$srcdir/input-runtime-home"
   mkdir -p "$home"
-  env HOME="$home" XDG_CONFIG_HOME="$home/config" XDG_STATE_HOME="$home/state" \
-    XDG_CACHE_HOME="$home/cache" "$srcdir/usr/bin/control-surfaced" features --json >/dev/null
+  for daemon in control-surfaced mouse-remapperd; do
+    env HOME="$home" XDG_CONFIG_HOME="$home/config" XDG_STATE_HOME="$home/state" \
+      XDG_CACHE_HOME="$home/cache" "$srcdir/usr/bin/$daemon" features --json >/dev/null || return
+  done
+  rmdir "$home"
 }
 
 package() {
+  [[ -x "$srcdir/usr/bin/mouse-remapperd" ]] ||
+    { echo "mouse-remapperd is missing from the native release" >&2; return 1; }
   # smplOS's control-surface.service passes --eww-window/--eww-config
   # (cheatsheet push); refuse a daemon without them (Qt keeps it as UTF-16).
   LC_ALL=C grep -aqP 'e\x00w\x00w\x00-\x00w\x00i\x00n\x00d\x00o\x00w\x00' "$srcdir/usr/bin/control-surfaced" ||

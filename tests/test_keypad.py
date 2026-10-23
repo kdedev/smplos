@@ -618,12 +618,14 @@ class LifecycleTests(unittest.TestCase):
                     self.assertIn(f"{recipe}:/build/pkg:ro", after)
                 self.assertEqual(old.read_bytes(), b"old cache fixture", "keep the prior cache until replacement succeeds")
 
-    def package(self, daemon):
+    def package(self, daemon, *, mouse=True):
         temp = tempfile.TemporaryDirectory()
         self.addCleanup(temp.cleanup)
         srcdir, pkgdir = Path(temp.name) / "src", Path(temp.name) / "pkg"
         files = {"usr/bin/control-surfaced": daemon, "usr/bin/ch552-padprog": b"\x7fELF",
                  "usr/share/control-surface/firmware/fw.bin": b"fw"}
+        if mouse:
+            files["usr/bin/mouse-remapperd"] = b"\x7fELF"
         for name, data in files.items():
             path = srcdir / name
             path.parent.mkdir(parents=True, exist_ok=True)
@@ -641,6 +643,7 @@ class LifecycleTests(unittest.TestCase):
         for name, data in files.items():
             self.assertEqual((pkgdir / name).read_bytes(), data)
         self.assertEqual((pkgdir / "usr/bin/control-surfaced").stat().st_mode & 0o777, 0o755)
+        self.assertEqual((pkgdir / "usr/bin/mouse-remapperd").stat().st_mode & 0o777, 0o755)
         self.assertEqual((pkgdir / "usr/share/control-surface/firmware/fw.bin").stat().st_mode & 0o777, 0o644)
 
     def test_package_refuses_a_daemon_without_the_units_flags(self):
@@ -649,17 +652,27 @@ class LifecycleTests(unittest.TestCase):
         self.assertIn("too old", result.stderr)
         self.assertFalse((pkgdir / "usr").exists())
 
+    def test_package_refuses_a_release_without_the_mouse_daemon(self):
+        daemon = b"\x7fELF..." + "--eww-window".encode("utf-16-le")
+        result, pkgdir, _ = self.package(daemon, mouse=False)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("mouse-remapperd is missing", result.stderr)
+        self.assertFalse((pkgdir / "usr").exists())
+
     def test_package_smoke_test_refuses_a_runtime_incompatible_release(self):
         with tempfile.TemporaryDirectory() as temp:
             src = Path(temp)
-            daemon = src / "usr/bin/control-surfaced"
-            daemon.parent.mkdir(parents=True)
+            (src / "usr/bin").mkdir(parents=True)
             script = f'source "{PKGBUILD}"\nsrcdir="{src}"\ncheck\n'
-            for status in (0, 127):
-                daemon.write_text(f'#!/bin/sh\n[ "$*" = "features --json" ] || exit 1\nexit {status}\n')
-                daemon.chmod(0o755)
-                result = subprocess.run(["bash", "-c", script], capture_output=True, text=True, timeout=20)
-                self.assertEqual(result.returncode, status)
+            for keypad_status, mouse_status in ((0, 0), (127, 0), (0, 127)):
+                with self.subTest(keypad=keypad_status, mouse=mouse_status):
+                    for name, status in (("control-surfaced", keypad_status),
+                                         ("mouse-remapperd", mouse_status)):
+                        daemon = src / "usr/bin" / name
+                        daemon.write_text(f'#!/bin/sh\n[ "$*" = "features --json" ] || exit 1\nexit {status}\n')
+                        daemon.chmod(0o755)
+                    result = subprocess.run(["bash", "-c", script], capture_output=True, text=True, timeout=20)
+                    self.assertEqual(result.returncode, keypad_status or mouse_status)
 
 
 class OneShotSyncTests(KeypadCase):
