@@ -820,7 +820,7 @@ class MigrationTests(KeypadCase):
         output = self.migrate()
         self.assertEqual((self.units / "control-surface.service").read_text(), UNIT.read_text())
         self.assertFalse((wants / "control-surface.service").is_symlink())
-        self.assertIn("Removed obsolete keypad login link", output)
+        self.assertIn("Removed obsolete device-service login link", output)
         backups = list(self.unit_state.glob("backup.*/preimage"))
         self.assertIn(old, [p.read_text() for p in backups if not p.is_symlink()])
 
@@ -1018,6 +1018,13 @@ stage_fixture() {
         self.assertEqual((live / ".config/systemd/user/control-surface.service").read_bytes(),
                          (self.units / "control-surface.service").read_bytes())
         self.assertEqual((payload / "config/systemd/user/control-surface.service").read_bytes(), UNIT.read_bytes())
+        mouse_unit = ROOT / "src/shared/configs/systemd/user/mouse-remap.service"
+        mouse_rule = ROOT / "src/shared/system/udev/70-smplos-mice.rules"
+        self.assertEqual((live / ".config/systemd/user/mouse-remap.service").read_bytes(), mouse_unit.read_bytes())
+        self.assertEqual((payload / "config/systemd/user/mouse-remap.service").read_bytes(), mouse_unit.read_bytes())
+        for staged in (iso / "etc/udev/rules.d/70-smplos-mice.rules",
+                       payload / "system/udev/70-smplos-mice.rules"):
+            self.assertEqual(staged.read_bytes(), mouse_rule.read_bytes())
         self.assertEqual((live / ".local/state/smplos/keypad-units/last-installed.service").read_bytes(),
                          (self.unit_state / "last-installed.service").read_bytes())
         for staged in (iso / "usr/local/bin/smplos-session-services", payload / "bin/smplos-session-services"):
@@ -1048,6 +1055,10 @@ stage_fixture() {
         for home in (live, installed_home):
             self.assertFalse(list((home / ".config/systemd/user").glob("*.wants/*keypad*")))
             self.assertFalse(list((home / ".config/systemd/user").glob("*.wants/control-surface.service")))
+            self.assertFalse(list((home / ".config/systemd/user").glob("*.wants/mouse-remap.service")))
+            self.assertEqual((home / ".config/systemd/user/mouse-remap.service").read_bytes(), mouse_unit.read_bytes())
+            self.assertEqual((home / ".local/state/smplos/mouse-units/last-installed.service").read_bytes(),
+                             mouse_unit.read_bytes())
         self.assertIn('install_keypad_packaging "$airootfs"', build)
         self.assertIn('cp -r "$SRC_DIR/shared/bin/"* "$airootfs/usr/local/bin/"', build)
         self.assertIn('cp -r "$SRC_DIR/shared/bin/"* "$airootfs/root/smplos/bin/"', build)

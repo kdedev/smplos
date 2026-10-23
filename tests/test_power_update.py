@@ -359,7 +359,7 @@ SELF_UPDATED=1; SELF_CANONICAL="$HOME/not-installed"
 pull_updates() { return 1; }
 sync_scripts() { :; }; sync_configs() { :; }; sync_themes() { :; }
 sync_apps() { :; }; sync_user_units() { :; }; run_migrations() { :; }; cleanup_shadow_bins() { :; }
-sync_keypad_support() { :; }; sync_plugins() { :; }
+sync_keypad_support() { :; }; sync_mouse_support() { :; }; sync_plugins() { :; }
 post_deploy() { :; }; rebuild-app-cache() { :; }
 """
         script = self.sync_script() + stubs + main
@@ -394,7 +394,7 @@ SELF_UPDATED=1; SELF_CANONICAL="$HOME/not-installed"
 pull_updates() {{ return 1; }}
 sync_scripts() {{ :; }}; sync_configs() {{ :; }}; sync_themes() {{ :; }}
 sync_apps() {{ :; }}; sync_user_units() {{ :; }}; cleanup_shadow_bins() {{ :; }}
-sync_keypad_support() {{ :; }}; sync_plugins() {{ :; }}
+sync_keypad_support() {{ :; }}; sync_mouse_support() {{ :; }}; sync_plugins() {{ :; }}
 post_deploy() {{ :; }}; rebuild-app-cache() {{ :; }}
 run_migrations() {{ bash "{BIN / 'smplos-migrate'}"; }}
 """
@@ -769,7 +769,8 @@ class SessionServicesTests(unittest.TestCase):
             json.dump(state, open(path, "w"))
         if args[0] == "is-active":
             if args[-1].endswith(".device"):
-                sys.exit(0 if state.get("keypad") else 3)
+                device = {"smplos-keypad.device": "keypad", "smplos-mouse.device": "mouse"}.get(args[-1])
+                sys.exit(0 if device and state.get(device) else 3)
             sys.exit(0 if state["graphical"] else 3)
         if args[0] == "stop":
             if args[1] == "graphical-session.target":
@@ -785,7 +786,7 @@ class SessionServicesTests(unittest.TestCase):
                 sys.exit(1)
             state["graphical"] = True
             for name, unit in units.items():
-                if name == "control-surface.service":
+                if name in ("control-surface.service", "mouse-remap.service"):
                     continue  # device-bound, not enabled for the target
                 if unit.get("oneshot"):
                     unit["completed"] = name not in broken
@@ -799,6 +800,14 @@ class SessionServicesTests(unittest.TestCase):
                     state["keypad"] = False
                 if state.get("keypad_failures", 0):
                     state["keypad_failures"] -= 1
+                    unit["active"] = False
+                    save()
+                    sys.exit(1)
+            if args[1] == "mouse-remap.service":
+                if os.environ.get("UNPLUG_MOUSE_ON_RESTART"):
+                    state["mouse"] = False
+                if state.get("mouse_failures", 0):
+                    state["mouse_failures"] -= 1
                     unit["active"] = False
                     save()
                     sys.exit(1)
@@ -845,12 +854,13 @@ class SessionServicesTests(unittest.TestCase):
                         SMPLOS_SESSION_SETTLE="0", SMPLOS_SESSION_RETRY="0")
 
     def run_login(self, graphical=False, start_fails=0, skip=(), extra_units=None,
-                  keypad=False, keypad_failures=0, **env):
+                  keypad=False, keypad_failures=0, mouse=False, mouse_failures=0, **env):
         units = {u: {"active": False, "skip": u in skip}
                  for u in ("hypridle.service", "voxtype.service", "xr-glasses.service")}
         units.update(extra_units or {})
         self.state.write_text(json.dumps({"graphical": graphical, "start_fails": start_fails, "units": units,
-                                         "keypad": keypad, "keypad_failures": keypad_failures}))
+                                         "keypad": keypad, "keypad_failures": keypad_failures,
+                                         "mouse": mouse, "mouse_failures": mouse_failures}))
         result = subprocess.run(["bash", str(self.SCRIPT)], env=dict(self.env, **env),
                                 capture_output=True, text=True, timeout=20)
         calls = self.calls.read_text().splitlines()
@@ -973,6 +983,62 @@ class SessionServicesTests(unittest.TestCase):
         result, calls = self.run_login()
         self.assertEqual(result.returncode, 0)
         self.assertFalse([call for call in calls if "control-surface.service" in call])
+        self.assertFalse([call for call in calls if "mouse-remap.service" in call])
+
+    def test_mouse_coldplug_is_separate_from_the_keypad_and_follows_environment_import(self):
+        result, calls = self.run_login(mouse=True, extra_units={
+            "mouse-remap.service": {"active": False}})
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertLess(calls.index("start smplos-session.target"),
+                        calls.index("reset-failed mouse-remap.service"))
+        self.assertEqual(calls.count("restart mouse-remap.service"), 1)
+        self.assertIn("show mouse-remap.service -p ActiveState --value", calls)
+        self.assertFalse([call for call in calls if "control-surface.service" in call])
+        self.assertFalse(self.notified.exists())
+
+    def test_mouse_and_keypad_are_each_recovered_when_both_are_present(self):
+        result, calls = self.run_login(mouse=True, keypad=True, extra_units={
+            "mouse-remap.service": {"active": False}, "control-surface.service": {"active": False}})
+        self.assertEqual(result.returncode, 0, result.stderr)
+        for service in ("mouse-remap.service", "control-surface.service"):
+            self.assertEqual(calls.count(f"restart {service}"), 1)
+
+    def test_mouse_failure_is_retried_and_reported_including_missing_binary(self):
+        for skip in (False, True):
+            with self.subTest(skip=skip):
+                self.calls.unlink(missing_ok=True)
+                self.notified.unlink(missing_ok=True)
+                (self.root / "state/smplos/session-services.failed").unlink(missing_ok=True)
+                result, calls = self.run_login(mouse=True, extra_units={
+                    "mouse-remap.service": {"active": False, "skip": skip}},
+                    BROKEN="mouse-remap.service")
+                self.assertEqual(result.returncode, 1)
+                self.assertIn("stop mouse-remap.service", calls)
+                self.assertIn("Mouse button remapping", self.notified.read_text())
+                if skip:
+                    self.assertIn("mouse remapper unavailable", self.notified.read_text())
+
+    def test_mouse_transient_failure_recovers_and_unplug_is_not_a_failure(self):
+        result, calls = self.run_login(mouse=True, mouse_failures=1, extra_units={
+            "mouse-remap.service": {"active": False}})
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(calls.count("restart mouse-remap.service"), 2)
+        self.calls.unlink()
+        result, calls = self.run_login(mouse=True, extra_units={
+            "mouse-remap.service": {"active": False}}, UNPLUG_MOUSE_ON_RESTART="1")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertNotIn("stop mouse-remap.service", calls)
+        self.assertFalse(self.notified.exists())
+
+    def test_verification_does_not_interrupt_the_running_mouse_remapper(self):
+        self.run_login(mouse=True, extra_units={"mouse-remap.service": {"active": True}})
+        self.calls.unlink()
+        result = subprocess.run(["bash", str(self.SCRIPT), "--verify"], env=self.env,
+                                capture_output=True, text=True, timeout=20)
+        calls = self.calls.read_text().splitlines()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("show mouse-remap.service -p ActiveState --value", calls)
+        self.assertNotIn("restart mouse-remap.service", calls)
 
     def test_transient_keypad_start_failure_recovers_but_persistent_failure_reports(self):
         result, calls = self.run_login(keypad=True, keypad_failures=1, extra_units={

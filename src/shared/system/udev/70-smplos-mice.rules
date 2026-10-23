@@ -1,0 +1,8 @@
+# Settings > Mouse remapping. Only this supported mouse receives input access;
+# other mice and keyboards are never granted access by these rules.
+# The separate service does not start the keypad backend or its tray icon.
+SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTR{idVendor}=="1532", ATTR{idProduct}=="00b4", TAG+="systemd", ENV{SYSTEMD_ALIAS}="/smplos/mouse", ENV{SYSTEMD_USER_WANTS}+="mouse-remap.service"
+SUBSYSTEM=="input", KERNEL=="event*", ATTRS{idVendor}=="1532", ATTRS{idProduct}=="00b4", TAG+="uaccess"
+
+# Shared with the keypad backend; no input group membership is required.
+KERNEL=="uinput", SUBSYSTEM=="misc", TAG+="uaccess", OPTIONS+="static_node=uinput"

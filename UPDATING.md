@@ -337,6 +337,43 @@ on the next login or plug-in. Fresh ISOs carry the same unit and hook and
 install the daemon from their offline mirror; rebuilding smpl-apps is not
 required for this OS-only fix. See [keypad lifecycle](KEYPAD.md#lifecycle-and-footprint).
 
+### Mouse remapping delivery
+
+The Razer Naga V2 HyperSpeed (`1532:00b4`) backend lives alongside the keypad
+backend in **smpl-apps**, sharing remapping infrastructure rather than a second
+OS-local implementation. Its executable is `mouse-remapperd`, not
+`control-surfaced`. It reads the existing `$HOME/.config/smplos/mouse.json`
+(the legacy Settings location, independent of `XDG_CONFIG_HOME`) and
+exposes a separate `org.smplos.MouseRemapper1` session D-Bus API for Settings.
+Learn/Identify require the matching native Settings release; other mouse models
+remain preview-only. Global mappings work through uinput; per-app selection
+currently requires the Hyprland focus tracker.
+Mouse and keypad assignments must share the action catalog and execution
+engine, including Kdenlive API discovery, availability and dispatch. An API
+action must never silently fall back to a keyboard shortcut.
+
+`70-smplos-mice.rules` grants the seated user access only to this USB device's
+input interfaces and starts `mouse-remap.service` through `smplos-mouse.device`.
+The service has no enablement link or keypad/EWW dependency. Unplug stops it;
+the shared login hook recovers coldplug after importing the graphical
+environment. Verification never restarts a healthy running remapper.
+The existing backed-up unit reconciliation also handles the mouse unit, with a
+separate `mouse-units` ownership stamp. Custom units, links, drop-ins and saved
+mouse/keypad profiles are preserved.
+
+**Release prerequisite:** the currently pinned **control-surface v0.8.29**
+predates `mouse-remapperd`. Publish and verify a compatible smpl-apps release
+containing both Settings and the new daemon, then advance the control-surface
+package pin/checksum before distributing this feature in an ISO or OS update.
+Do not claim the old package delivers mouse remapping. The mouse migration and
+every normal update probe `mouse-remapperd features --json` in an isolated home,
+requiring learning, identify (including wheel/tilt), guided side-grid
+calibration, complete guided setup (`guidedSetup`), Kdenlive API and passthrough capabilities,
+before replacing the unit or granting device access. Missing, incompatible or
+broken binaries explicitly defer integration; an ordinary OS update reports
+the missing delivery instead of silently claiming remapping is installed.
+Local development deployment can install the validated build directly.
+
 ### Power preferences and command compatibility
 
 Settings and the user own `~/.config/hypr/hypridle.conf`: updates retain exact

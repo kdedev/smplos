@@ -805,6 +805,7 @@ sync_scripts() { :; }; sync_configs() { :; }; sync_themes() { :; }
 sync_apps() { :; }; sync_hypr_configs() { :; }; sync_user_units() { :; }; run_migrations() { :; }
 sync_plugins() { :; }
 sync_keypad_support() { :; }
+sync_mouse_support() { :; }
 sync_hypridle_config() { :; }
 cleanup_shadow_bins() { :; }; post_deploy() { :; }
 update_smpl_apps() { :; }; update_st_smpl() { :; }; update_nemo_smpl() { :; }

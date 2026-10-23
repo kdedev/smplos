@@ -200,7 +200,34 @@ Cheap CH552 macro keypads (USB `1189:8890`, 3 to 16 keys, up to 3 knobs) work as
 
 #### Mouse
 
-**Settings → Mouse** sets pointer speed, acceleration (system default, flat or adaptive), natural scrolling and scroll speed. Changes apply live and are saved to `~/.config/hypr/pointer.conf`, which Hyprland reads again at login. The button assignments (global and per app, with layouts for generic and MMO mice) are a preview for now: you can set them up and they are saved, but nothing acts on them yet.
+**Settings → Mouse** sets pointer speed, acceleration (system default, flat or adaptive), natural scrolling and scroll speed. Changes apply live and are saved to `~/.config/hypr/pointer.conf`, which Hyprland reads again at login.
+
+With the matching native Settings and `mouse-remapperd` build, **Razer Naga V2
+HyperSpeed (`1532:00b4`)** button assignments are applied rather than just saved.
+The guided setup learns actual inputs for the highlighted diagram positions:
+primary buttons, wheel/tilt, extra buttons and the 12-button side grid.
+Arm each capture, press and release the requested control, then confirm before
+continuing. Retry mistakes or skip unavailable controls; skipped positions keep
+existing mappings. Review and save the complete setup, or cancel without
+replacing saved mappings. No factory input codes are assumed.
+You can also learn an individual button's actual signal, then use
+**Identify buttons** to press a button, highlight/select it on the map, and edit
+its assignment. Identify also reports wheel/tilt directions and suppresses
+scrolling and non-primary button output while active; pointer movement and
+primary clicks remain usable. Controls that emit no Linux input event cannot
+be identified or learned through this backend. Global remapping uses Linux
+input/uinput independently of the compositor; automatic per-app profiles
+require the Hyprland focus backend.
+Application API actions, including Kdenlive, use the keypad's shared action
+catalog and execution engine, not substituted keyboard shortcuts.
+Other mouse models retain the saved preview until a backend supports them.
+
+The mouse backend has its own device-triggered service, separate from macro
+keypads. It does not read other keyboards, enable the keypad tray icon, or
+require membership in the input group. Existing mouse/keypad mappings are
+preserved. This requires the native binary delivery described in
+[mouse remapping delivery](UPDATING.md#mouse-remapping-delivery); updating OS
+scripts alone does not turn an older Settings preview into live remapping.
 
 ---
 

@@ -1059,6 +1059,11 @@ install_keypad_packaging() {
         "$airootfs/etc/skel/.local/state/smplos/keypad-units"
     install -Dm644 "$SRC_DIR/shared/configs/systemd/user/control-surface.service" \
         "$airootfs/root/smplos/config/systemd/user/control-surface.service"
+    smplos_mouse_sync_units "$SRC_DIR/shared/configs/systemd/user" \
+        "$airootfs/etc/skel/.config/systemd/user" \
+        "$airootfs/etc/skel/.local/state/smplos/mouse-units"
+    install -Dm644 "$SRC_DIR/shared/configs/systemd/user/mouse-remap.service" \
+        "$airootfs/root/smplos/config/systemd/user/mouse-remap.service"
 }
 
 ###############################################################################
