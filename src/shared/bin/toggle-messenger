@@ -11,7 +11,8 @@
 # Hyprland toggles use the focused monitor and restore the prior window on hide.
 #
 # The window is floated, sized phone-like (480x720), and pinned to bottom-right
-# with a gap above the bar.
+# with a gap above the bar. Under a HUD theme the plugin then moves it further in
+# (hyprctl smplhud fit), so the frame it draws round the window is not cut off.
 
 set -euo pipefail
 
@@ -47,7 +48,7 @@ MARGIN_BOTTOM=34  # 30px bar + 2px offset + 2px gap (matches notif-center)
 #     workspace (focus-workspace-previous), then move the window there.
 #   - Otherwise just move the window to their focused workspace.
 #
-# Result: a single press of Super+Shift+S always puts Signal where you are,
+# Result: a single press of Signal's shortcut puts it where you are,
 # and a second press always tucks it away. You never get "stranded" on the
 # scratchpad.
 # ============================================================================
@@ -290,6 +291,11 @@ if [[ -n "$window_json" ]]; then
     hypr_dispatch "hl.dsp.window.float({window='address:${addr}', action='enable'})"
     hypr_dispatch "hl.dsp.window.resize({window='address:${addr}', x=${WIDTH}, y=${HEIGHT}, exact=true})"
     hypr_dispatch "hl.dsp.window.move({window='address:${addr}', x=${ABS_X}, y=${ABS_Y}})"
+    # The corner above is for the bare window. With a HUD theme the frame drawn
+    # around it reaches past the monitor's edge there, so the smpl-hud plugin is
+    # asked to move the window in by the frame. It does nothing without a frame
+    # or without the plugin; an unknown command is no reason to stop.
+    hyprctl smplhud fit "$addr" >/dev/null 2>&1 || true
     hypr_dispatch "hl.dsp.focus({window='address:${addr}'})"
   else
     return_target=$(return_focus_target)

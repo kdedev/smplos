@@ -85,9 +85,11 @@ install_smplos() {
   # Install gum in chroot for any additional prompts
   chroot_bash -lc "sudo pacman -S --noconfirm --needed gum" >/dev/null 2>&1 || true
   
-  # Run the smplOS installer script (matching Omarchy's approach exactly)
-  # The || bash fallback ensures we don't exit on error
-  chroot_bash -lc "source /home/$SMPLOS_USER/.local/share/smplos/install.sh || bash"
+  # A conditional `source ... || bash` suppresses errexit inside install.sh.
+  if ! chroot_bash -lc "bash /home/$SMPLOS_USER/.local/share/smplos/install.sh"; then
+    echo "smplOS setup failed. Inspect the install log before retrying; no automatic reboot." >&2
+    return 1
+  fi
 
   # Reboot if installation completed successfully (matching Omarchy exactly)
   if [[ -f /mnt/var/tmp/smplos-install-completed ]]; then
@@ -235,6 +237,15 @@ EOF
     cp /root/smplos/lib/*.sh /mnt/usr/local/lib/smplos/ 2>/dev/null || true
     install -m644 /root/smplos/lib/smplos-hypridle-migrate.py /mnt/usr/local/lib/smplos/ || return 1
     chmod 644 /mnt/usr/local/lib/smplos/*.sh 2>/dev/null || true
+  fi
+
+  # Compositor plugins (smpl-hud, ...) built for this ISO's Hyprland. Each file
+  # is named after the Hyprland build it fits; smplos-plugins loads the one
+  # matching the running compositor and Update OS rebuilds after a Hyprland update.
+  if compgen -G '/usr/local/lib/smplos/plugins/*.so' >/dev/null; then
+    mkdir -p /mnt/usr/local/lib/smplos/plugins
+    cp /usr/local/lib/smplos/plugins/* /mnt/usr/local/lib/smplos/plugins/ 2>/dev/null || true
+    chmod 755 /mnt/usr/local/lib/smplos/plugins/*.so 2>/dev/null || true
   fi
 
   # Copy AppImages to installed system

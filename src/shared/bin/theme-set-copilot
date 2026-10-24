@@ -13,6 +13,7 @@ from pathlib import Path
 
 PALETTES = {
     "amber": "IC Orange PPL",
+    "amber-hud": "IC Orange PPL",
     "catppuccin": "Catppuccin Mocha",
     "catppuccin-latte": "Catppuccin Mocha",
     "ethereal": "Light purple",
@@ -23,7 +24,9 @@ PALETTES = {
     "hackerman": "Homebrew",
     "kanagawa": "Kanso Ink",
     "matrix": "Homebrew",
+    "matrix-hud": "Homebrew",
     "matte-black": "Monochrome",
+    "neon": "Tokyo Night",
     "nord": "Nord Midnight",
     "osaka-jade": "Selene Selenized",
     "ristretto": "Espresso",

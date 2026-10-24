@@ -1,0 +1,20 @@
+#!/bin/bash
+# Mirror this Hyprland instance's log into the persistent journal.
+#
+# Hyprland writes its log to $XDG_RUNTIME_DIR (a tmpfs) without timestamps,
+# so a GPU/compositor hang that ends in a reboot erases the only record of
+# what the compositor was doing. Read a previous session with:
+#   journalctl -b -1 -t hyprland
+set -euo pipefail
+
+die() { echo "smplos-hypr-log-journal: $*" >&2; exit 1; }
+
+[[ -n "${HYPRLAND_INSTANCE_SIGNATURE:-}" ]] || die "HYPRLAND_INSTANCE_SIGNATURE is not set"
+instance="${XDG_RUNTIME_DIR:-/run/user/$UID}/hypr/$HYPRLAND_INSTANCE_SIGNATURE"
+pid=$(head -n1 "$instance/hyprland.lock" 2>/dev/null) || true
+[[ "$pid" =~ ^[0-9]+$ ]] || die "no Hyprland PID in $instance/hyprland.lock"
+
+# libinput plugin traces are logged for every click and scroll.
+tail -n +1 -F --pid="$pid" "$instance/hyprland.log" 2>/dev/null \
+    | grep --line-buffered -v '\[libinput\] Plugin:' \
+    | systemd-cat -t hyprland

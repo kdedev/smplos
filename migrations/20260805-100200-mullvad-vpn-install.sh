@@ -1,4 +1,5 @@
 #!/bin/bash
+# SMPLOS_UPDATE_PRIORITY=optional
 # Migration: Install Mullvad VPN on existing customer machines
 #
 # Context: mullvad-vpn-bin is registered as a default AUR-style package in
@@ -14,8 +15,8 @@
 #          so the trust chain matches the ISO build.
 #
 # Safety:  Idempotent — exits 0 if mullvad-vpn-bin is already installed.
-#          Exits 0 on any prerequisite failure (offline, no makepkg, no
-#          PKGBUILD synced yet) so it never blocks other migrations. The
+#          Prerequisite failures remain unmarked for the optional phase to
+#          retry; they do not block core OS completion. The
 #          bundled .install hook enables mullvad-daemon.service on first
 #          install; no separate systemctl call needed here.
 
@@ -34,7 +35,7 @@ PKGBUILD_DIR="$SMPLOS_PATH/repo/src/shared/pkgbuilds/mullvad-vpn-bin"
 if [[ ! -f "$PKGBUILD_DIR/PKGBUILD" ]]; then
     echo "  WARNING: $PKGBUILD_DIR/PKGBUILD not found — skipping"
     echo "  Re-run smplos-migrate after the next 'Update OS'."
-    exit 0
+    exit 1
 fi
 
 # Bootstrap build tools if missing (customer machines may not have base-devel).
@@ -76,14 +77,14 @@ echo "  Building mullvad-vpn-bin (fetch + verify signed .deb from cdn.mullvad.ne
 if [[ $EUID -eq 0 ]]; then
     sudo useradd -m -r _mvbuild 2>/dev/null || true
     sudo chown -R _mvbuild:_mvbuild "$BUILD_DIR"
-    if ! sudo -u _mvbuild bash -c "cd '$BUILD_DIR' && makepkg -s --noconfirm --skippgpcheck"; then
+    if ! sudo -u _mvbuild bash -c "cd '$BUILD_DIR' && makepkg -s --noconfirm"; then
         echo "  ERROR: makepkg failed — will retry on next update"
         sudo userdel -r _mvbuild 2>/dev/null || true
         exit 1
     fi
     sudo userdel -r _mvbuild 2>/dev/null || true
 else
-    if ! (cd "$BUILD_DIR" && makepkg -s --noconfirm --skippgpcheck); then
+    if ! (cd "$BUILD_DIR" && makepkg -s --noconfirm); then
         echo "  ERROR: makepkg failed — will retry on next update"
         exit 1
     fi

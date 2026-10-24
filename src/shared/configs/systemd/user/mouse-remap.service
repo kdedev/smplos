@@ -1,0 +1,14 @@
+[Unit]
+Description=Mouse button remapping for Razer Naga V2 HyperSpeed
+Documentation=https://github.com/smpl-os/smplos#mouse
+BindsTo=smplos-mouse.device
+After=smplos-mouse.device graphical-session.target
+ConditionPathExists=/usr/bin/mouse-remapperd
+StartLimitIntervalSec=60
+StartLimitBurst=5
+
+[Service]
+Type=exec
+ExecStart=/usr/bin/mouse-remapperd run
+Restart=on-failure
+RestartSec=2

@@ -76,7 +76,7 @@ It started as an attempt to build a lighter version of Omarchy - same keybinding
 - **Fast installs.** Fully offline - no internet required. A fresh install completes in under 2 minutes.
 - **Cross-compositor.** Built from the ground up to support multiple compositors. Hyprland (Wayland) ships first, [DWM (X11) is next](DWM-X11.md). Shared configs, shared themes, shared keybindings - the compositor is just a thin layer.
 - **One UI toolkit.** EWW powers the bar, widgets, and dialogs. It runs on both X11 and Wayland. No waybar, no polybar, no redundant tools.
-- **18 built-in themes.** One command switches colors across the entire system - terminal, bar, notifications, borders, lock screen, and editor.
+- **21 built-in themes.** One command switches colors across the entire system - terminal, bar, notifications, borders, lock screen, and editor.
 
 ---
 
@@ -120,7 +120,7 @@ This is the same pattern we use everywhere: the theme system writes config files
 
 #### Themes
 
-smplOS ships with 18 themes inherited and expanded from the Omarchy project. A single `theme-set` command applies colors system-wide - terminal, EWW bar, notifications, Hyprland borders, lock screen, btop, neovim, and VS Code. Themes are generated from a single `colors.toml` source of truth.
+smplOS ships with 21 themes inherited and expanded from the Omarchy project. A single `theme-set` command applies colors system-wide - terminal, EWW bar, notifications, Hyprland borders, lock screen, btop, neovim, and VS Code. Themes are generated from a single `colors.toml` source of truth.
 
 Native transparency is **background-only**: capable Nemo, Grafium in Auto mode,
 and regular smpl-apps windows use `app_background_opacity`, while text, icons,
@@ -139,15 +139,32 @@ See the [theme alpha ownership guide](CREATING_MODIFYING_A_THEME.md#opacity-keys
 and [release sequence](UPDATING.md#background-only-transparency-delivery).
 Normal **Update OS** must install the published native releases as well as
 theme/config changes; source pushes and cached tags alone are insufficient.
-Reopen apps when ready after updating. Local Grafium launchers can intentionally
-override the packaged binary; the updater preserves and reports those overrides
-rather than silently replacing custom launch choices.
+Reopen apps when ready after updating. Grafium is independently installed and
+updated; Update OS does not deliver its binary or inspect custom Grafium launchers.
 
 <a href="images/5-themes.png"><img src="images/5-themes.png" width="720" /></a>
 
 #### Keybindings
 
 smplOS uses the same keybindings as [Omarchy](https://omakub.org/), so migrating from that project is seamless - your muscle memory carries over. Press <kbd>Super</kbd>+<kbd>K</kbd> to open the keybinding cheatsheet overlay at any time. The overlay is **dynamically generated** by parsing `bindings.conf` at runtime, so any keybinding you add or change shows up in the help automatically - no manual docs to maintain.
+
+Hyprland's scrolling layout keeps window and column operations separate:
+**Super+Shift+arrows** swaps the focused window; **Super+Ctrl+Shift+Left/Right**
+moves the entire column. **Super+R** expands the column into available space,
+while **Super+Ctrl+R** enters arrow-key resize mode (Escape/Enter exits).
+With the `smpl-scroll` plugin a column can grow up to four monitor-widths wide
+(Hyprland itself stops at one): keep pressing the arrows, then pan the view across
+it with **Super+Shift+]** / **Super+Shift+[** (or move focus with **Super+]** / **[**);
+see [`smpl-scroll`](src/compositors/hyprland/plugins/smpl-scroll/README.md).
+The size presets (**Super+-**, **Super+=**, **Super+R**) bring a column back to at
+most one monitor.
+Scrolling does not support orientation rotation, so the old Super+J shortcut
+is no longer shipped. Update OS repairs only the known stock entries in
+existing binding files, saving a verified backup beside each changed file;
+custom actions and occupied destination shortcuts are preserved.
+**Super+S** toggles Signal; **Super+Ctrl+S** toggles the scratchpad.
+An explicit messenger shortcut in `bindings.conf` takes precedence over
+automatic messenger key assignment.
 
 <a href="images/6-keybindings.png"><img src="images/6-keybindings.png" width="720" /></a>
 
@@ -167,7 +184,7 @@ A notification hub that collects and groups desktop notifications by app. Suppor
 
 #### Display Manager
 
-A graphical display configuration panel. Detects connected monitors via Hyprland IPC, shows resolution, refresh rate, scale, and position for each display, and lets you apply changes live. No external dependencies - just `hyprctl` under the hood. Replaces the need for `wlr-randr` CLI or a full KDE/GNOME settings app just to rearrange monitors.
+A graphical display configuration panel. Detects connected monitors via Hyprland IPC, shows resolution, refresh rate, scale, and position for each display, and lets you apply changes live. **Make primary** chooses the primary monitor and the taskbar moves with it (see [Monitor-owned workspaces](#monitor-owned-workspaces)). No external dependencies - just `hyprctl` under the hood. Replaces the need for `wlr-randr` CLI or a full KDE/GNOME settings app just to rearrange monitors.
 
 <a href="images/7-displaymgr.png"><img src="images/7-displaymgr.png" width="720" /></a>
 
@@ -180,6 +197,37 @@ A keyboard layout and input configuration panel with two tabs. The **Keyboard** 
 #### Macro Keypads
 
 Cheap CH552 macro keypads (USB `1189:8890`, 3 to 16 keys, up to 3 knobs) work as soon as they're plugged in. A keypad icon appears in the bar while one is connected; click it to open **Settings → Keypad**. There you can map keys and knobs to shortcuts, media keys or commands, give apps their own profiles, and turn on API plugins such as Kdenlive's control-surface interface. A guided wizard installs the open firmware. See [KEYPAD.md](KEYPAD.md).
+
+#### Mouse
+
+**Settings → Mouse** sets pointer speed, acceleration (system default, flat or adaptive), natural scrolling and scroll speed. Changes apply live and are saved to `~/.config/hypr/pointer.conf`, which Hyprland reads again at login.
+
+With the matching native Settings and `mouse-remapperd` build, **Razer Naga V2
+HyperSpeed (`1532:00b4`)** button assignments are applied rather than just saved.
+The guided setup learns actual inputs for the highlighted diagram positions:
+primary buttons, wheel/tilt, extra buttons and the 12-button side grid.
+Arm each capture, press and release the requested control, then confirm before
+continuing. Retry mistakes or skip unavailable controls; skipped positions keep
+existing mappings. Review and save the complete setup, or cancel without
+replacing saved mappings. No factory input codes are assumed.
+You can also learn an individual button's actual signal, then use
+**Identify buttons** to press a button, highlight/select it on the map, and edit
+its assignment. Identify also reports wheel/tilt directions and suppresses
+scrolling and non-primary button output while active; pointer movement and
+primary clicks remain usable. Controls that emit no Linux input event cannot
+be identified or learned through this backend. Global remapping uses Linux
+input/uinput independently of the compositor; automatic per-app profiles
+require the Hyprland focus backend.
+Application API actions, including Kdenlive, use the keypad's shared action
+catalog and execution engine, not substituted keyboard shortcuts.
+Other mouse models retain the saved preview until a backend supports them.
+
+The mouse backend has its own device-triggered service, separate from macro
+keypads. It does not read other keyboards, enable the keypad tray icon, or
+require membership in the input group. Existing mouse/keypad mappings are
+preserved. This requires the native binary delivery described in
+[mouse remapping delivery](UPDATING.md#mouse-remapping-delivery); updating OS
+scripts alone does not turn an older Settings preview into live remapping.
 
 ---
 
@@ -203,7 +251,7 @@ smplOS ships in focused editions that **stack on top of each other**. Pick the o
 
 | Flag | Edition | Focus | Example apps |
 |------|---------|-------|-------------|
-| `-p` | **Productivity** | Office & workflow | Logseq, LibreOffice, KeePassXC |
+| `-p` | **Productivity** | Office & workflow | LibreOffice, KeePassXC |
 | `-c` | **Creators** | Design & media | OBS, Kdenlive, GIMP |
 | `-m` | **Communication** | Chat & calls | Discord, Signal, Slack |
 | `-d` | **Development** | Developer tools | VSCode, LazyVim (neovim), lazygit |
@@ -218,6 +266,11 @@ Build with any combination:
 ```
 
 Every edition installs offline, in under 2 minutes, from the same ISO.
+
+Grafium is temporarily excluded from **all ISO editions**, including Base and
+All, until its AUR package is published. Its future package updates belong in
+App Center's application updates, not **Update OS**. Existing installations,
+notes, settings and custom launchers are preserved.
 
 ---
 
@@ -298,6 +351,24 @@ stacked, and disconnected monitors. Filled chips indicate keyboard focus,
 outlines indicate visibility, and dots indicate occupied workspaces. Escape
 closes the overview on supported Hyprland versions without consuming Escape
 in other applications once the overview is closed.
+
+The **primary monitor** is the one that owns workspace 1. The bar and its
+popups (calendar, quick settings, notifications, USB, workspace overview) open
+on it, and the bar moves as soon as the primary monitor changes. Choose it with
+**Make primary** in Settings > Display, or from a terminal:
+
+```bash
+workspace-ctl primary             # print the primary monitor's connector
+workspace-ctl set-primary DP-3    # a connector or a monitor identity such as M2
+```
+
+In automatic spatial mode the primary monitor comes first and the others follow
+left to right; choosing a new one also clears explicit workspace transfers. In
+fixed-home mode the new primary swaps workspaces with the old one.
+`workspace-ctl primary` reports the monitor that owns workspace 1 right now, so
+moving workspace 1 by hand changes it without rewriting the saved choice.
+Without the stable workspace policy, or on niri and X11, the bar and popups stay
+on EWW's default monitor.
 
 The Taskbar workspace count is a **total across all monitors**, not a per-monitor
 count. Changing it updates the shared pool through the workspace listener.
@@ -385,14 +456,14 @@ available. The integration never installs dependencies or launches the app.
 
 | smplOS | Copilot built-in palette |
 |--------|--------------------------|
-| Amber | IC Orange PPL |
+| Amber, Amber HUD | IC Orange PPL |
 | Catppuccin, Catppuccin Latte | Catppuccin Mocha |
 | Ethereal | Light purple |
 | Everforest, Osaka Jade | Selene Selenized |
 | Flexoki Light | Flexoki |
 | Grafium | GitHub |
 | Gruvbox | Gruvbox Material |
-| Hackerman, Matrix | Homebrew |
+| Hackerman, Matrix, Matrix HUD | Homebrew |
 | Kanagawa | Kanso Ink |
 | Matte Black | Monochrome |
 | Nord | Nord Midnight |
@@ -434,7 +505,7 @@ src/
     configs/
       smplos/               Cross-compositor configs (bindings.conf, messengers.conf, branding)
       <app>/                Per-app default configs (btop, dunst, fish, foot, nvim, …)
-    themes/                 18 themes — each a self-contained directory with pre-baked configs
+    themes/                 21 themes — each a self-contained directory with pre-baked configs
     icons/                  SVG status icon templates (baked with accent colors by theme-set)
     applications/           Shared web-app .desktop entries and hicolor icons
     skel/                   Default user home skeleton (copied to /etc/skel in the ISO)
@@ -464,7 +535,7 @@ src/
 
   editions/                 Optional edition overlays (stack on top of base)
     lite/                   Lite edition — reduced package set
-    productivity/           Productivity — Logseq, LibreOffice, KeePassXC
+    productivity/           Productivity — LibreOffice, KeePassXC
     creators/               Creators — OBS, Kdenlive, GIMP
     communication/          Communication — Discord, Signal, Slack
     development/            Development — VSCode, LazyVim, lazygit
@@ -646,7 +717,7 @@ The quick-settings panel in the EWW bar shows a dictation pill with a themed mic
 
 smplOS has a **git-based over-the-air update system**. The OS repo is cloned to `~/.local/share/smplos/repo/` on each machine. When you update, it pulls the latest changes and applies them — no re-imaging required.
 
-Run a full update from the terminal, or double-click the "System Update" notification in the notification center:
+Use **App Center → Update OS** for a full update. The terminal command is:
 
 ```bash
 smplos-update
@@ -654,12 +725,39 @@ smplos-update
 
 A full update runs through these stages:
 
-1. **OS update** (`smplos-os-update`) — `git pull` latest repo, sync scripts from `src/shared/bin/` to `/usr/local/bin/`, run pending migrations, bump `/etc/os-release`
-2. **App update** (`smplos-update-apps`) — download latest smpl-apps, st-smpl, and nemo-smpl binaries from GitHub releases (skips if already up-to-date)
-3. **Theme refresh** — reapply the current theme + reload Hyprland
-4. **Pacman** — official repo packages (`pacman -Syu`), with Hyprland/EWW held back until after migrations
-5. **AUR** — if paru is installed (`paru -Sua`)
-6. **Flatpak** — if Flatpak apps are installed (`flatpak update -y`)
+1. **Bootstrap** — check external power, authenticate once, safely fast-forward upstream source, refresh and verify all updater commands/helpers.
+2. **Pacman** — complete the official base upgrade, including compositor, libraries and drivers; unsupported stack versions stop the transaction.
+3. **Required AUR** — enroll prebuilt Yay, then update foreign drivers, public shared libraries and dependencies of the core stack.
+4. **Core desktop** — deliver smpl-apps, st, Nemo and micro; deploy essential configs/themes and core migrations, then verify the core before ordinary apps run.
+5. **Optional apps** — attempt application configs/integrations, optional migrations, ordinary AUR apps and user/system Flatpaks.
+6. **Final verification** — check core integrity again, save local reports, and publish the OS version when required work succeeds.
+
+Ordinary app failures do not prevent core delivery or OS version completion.
+They remain logged and retryable, with **Update complete with warnings** rather
+than a false claim that every app updated. Required system/native/configuration
+failures still produce **Update incomplete**. Official packages stay together in
+one complete Arch transaction; the priority split never creates partial library
+upgrades.
+
+The update lock is released before the terminal's final Enter-to-close prompt
+and reboot notification, so a completed window cannot masquerade as an active
+update. If a verified update needs a reboot, **Update OS** instead explains
+**Reboot required** and refuses another full update until restarting. Incomplete
+update repairs and scripts-only enrollment remain available. Click the red
+reboot notification to review restarting, then click the separate confirmation
+to restart; dismissing either notification never reboots.
+App Center releases supporting [per-update completion receipts](UPDATING.md#completion-receipts-and-app-center)
+can offer **Restart App Center** after verifying completion and that their
+installed executable actually changed. An already-running older App Center
+still needs closing/reopening after its first successful native update.
+Flatpak remote-fetch fallbacks refresh metadata and retry once; unresolved refs
+remain visible optional warnings rather than a false claim that all apps updated.
+
+Supported older Git-based updaters automatically stop their old runner and
+reopen the current updater from the same button click; no separate enrollment
+command is required. The first migration from a Polkit-based updater asks once
+more for administrator authentication; subsequent updates authenticate once.
+See [legacy handoff, compatibility limits and diagnostic reports](UPDATING.md#bringing-older-fleet-machines-onto-this-updater).
 
 ### What can be updated
 
@@ -688,6 +786,7 @@ Breaking changes (upstream Hyprland renames, config format changes, etc.) are ha
 ```bash
 smplos-migrate --list       # show all migrations and their status
 smplos-migrate --pending    # show only pending migrations
+smplos-migrate --pending --phase optional  # app work awaiting retry
 ```
 
 For contributors: see [UPDATING.md](UPDATING.md) for how to write and ship updates.
@@ -767,7 +866,7 @@ You also need **~10 GB of free disk space**. The script checks this and warns yo
 Usage: build-iso.sh [EDITIONS...] [OPTIONS]
 
 Editions (stackable):
-    -p, --productivity      Office & workflow (Logseq, LibreOffice, KeePassXC)
+    -p, --productivity      Office & workflow (LibreOffice, KeePassXC)
     -c, --creators          Design & media (OBS, Kdenlive, GIMP)
     -m, --communication     Chat & calls (Discord, Signal, Slack)
     -d, --development       Developer tools (VSCode, LazyVim, lazygit)
@@ -847,11 +946,17 @@ See the [Development Guide](DEVELOPMENT.md) for hot-reload iteration, VM testing
 
 ## Themes
 
-18 built-in themes. Press <kbd>Super</kbd> + <kbd>Shift</kbd> + <kbd>T</kbd> to open the theme picker and switch instantly.
+21 built-in themes. Press <kbd>Super</kbd> + <kbd>Shift</kbd> + <kbd>T</kbd> to open the theme picker and switch instantly.
 
-Amber, Catppuccin Mocha, Catppuccin Latte, Ethereal, Everforest, Flexoki Light, Frosted, Grafium, Gruvbox, Hackerman, Kanagawa, Matrix, Matte Black, Nord, Osaka Jade, Ristretto, Rose Pine, Tokyo Night.
+Amber, Amber HUD, Catppuccin Mocha, Catppuccin Latte, Ethereal, Everforest, Flexoki Light, Frosted, Grafium, Gruvbox, Hackerman, Kanagawa, Matrix, Matrix HUD, Matte Black, Neon, Nord, Osaka Jade, Ristretto, Rose Pine, Tokyo Night.
 
-One command - `theme-set <name>` - applies colors across the entire system: terminal, bar, notifications, compositor borders, lock screen, launcher, system monitor, editor, fish shell, Logseq, and browser chrome.
+One command - `theme-set <name>` - applies colors across the entire system: terminal, bar, notifications, compositor borders, lock screen, launcher, system monitor, editor, fish shell, Grafium, and browser chrome.
+
+Grafium theme compatibility remains available for independently installed copies;
+the app itself is not bundled or updated by the OS. Logseq is no longer selected
+for AUR, Flatpak or AppImage builds. Updates remove Logseq's installed packages and
+the OS-bundled AppImage without deleting existing graphs, preferences, plugins
+or Flatpak application data. Theme switching no longer reads or changes Logseq.
 
 For a full step-by-step authoring workflow, see [CREATING_MODIFYING_A_THEME.md](CREATING_MODIFYING_A_THEME.md).
 
@@ -878,10 +983,9 @@ Each theme is a directory under `src/shared/themes/<name>/` containing:
 | `eww-colors.yuck` | Generated | EWW yuck variables (for SVG fills) |
 | `fish.theme` | Generated | Fish shell syntax highlighting and pager colors |
 | `foot.ini` | Generated | Foot terminal colors |
-| `hyprland.conf` | Generated | Hyprland border colors, rounding, blur, opacity |
+| `hyprland.conf` | Generated | Hyprland border colors, rounding, blur, opacity, shadow, glow |
 | `niri-theme.kdl` | Generated | niri border colors and geometry |
 | `hyprlock.conf` | Generated | Lock screen colors |
-| `logseq-custom.css` | Generated | Logseq editor colors (backgrounds, text, links, highlights) |
 | `micro.theme` | Generated | Micro editor colors |
 | `smplos-launcher.rasi` | Generated | Rofi native RGBA backgrounds and opaque foreground |
 | `nemo.css` | Generated by Python | Nemo native controls, live light/dark contrast and capability-gated background alpha |
@@ -918,7 +1022,8 @@ Terminal templates derive their palette from semantic roles such as `surface`,
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `rounding` | `"10"` | Window corner radius in pixels |
+| `rounding` | `"10"` | Window corner size in pixels (see `rounding_power` for the shape) |
+| `app_rounding` | same as `rounding` | Circular corner radius in pixels for what Hyprland does not clip: the rofi launcher and dialogs, the Nemo quick preview and niri windows. A theme with `rounding_power = "1"` keeps it tiny (`neon`, `amber-hud`, `matrix-hud`: `"2"`) so that Hyprland's 45° cuts remain the corner shape |
 | `blur_size` | `"6"` | Background blur kernel size |
 | `blur_passes` | `"3"` | Number of blur passes (higher = smoother, more GPU) |
 | `opacity_active` | `"1.0"` if absent | Third-party ordinary whole-window opacity, including text/icons. Stock values follow theme background intensity. |
@@ -931,6 +1036,63 @@ Terminal templates derive their palette from semantic roles such as `surface`,
 
 Each opacity class is owned exactly once — no value is applied twice. See [Opacity Architecture](#opacity-architecture) for details.
 
+#### Effects (optional, Hyprland only)
+
+Every key may be omitted: absent keys give the classic look (small dark shadow, no glow, static borders), so existing themes are unchanged. Other compositors ignore these keys. `neon` is the reference theme (style `scifi`), `amber-hud` the one for the `panel` style and `matrix-hud` the one for the `matrix` style.
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `rounding_power` | `"2.0"` | Window corner shape, a number from 1 to 10. `2` is Hyprland's circular corner; `1` turns `rounding` into straight 45° cuts with legs of `rounding` / 2 − 1 px (rounded down: `rounding = "42"` cuts 20 px), so every window becomes an octagon (8 corners instead of 4) |
+| `shadow_range`, `shadow_render_power` | `"2"`, `"3"` | Drop-shadow size and falloff sharpness |
+| `shadow_color`, `shadow_color_inactive` | `"rgba(1a1a1aee)"`, same as active | Shadow tint. Hyprland shadows take a single color, not a gradient |
+| `glow` | `"false"` | `"true"` draws an inner glow along the window edge |
+| `glow_range`, `glow_render_power` | `"10"`, `"3"` | Glow depth and falloff sharpness |
+| `glow_color`, `glow_color_inactive` | accent at 69% alpha, same as active | Single color or gradient, e.g. `"rgba(00f0ffb0) rgba(2f7bff80) 45deg"` |
+| `border_animation` | `"false"` | `"true"` continuously rotates the border (and, on Hyprland 0.56+, glow) gradient. On its own only windows opened after the theme is applied animate; with `smpl-hud` only the focused window turns |
+| `hud_frame` | `"false"` | `"true"` turns on HUD frames, drawn by the `smpl-hud` Hyprland plugin: a chamfered, glowing outline just outside every window, with corner brackets and edge tabs (`scifi`), notches, circuit traces and running dots (`panel`) or a plain outline at the window's edge with three columns of Matrix characters falling beside each side and glows drifting along its top and bottom (`matrix`) |
+| `hud_hide_border` | `"false"` | `"true"` hides Hyprland's own border so that the frame's outline is the only line (the generator gives Hyprland a border size of 0, and `border_size` stays what compositors without the frame draw; `matrix-hud` uses it). Needs `hud_frame = "true"`; without the plugin such a theme has no border line |
+| `hud_style` | `"scifi"` | Which HUD look the plugin draws: `scifi` (outline, halos, corner brackets, edge tabs), `minimal` (outline and halos only), `panel` (notched outline with a step, a ghost line and a cut corner, circuit traces ending in beads, and dots that run along the lines) or `matrix` (the same outline as one line with its glow, Matrix characters falling beside both sides in three columns on each, each further one smaller, dimmer and softer, and glows drifting along the top and the bottom). Lowercase letters, digits, `-` and `_`; an unknown name shows a notification and draws nothing |
+| `hud_gap`, `hud_chamfer` | `"5"`, `"10"` | Pixels between the window edge and the outline, and the size of its 45° corner cuts. With `rounding_power = "1"` the outline stays concentric with the window's own cuts, so `hud_chamfer` only sets a minimum. The notches of a `panel` or `matrix` frame are 9 px deep with a `hud_gap` of 13 or more, shrink below that and are gone under 7 (`matrix-hud` uses `"3"`: a plain outline right at the window's edge) |
+| `hud_line_width` | `"3"` | Thickness of the outline in pixels, a number from 1 to 9.99. Corner brackets and edge tabs follow it |
+| `hud_float_glow_range` | `"0"` | Floating windows glow brighter than tiled ones and their halo reaches at least this many pixels; `"0"` keeps the style's own reach (14 px for `scifi`) |
+| `hud_sweep` | `"false"` | `"true"` lets a soft glow drift slowly along the focused window's outline, in the outline's own colours (in the `panel` style it also sets the dots running along the lines, in the `matrix` style the falling characters and the drifting glows) |
+| `hud_sweep_speed`, `hud_sweep_length` | `"80"`, `"180"` | How fast the glow travels, in px per second (10 to 400; the dots of a `panel` run 0.8 times as fast and the characters of a `matrix` fall 0.6 times as fast), and how long it is along the line, in px (40 to 600; the longest a glow of a `matrix` gets) |
+| `hud_glyph_color` | `"none"` | `"rgb(rrggbb)"` (hex digits, no `#`) or `"none"`: the colour of the characters of a glyph style such as `matrix` and of its lamps; their heads and glow are derived from it (the heads are the same colour lightened). `"none"` gives them the colours of the outline and its glow (`matrix-hud` uses `"rgb(3cff28)"`, a yellower green than its outline). Styles without characters ignore it |
+| `hud_side_opacity` | `"1"` | A decimal from `"0"` to `"1"`: how visible the outline of a `panel` or `matrix` frame is down its left and right sides, its halo beside it with it, the corners fading between that and the top and the bottom edge's (`hud_edge_opacity`). A theme whose characters fall there dims it so that they stand out (`matrix-hud` uses `"0.1"`, almost unseen); `"1"` is as strong as the rest. The ring styles ignore it |
+| `hud_edge_opacity` | `"1"` | A decimal from `"0"` to `"1"`: the same along the top and the bottom edge of a `panel` or `matrix` frame. `"1"` is the full line; `matrix-hud` uses `"0.1"`, as dark as its sides, and leaves the light to its lamps and its underglow. The ring styles ignore it |
+| `hud_underglow` | `"0"` | A decimal from `"0"` to `"1"`: how bright a glow is along the top and the bottom edge of a `panel` or `matrix` window that fades out away from it, as if the light shone from under the window (an opaque window hides the half of it that lies under it; a see-through one shows it). It has no line of its own and is as still as the outline. `matrix-hud` uses `"0.3"`; `"0"` has none. The ring styles ignore it |
+| `hud_scanner` | `"0"` | `"0"` (none) or an integer from `"24"` to `"160"`: the width in px of a small animated scanner in the bottom right corner of every framed window, like the radar of a space game: a flat disc seen at a slant with three rings, the ship in the middle and an arm that sweeps round and lights the contacts it passes. In a `panel` frame the outline bulges out into a pod to hold it, in place of the bottom right cut, and the dots that circle the outline skirt the pod; elsewhere it stands in the corner of the window. It is painted over the window's content in the colours of the frame, moves only in the focused window (the others show it dimmed, where it stopped), steps aside while the pointer is near it, and is left out of fullscreen and unframed windows and of windows smaller than five times its size. Its animation is a loop of 22 s whose frames are made once and shared by every window (about 10 MiB of GPU memory), which adds roughly 0.2 to 0.5 % of one CPU core while a window has focus. `amber-hud` uses `"72"` |
+| `hud_scanner_blur` | `"true"` | `"true"` or `"false"`: whether the glass of the scanner's pod blurs what lies under it, as a translucent window does. It blurs only while the compositor's own blur (`decoration:blur:enabled`) is on and `xray` is off; with `"false"`, or without a pod, the glass is flat and more opaque, which also costs a little less. `amber-hud` uses `"true"` |
+
+`glow`, `border_animation`, `hud_frame`, `hud_hide_border`, `hud_sweep` and `hud_scanner_blur` must be `"true"` or `"false"` (`hud_hide_border` needs `hud_frame = "true"`), `hud_gap`, `hud_chamfer` and `hud_float_glow_range` must be non-negative integers, `hud_sweep_speed` and `hud_sweep_length` integers inside their ranges, `hud_line_width` a number from 1 to 9.99, `hud_style` a style name, `hud_glyph_color` `"none"` or `"rgb(rrggbb)"`, `hud_side_opacity`, `hud_edge_opacity` and `hud_underglow` a decimal from 0 to 1, `hud_scanner` `0` or an integer from 24 to 160 and `rounding_power` a number from 1 to 10; the generator rejects anything else. The glow is painted inside the window edge, over its content, so keep it short and translucent.
+
+Hyprland has a single global `glow_range`, so it cannot give floating windows a deeper glow than tiled ones. `neon` sets `glow_range = "12"` and `hud_float_glow_range = "24"`; without the plugin loaded, floating windows simply keep 12 px.
+
+**Frame and glow take different colors.** The window border and the plugin's outline, corner brackets and edge tabs use `border_active` / `border_inactive`; the shadow, the native inner glow and the halos the plugin paints around its outline use `glow_color` / `glow_color_inactive` and `shadow_color`. Choosing a related but different hue for the glow (`neon`: a cyan-to-azure frame, a violet glow) keeps the frame crisp and lets the glow read as light spilling around it.
+
+#### HUD frames (`smpl-hud` plugin)
+
+Hyprland draws every window as a rectangle with rounded or, with `rounding_power = "1"`, 45°-cut corners and a plain border, so the sci-fi frame is drawn by `smpl-hud`, a Hyprland plugin ([`src/compositors/hyprland/plugins/smpl-hud`](src/compositors/hyprland/plugins/smpl-hud/README.md), C++). It is a window decoration inside the compositor's own render pass: it moves, resizes, animates and stacks together with its window, so it never lags behind, and it adds no surfaces and never touches input. With `hud_frame = "true"` it paints, around every ordinary window, an outline that follows the window's cuts at a constant distance, halos on both sides of it and (style `scifi`) corner brackets and mid-edge tabs, in the window's own border and glow gradients, so focus changes and `border_animation` carry over (only the focused window's gradients turn; the others finish their lap and rest). It reads the `hud_*` keys from the generated `~/.config/hypr/theme.conf` and picks up a change on the next Hyprland config reload (`theme-set` triggers one); a theme without `hud_frame = "true"` draws nothing. Neighbouring tiled outlines sit `2 * (gaps_in + border) - 2 * hud_gap` apart, where `border` is `border_size`, or 0 with `hud_hide_border` (Hyprland then draws no border): that has to exceed `hud_line_width` so the lines do not touch, and should reach `hud_line_width + 13` so their halos stay separate (`neon`: `gaps_in = "18"` leaves 28 px; `amber-hud`: `gaps_in = "24"` with a `hud_gap` of 15 leaves 22 px; `matrix-hud`: `gaps_in = "28"` and a `hud_gap` of 3 with its border hidden leave 50 px, the room the three columns of characters on each side of the gap need).
+
+With `hud_sweep = "true"` a soft glow also drifts around the focused window's outline, past corners and cuts, in the outline's own gradient colours, fading in over half a second when a window gets focus and out when it loses it. It is deliberately cheap: one small sprite, rebuilt about 20 times a second only while it moves, with damage limited to the few pixels it leaves and enters (no full-window or full-screen redraws), so it costs about one percent of a CPU core in a software-rendered test compositor however many windows are open, and it stops for hidden windows, fullscreen windows, sleeping monitors and the lock screen. The outline of the ring styles follows the window's `rounding` and `rounding_power`, so a theme gets chamfered (`1`), circular (`2`) or squircle (`4` and up) frames without further work; another outline needs a new style in the plugin ([README](src/compositors/hyprland/plugins/smpl-hud/README.md#styles)).
+
+The `panel` style (`amber-hud`) draws a fixed outline of straight and 45° lines instead: chamfered corners, a notch and a step on the top edge, a raised line and a fading ghost line along the bottom, a bigger cut at the bottom left and three circuit traces ending in glowing beads, all standing `hud_gap` off the window. With a `hud_scanner`, the bottom right corner is a pod round the scanner instead of a cut, and the dots skirt it. While a window has focus, dots run along its outline and traces, at 0.8 times `hud_sweep_speed`, and fade with the travelling glow; two dots that pass each other swell and brighten for a moment. The window itself stays a chamfered rectangle: the shape lives in the lines around it, and the bottom-left cut can only be as deep as the window's own corner cut. Because the compositor can only draw textured quads, each line is baked once into a small image kept in a GPU cache, so a panel costs next to nothing between changes. It needs room: a frame under 480 × 160 logical px, or a `hud_gap` under 7, gets a plain chamfered outline with two dots, and the notches reach their full 9 px at a `hud_gap` of 13. Keep `border_animation` off in a panel theme, since a turning gradient recolours, and so repaints, every line. `make preview` in the plugin draws a panel as an image without a compositor.
+
+The `matrix` style (`matrix-hud`) keeps the panel's outline and nothing else of its line work: one line with its glow, which with a `hud_gap` of 3 hugs the window as a plain chamfered outline. `hud_hide_border = "true"` hides Hyprland's own border and the theme turns its glow and shadow off, so the plugin's outline and halo are all there is. Matrix characters fall down the left and right edges in three columns on each side: the first on the line itself, as if the characters slid along it, the second tucked partly under it, beyond it and inside its glow, and the third under that, each smaller, dimmer and softer than the one before (the second half as tall, the third a third as tall and only a faint haze), which makes them look further and further away. They are sixty half-width katakana, digits and signs, each drawn from a few strokes (no font is involved), mirrored like the film's and given the line's own bright core and a slight glow of their own. Each fall is a bright head with a tail of characters fading behind it, going from the top to the bottom and pausing before it starts again; every pass has a tail of its own length, from short to long. The rain is as slow as the glows along the top and the bottom (a few rows a second at the theme's speed), so that it stays at the edge of the eye and does not draw it from the work. Along the top and the bottom, up to two ellipses of light per edge drift slowly to and fro and pulse, in the green of the characters, over a soft glow along the window's own edge that seems to shine from under the window (`hud_underglow = "0.3"`; an opaque window hides the half of it that lies under it and a see-through one shows it). The line itself is almost unseen, so that the characters and these lights are what the eye sees: down the two sides (`hud_side_opacity = "0.1"`) and along the top and the bottom (`hud_edge_opacity = "0.1"`), the corners fading between the two. Only the focused window moves; the others keep their outline, halo and underglow. Characters never move: they light up, change and fade where they stand, so each look is a small image baked once into the same GPU cache, and only the characters whose step changed, and the pixels a glow leaves and enters, are repainted, about 20 times a second at most. Every repainted character is one draw of a cached image (about 25 µs of the compositor's time): a focused full-HD window with all three columns repaints roughly 180 of them at each step, which comes to around 9 % of one core, against roughly 5 % with two columns, and the windows that are not focused cost nothing per step. That is why the third column, a mere haze, has only a few falls. Frames that are small, or have a `hud_gap` under 7, get the plain chamfered outline, as the panel does. Keep `hud_sweep = "true"` in a matrix theme, since every moving part is driven by it (`"false"` leaves the outline and its halo), and `border_animation` off. Without the plugin a theme that hides the border has no border line at all.
+
+**Floating windows.** Hyprland places a floating window by its box alone, so a window that a rule puts against a screen edge (the start menu, the notification centre, Signal), one made floating with `Super+T` at a size its monitor cannot hold, or one sent to a smaller monitor would lose part of its frame and halo beyond the screen. `smpl-hud` keeps each floating window's whole frame inside its monitor's usable area (the monitor less what bars reserve) at the moments a window is placed: when it opens, when it becomes floating, when it is moved to another workspace or monitor and, for the windows already open, when the plugin loads or a theme change makes the frame wider. It moves the window in from the edge by the frame's reach and shrinks it only if it cannot fit otherwise. A window that already fits is not touched, and nothing is checked after you move or resize a window yourself, so you can still put one half off-screen on purpose. A script that puts a window at a position of its own (the messenger toggle pins Signal into the corner of the monitor) calls `hyprctl smplhud fit <window address>` afterwards to get the same placement. Tiled windows are placed by the layout inside the margin `gaps_out` leaves, so keep `gaps_out` at least as wide as the frame's reach for the frames of windows at the screen edge to show whole.
+
+**Delivery.** A Hyprland plugin only loads into the exact Hyprland build it was compiled against, so smplOS compiles its plugins (`smpl-hud` and `smpl-scroll`) against the Hyprland it ships instead of shipping a binary. The ISO build compiles them against the bundled Hyprland package, so the live session and the installed system have them; Update OS rebuilds them after a Hyprland update and swaps them into the running session; every login runs `smplos-plugins load`, which loads the binaries that match the running compositor. If none matches, for example Hyprland was just updated and the rebuild failed, windows keep Hyprland's own cut corners, border, glow and shadow (and columns Hyprland's width limit) and a one-time notification says so; run Update OS again to retry. A plugin that crashes Hyprland cannot lock you out: `start-hyprland` relaunches it in safe mode, which skips the user config and with it the loader.
+
+```bash
+smplos-plugins status               # installed builds, their Hyprland ABI keys, what is loaded
+smplos-plugins load                 # load the build that matches the running Hyprland
+smplos-plugins unload               # switch the frames off for this session
+smplos-plugins sync [--rebuild]     # rebuild from source for the installed Hyprland
+```
+
+Limits: Hyprland only; fullscreen windows, X11 override-redirect windows (menus, tooltips) and windows under 40 px get no frame, because Hyprland draws no decorations on them or they are too small to carry one.
+
 #### App Theme Selectors (single-file control)
 
 Each `colors.toml` can also choose which app-specific preset to use:
@@ -939,7 +1101,6 @@ Each `colors.toml` can also choose which app-specific preset to use:
 |----------|-------------|---------|
 | `app_theme_nvim` | Which theme's `neovim.lua` preset to apply | `"tokyo-night"` |
 | `app_theme_vscode` | Which theme's `vscode.json` preset to apply | `"tokyo-night"` |
-| `app_theme_logseq` | Which Logseq mapping preset to apply | `"tokyo-night"` |
 
 By default, each built-in theme points these to itself. You can mix and match (e.g. keep `colors.toml` from one theme but reuse VS Code preset from another).
 
@@ -1025,7 +1186,6 @@ When you run `theme-set <name>`, it:
    - `btop.theme` -> `~/.config/btop/themes/current.theme`
    - `fish.theme` -> `~/.config/fish/theme.fish`
    - `tide.theme` -> applied via `fish -c "source ...; tide reload"`
-   - `logseq-custom.css` -> initializes missing inline/graph CSS; existing EDN and custom CSS are preserved with a visible partial-update warning
    - `dunstrc.theme` -> composed with `dunstrc.base` into `~/.config/dunst/dunstrc`
    - `neovim.lua` -> `~/.config/nvim/lua/plugins/colorscheme.lua`
 4. Bakes accent/fg colors into SVG icon templates for the EWW bar
@@ -1041,14 +1201,14 @@ When you run `theme-set <name>`, it:
    - btop: `SIGUSR2`
    - Nemo and native smpl-apps: watch/reopen atomically replaced theme files
    - Grafium Auto: watches active theme content and directory replacement
-   - Logseq: config/plugin preferences require an application restart
    - GTK: `gsettings` (dark/light mode)
    - Brave/Chromium: managed policy + flags file
 
-Logseq preference updates merge only known theme fields and retain verified
-preimages; graph lists and unrelated settings survive. Existing arbitrary EDN
-and custom CSS require an explicit, backed-up merge, not wholesale replacement.
-See [Logseq data preservation](CREATING_MODIFYING_A_THEME.md#logseq-data-preservation-during-switching).
+Full OS updates replace bundled theme trees and matching personal overrides
+with the latest stock contents, removing obsolete files. Changed installed
+themes receive verified backups in `~/.local/state/smplos/theme-backups/`;
+custom-only theme names remain untouched. Legacy Logseq CSS and selector
+assets are inert compatibility files, not an active integration.
 
 ### Opacity Architecture
 
@@ -1105,7 +1265,7 @@ All messengers default to `messenger_opacity` from the active theme, but individ
 # windowrule = opacity 0.80 override 0.80 override, match:class ^(brave-teams\.microsoft\.com)(.*)$
 ```
 
-These lines come *after* the tag-level rule, so they win (Hyprland last-match-wins). No theme rebuild needed — reload Hyprland config with `Super+R`.
+These lines come *after* the tag-level rule, so they win (Hyprland last-match-wins). No theme rebuild needed — reload Hyprland config with `hyprctl reload`.
 
 #### Adding a new Slint app
 

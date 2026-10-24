@@ -1,7 +1,8 @@
 #!/bin/bash
 # Bar Control Script (EWW)
 
-LOG="/tmp/eww-startup.log"
+LOG="${XDG_STATE_HOME:-$HOME/.local/state}/smplos/eww-startup.log"
+mkdir -p "${LOG%/*}" || exit 1
 
 action="${1:-toggle}"
 EWW_CONFIG="$HOME/.config/eww"
@@ -26,7 +27,77 @@ find "$EWW_CONFIG/scripts" -name '*.sh' ! -perm -u+x -exec chmod +x {} \; 2>/dev
 
 eww_cmd() {
     # A newly spawned daemon must not inherit the lifecycle lock.
-    eww --config "$EWW_CONFIG" "$@" 9>&-
+    eww --config "$EWW_CONFIG" "$@" 8>&- 9>&-
+}
+
+# The primary monitor owns workspace 1 under the stable workspace policy. It is
+# empty without that policy (or off Hyprland), so the bar keeps EWW's default.
+eww_primary() {
+    workspace-ctl primary 2>/dev/null || true
+}
+
+# Open the bar on the primary monitor, or on EWW's default when the primary is
+# unknown or not addressable yet. bar_screen records where it actually landed,
+# so a bar that fell back is moved by the next refresh instead of staying put.
+bar_screen=""
+eww_open() {
+    local primary=$1
+    shift
+    bar_screen=""
+    if [[ -n "$primary" ]] && eww_cmd open "$BAR_NAME" "$@" --screen "$primary" >> "$LOG" 2>&1; then
+        bar_screen=$primary
+        return 0
+    fi
+    eww_cmd open "$BAR_NAME" "$@" >> "$LOG" 2>&1
+}
+
+eww_geometry() {
+    if [[ -z "${HYPRLAND_INSTANCE_SIGNATURE:-}" ]]; then
+        printf '%s\n' unsupported
+        return
+    fi
+    local monitors
+    monitors=$(hyprctl -j monitors) &&
+        jq -ce 'select(type == "array" and length > 0)
+            | map({name, width, height, scale, transform, x, y}) | sort_by(.name)' <<< "$monitors" ||
+        { echo "Error: cannot read monitor geometry" | tee -a "$LOG" >&2; return 1; }
+}
+
+eww_stale_pid() {
+    local pid executable config candidate i daemon fd socket
+    local -a args
+    executable=$(command -v eww) || return 1
+    config=$(realpath -m "$EWW_CONFIG") || return 1
+    while read -r pid; do
+        [[ -r "/proc/$pid/cmdline" ]] || continue
+        mapfile -d '' -t args < "/proc/$pid/cmdline" || continue
+        candidate="$HOME/.config/eww"
+        daemon=0
+        for ((i=1; i<${#args[@]}; i++)); do
+            case "${args[i]}" in
+                daemon|open|open-many) daemon=1 ;;
+                --config|-c) candidate="${args[i+1]:-}"; ((i++)) ;;
+                --config=*) candidate="${args[i]#*=}" ;;
+            esac
+        done
+        [[ $daemon == 1 && -n "$candidate" ]] || continue
+        [[ "$(realpath -m "$candidate")" == "$config" ]] || continue
+        if [[ ! "$executable" -ef "/proc/$pid/exe" ]]; then
+            # Auto-started daemons retain the original "open" argv. Require
+            # a listening socket so an old transient client cannot match.
+            for fd in "/proc/$pid/fd/"*; do
+                socket=$(readlink "$fd") || continue
+                [[ "$socket" == socket:\[*\] ]] || continue
+                socket="${socket#socket:[}"
+                socket="${socket%]}"
+                if awk -v inode="$socket" '$7 == inode && $4 == "00010000" { found=1 }
+                        END { exit !found }' /proc/net/unix; then
+                    printf '%s\n' "$pid"
+                    return
+                fi
+            done
+        fi
+    done < <(pgrep -u "$UID" -x eww)
 }
 
 eww_start() {
@@ -34,25 +105,30 @@ eww_start() {
     # non-running daemon auto-starts one. This avoids the race condition
     # where a separate 'eww daemon' + 'eww open' could spawn two daemons
     # if the IPC socket wasn't ready between the two commands.
-    echo "$(date '+%H:%M:%S') Opening: $BAR_NAME" >> "$LOG"
-    eww_cmd open "$BAR_NAME" >> "$LOG" 2>&1 || return
+    local geometry primary
+    geometry=$(eww_geometry) || return 1
+    primary=$(eww_primary)
+    echo "$(date '+%H:%M:%S') Opening: $BAR_NAME on ${primary:-the default monitor}" >> "$LOG"
+    eww_open "$primary" || return
 
     # Apply saved bar settings (workspace count, position, etc.)
     eww_apply || return
 
     echo "$(date '+%H:%M:%S') Active windows:" >> "$LOG"
     eww_cmd active-windows >> "$LOG" 2>&1 || return
+    printf '%s\n' "$geometry" > "$geometry_file" || return
+    printf '%s\n' "$bar_screen" > "$screen_file" || return
 
     # Start the geometry watcher so the bar recomputes its width whenever the
     # monitor scale/resolution changes (Settings -> Display, hot-plug, etc.).
     if ! pgrep -f "bar-ctl watch" >/dev/null 2>&1; then
-        setsid "$0" watch "$BAR_NAME" 9>&- >/dev/null 2>&1 &
+        setsid "$0" watch "$BAR_NAME" 8>&- 9>&- >/dev/null 2>&1 &
     fi
 
     # One-shot recompute shortly after boot: the bar may open before the final
     # monitor scale is applied, leaving it centred/too-narrow.  Redrawing once
     # the layout has settled snaps it back to the correct full width.
-    ( sleep 2; "$0" redraw "$BAR_NAME" ) 9>&- >/dev/null 2>&1 &
+    ( sleep 2; "$0" refresh "$BAR_NAME" ) 8>&- 9>&- >/dev/null 2>&1 &
 
     echo "$(date '+%H:%M:%S') bar-ctl start complete" >> "$LOG"
 }
@@ -62,13 +138,28 @@ eww_stop() {
 
 # Force the bar to recompute its geometry (percentage widths are resolved
 # against the monitor only at open time, so a close+reopen is the reliable
-# way to pick up a new scale/resolution).
+# way to pick up a new scale/resolution) and to move to the given primary.
 eww_redraw() {
+    local primary=$1 geometry
+    geometry=$(eww_geometry) || return 1
     eww_cmd close "$BAR_NAME" 2>/dev/null
     sleep 0.3
-    eww_cmd open "$BAR_NAME" >> "$LOG" 2>&1 || return
+    eww_open "$primary" || return
     eww_apply || return
+    printf '%s\n' "$geometry" > "$geometry_file" || return
+    printf '%s\n' "$bar_screen" > "$screen_file" || return
     echo "$(date '+%H:%M:%S') bar-ctl redraw complete" >> "$LOG"
+}
+
+eww_refresh() {
+    local geometry primary previous="" screen=""
+    geometry=$(eww_geometry) || return 1
+    primary=$(eww_primary)
+    [[ ! -f "$geometry_file" ]] || previous=$(<"$geometry_file")
+    [[ ! -f "$screen_file" ]] || screen=$(<"$screen_file")
+    if [[ "$geometry" == unsupported || "$geometry" != "$previous" || "$primary" != "$screen" ]]; then
+        eww_redraw "$primary"
+    fi
 }
 
 # Background daemon: listen on Hyprland's IPC socket2 and redraw the bar on any
@@ -85,19 +176,61 @@ eww_watch() {
         case "${line%%>>*}" in
             monitoradded|monitoraddedv2|monitorremoved|configreloaded)
                 sleep 1
-                "$0" redraw "$BAR_NAME"
+                "$0" refresh "$BAR_NAME"
                 ;;
         esac
     done
 }
 eww_toggle() {
-    eww_cmd open --toggle "$BAR_NAME"
+    local primary
+    primary=$(eww_primary)
+    if [[ -n "$primary" ]] && eww_cmd open --toggle "$BAR_NAME" --screen "$primary" 2>/dev/null; then
+        printf '%s\n' "$primary" > "$screen_file"
+        return
+    fi
+    eww_cmd open --toggle "$BAR_NAME" || return
+    [[ -z "$primary" ]] || printf '\n' > "$screen_file"
 }
 eww_reload() {
+    local stale geometry
+    geometry=$(eww_geometry) || return 1
+    stale=$(eww_stale_pid)
+    if [[ -n "$stale" ]]; then
+        # Validate without opening windows or running deflisten/defpoll scripts.
+        eww_cmd check-config || return
+        echo "$(date '+%H:%M:%S') Activating replaced EWW binary (pid $stale)" >> "$LOG"
+        eww_cmd kill || return
+        local attempt
+        for ((attempt=0; attempt<100; attempt++)); do
+            if [[ ! -e "/proc/$stale/exe" ]]; then
+                eww_start
+                return
+            fi
+            sleep 0.05
+        done
+        echo "Error: old EWW daemon did not exit; see $LOG" >&2
+        return 1
+    fi
     eww_cmd reload || return
     # eww reload resets all defvar to defaults — re-apply saved settings
     sleep 0.3
-    eww_apply
+    eww_apply || return
+    printf '%s\n' "$geometry" > "$geometry_file"
+}
+
+eww_ensure() {
+    local windows
+    if ! windows=$(eww_cmd active-windows) ||
+        ! awk -F: -v name="$BAR_NAME" '$1 == name { found=1 } END { exit !found }' <<< "$windows"; then
+        eww_start || return 1
+    else
+        eww_apply || return 1
+    fi
+    windows=$(eww_cmd active-windows) || return 1
+    if ! awk -F: -v name="$BAR_NAME" '$1 == name { found=1 } END { exit !found }' <<< "$windows"; then
+        echo "Error: $BAR_NAME is still absent after recovery; see $LOG" >&2
+        return 1
+    fi
 }
 
 # Apply bar settings from ~/.config/smplos/bar.conf to running EWW instance.
@@ -169,6 +302,11 @@ if [[ "$action" != watch ]]; then
     mkdir -p "$lock_dir" || exit 1
     exec 9>"$lock_dir/bar-${config_id%% *}.lock" || exit 1
     flock 9 || exit 1
+    bar_id=$(printf '%s' "$BAR_NAME" | sha256sum) || exit 1
+    geometry_file="$lock_dir/bar-${config_id%% *}-${bar_id%% *}.geometry"
+    # The monitor the bar was last opened on; kept apart from the geometry
+    # because a reload rewrites the geometry but never moves the bar.
+    screen_file="${geometry_file%.geometry}.screen"
 fi
 
 case "$action" in
@@ -176,11 +314,12 @@ case "$action" in
     stop|close)   eww_stop ;;
     toggle)       eww_toggle ;;
     reload)       eww_reload ;;
-    redraw)       eww_redraw ;;
+    ensure)       eww_ensure ;;
+    redraw|refresh) eww_refresh ;;
     watch)        eww_watch ;;
     apply)        eww_apply ;;
     *)
-        echo "Usage: bar-ctl [start|stop|toggle|reload|redraw|watch|apply] [bar]"
+        echo "Usage: bar-ctl [start|stop|toggle|reload|ensure|redraw|refresh|watch|apply] [bar]"
         exit 1
         ;;
 esac

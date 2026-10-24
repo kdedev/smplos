@@ -10,7 +10,12 @@ permissions:
   contents: write
 
 jobs:
+  # A shortcut that raises an error stops the release. See "CI and releases" in DEVELOPMENT.md.
+  keybindings:
+    uses: ./.github/workflows/keybindings.yml
+
   bump:
+    needs: keybindings
     uses: smpl-os/.github/.github/workflows/auto-release.yml@main
     with:
       version-file: src/VERSION

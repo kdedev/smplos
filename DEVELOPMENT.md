@@ -10,6 +10,7 @@ How to extend, modify, and contribute to smplOS.
 - [How the Build Works](#how-the-build-works)
 - [Development Iteration](#development-iteration)
 - [VM Testing](#vm-testing)
+- [Testing Keybindings](#testing-keybindings)
 - [Adding a Settings Entry](#adding-a-settings-entry)
 
 ---
@@ -53,7 +54,7 @@ only grants unprivileged-user capabilities, which isn't enough. So the outer scr
 runs the container with `sudo podman run --privileged`, but Podman itself requires no
 daemon or background service.
 
-**Why two containers?** AUR packages (eww, brave-bin, paru-bin, etc.) must be compiled
+**Why two containers?** AUR packages (eww, brave-bin, yay-bin, etc.) must be packaged
 with `makepkg` as a non-root user, which is incompatible with the `--privileged` ISO
 builder. Separating them also means you only rebuild AUR packages when their
 `PKGBUILD` changes — subsequent runs reuse the cached `.pkg.tar.zst` files in
@@ -119,6 +120,8 @@ build_notif_center    → compile notif-center (Rust+Slint)
 build_kb_center       → compile kb-center (Rust+Slint)
 build_disp_center     → compile disp-center (Rust+Slint)
 build_app_center      → compile app-center (Rust+Slint)
+build_hyprland_plugins → compile the Hyprland plugins (smpl-hud, smpl-scroll)
+                        against the hyprland package the ISO ships
 setup_boot            → write systemd-boot + GRUB loopback + Syslinux configs
 build_iso             → run mkarchiso → xorriso → .iso
 ```
@@ -144,6 +147,31 @@ the host. Each follows the same pattern:
 
 The `/var/cache/smplos/binaries/` path inside the container is bind-mounted from
 `.cache/binaries/` on the host, so the cache persists across builds.
+
+---
+
+### Hyprland Plugin Compilation (inside the container)
+
+The Hyprland plugins are native C++ (`src/compositors/hyprland/plugins/<name>`, see
+each README): `smpl-hud` draws the HUD window frames and `smpl-scroll` lets
+scrolling-layout columns grow wider than the monitor. A Hyprland plugin
+only loads into the exact Hyprland build it was compiled against, so it is never
+shipped as a prebuilt binary:
+
+1. `build_hyprland_plugins` installs the `hyprland` package **from the offline
+   mirror** (the very file the ISO ships) into the container, so the headers match
+   what the installed system will run.
+2. `smplos-plugins sync` compiles every `plugins/<name>/` out of tree (the
+   read-only `/build/src` mount is never written) and stores
+   `<name>.<abi-key>.so` under `usr/local/lib/smplos/plugins` in the image. The live
+   session loads it from there and the installer copies the directory to the target.
+3. A failure only warns: the ISO still builds, windows keep Hyprland's stock
+   borders, and Update OS compiles the plugin on the installed system.
+
+After a Hyprland update the ABI key changes: Update OS (`sync_plugins` in
+`smplos-os-update`) rebuilds for the installed Hyprland and swaps the new binary
+into the running session, and `smplos-plugins load`, run from `autostart`, only
+ever loads the binary that matches the running compositor.
 
 ---
 
@@ -291,6 +319,19 @@ redraws share a config-scoped lock; daemon/listener children do not inherit it.
 An already-running older `bar-ctl watch` must be restarted or replaced at next
 login to use the new serialized redraw entrypoint.
 
+Compositor plugins (`src/compositors/hyprland/plugins/`, the HUD frames) are
+native code that only loads into the exact Hyprland build it was compiled
+against, so both workflows compile them on the target machine instead of
+copying a binary: `dev-push.sh` stages the sources, `dev-apply.sh` builds them in
+the VM, and `sudo ./dev-local.sh plugins` builds them as your user and installs
+them into `/usr/local/lib/smplos/plugins`. A rebuilt plugin is reloaded in the
+running session; an unchanged one is only loaded if it is not already. The build
+needs the Hyprland headers (part of the `hyprland` package) and `base-devel`;
+`dev-local.sh` skips the component with a warning when the headers are missing
+and stops with an error if a build fails. `smplos-plugins status` shows what is
+installed and loaded. The plugins' compositor-free unit tests run anywhere with
+`make -C src/compositors/hyprland/plugins/<name> test`.
+
 ## VM Testing
 
 Use QEMU for testing -- it provides a `virtio-gpu` device that Hyprland works with out of the box:
@@ -327,6 +368,115 @@ Use `--reset` to wipe the VM disk and start fresh:
 ```
 
 > **VirtualBox is not supported.** Hyprland requires a working DRM/KMS device with OpenGL support. VirtualBox's virtual GPU (`VBoxVGA` / `VMSVGA`) does not provide this -- Hyprland will crash immediately on startup. Use QEMU with KVM (`test-iso.sh`) or VMware with 3D acceleration instead.
+
+---
+
+## Testing Keybindings
+
+A shortcut that raises a Lua error or does nothing is easy to ship and hard to notice, so every
+stock bind is checked automatically. `tools/keybind-check` runs the checks, and
+`tests/test_keybindings.py` runs the same ones as one named test per bind. Run them whenever you
+change `bindings.conf`, `messengers.conf`, `bindings_loader.lua`, `popup_watchers.lua`, or a
+script or package that a bind relies on.
+
+```bash
+tools/keybind-check check                                   # everything, in a couple of seconds
+PYTHONPATH=tests python3 -m unittest test_keybindings -v    # the same, as tests
+tools/keybind-check doctor                                  # which checks can run on this machine
+```
+
+Python 3 and Lua are required. `libxkbcommon` makes chord matching exact, and Hyprland adds the
+native pass; without them those parts are skipped (`KEYBIND_CHECK_REQUIRE=lua,xkbcommon,hyprland`
+makes a missing tool a failure instead). For every stock bind, with the workspace policy both off
+and on, `check` covers:
+
+- **Static rules.** The chord has modifiers and a key that exist. No chord is bound twice, counting
+  the messenger, XR and emergency binds and `popup_watchers.lua`. Each dispatcher gets arguments it
+  accepts, including the `layoutmsg` verbs the scrolling layout knows. An `exec` command is a
+  script in `src/shared/bin`, a packaged program or a shell builtin. This is what finds
+  `layoutmsg orientationnext`, which scrolling does not have and which raised
+  `no such layoutmsg for scrolling` on Super+J.
+- **Loader parity.** `bindings_loader.lua` runs under plain Lua against a recording `hl`, so what
+  each line becomes is compared with what the line says it should do.
+- **Native.** Each bind is loaded alone, through the real loader, by `Hyprland --verify-config`, so
+  Hyprland's own parser judges the key, the modifiers and the dispatcher, and a failure names the
+  one bind. Run as root, as CI containers are, it passes Hyprland's root override, which is safe
+  because verifying a config never starts a session.
+- **Snapshot.** `tests/fixtures/keybindings.snapshot.txt` records what every stock bind does.
+  Changing a bind, or how the loader translates one, fails the test until you read the difference
+  and run `tools/keybind-check snapshot --update`, so a shortcut never changes unnoticed.
+
+### One bind, or a group
+
+```bash
+tools/keybind-check check --only SUPER+TAB                  # one chord
+tools/keybind-check check --only "window management"        # a group, or words from a description
+tools/keybind-check list --only workspaces                  # what the binds do, without checking
+PYTHONPATH=tests python3 -m unittest test_keybindings -v -k SUPER_TAB          # one bind
+PYTHONPATH=tests python3 -m unittest test_keybindings -v -k window_management   # one group
+PYTHONPATH=tests python3 -m unittest test_keybindings -v -k NativeBindTests     # one kind of check
+```
+
+Per-bind tests are named `test_<group>__<chord>`, for example `test_workspaces__SUPER_TAB`, and
+`-k` matches any part of the name (case-sensitively). The groups are `application`,
+`window_management`, `workspaces`, `utilities`, `media_keys`, `exit`, `xr` and `emergency`. To run
+one in GitHub Actions, start the **Keybindings** workflow by hand and type the same text into its
+`filter` box.
+
+### A machine that misbehaves
+
+`bindings.conf` is protected from Update OS, so an installed copy can be older than the stock one,
+which is how a shortcut fixed long ago can still raise an error on one machine. To audit it:
+
+```bash
+tools/keybind-check check --live      # the binds this user's session loads, judged as Hyprland sees them
+tools/keybind-check diff --live       # how that file differs from stock: missing, changed, extra
+tools/keybind-check check --bindings /path/to/bindings.conf    # a file someone sent you
+```
+
+A stale copy is repaired by a migration the next time that user runs Update OS, for example
+`20261018-054000-scrolling-shortcut-conflicts.sh` and
+`20261019-153100-remove-duplicate-popup-click-bind.sh`, so run Update OS first and audit again. A
+change to a stock bind needs such a migration too; see
+[Writing a Migration](UPDATING.md#5-writing-a-migration).
+
+### The lab
+
+The lab starts a throwaway headless Hyprland and types every chord through a virtual keyboard. It
+therefore also finds a chord that another bind shadows, a bind that fires twice, and a dispatcher
+that fails or does the wrong thing when it runs, none of which a parser can see.
+
+```bash
+tools/keybind-check lab                         # every bind, about 35 seconds
+tools/keybind-check lab --only SUPER+TAB        # one chord
+tools/keybind-check lab --policy on             # with the workspace policy on (workspace-ctl is stubbed)
+tools/keybind-check lab --keep                  # keep its logs and print where they are
+KEYBIND_LAB=1 PYTHONPATH=tests python3 -m unittest test_keybindings -v -k LabTests   # the same, as tests
+```
+
+It cannot reach your session: it has its own runtime directory and `HOME`, `/dev/input` is hidden,
+and only stub programs are on `PATH`. It does need a DRM render node and PyGObject with GTK 3, so it
+runs on a developer machine and not on GitHub's runners, and not as root. Pointer binds and
+**Exit Hyprland**, which would end the lab's own compositor, are not pressed; the lab lists every
+skip with its reason. Run it before a release, and after changing `bindings.conf`, the loader or
+the Hyprland version.
+
+### CI and releases
+
+`.github/workflows/keybindings.yml` runs on every push to `main`, every pull request, every Monday,
+and on demand:
+
+- `static` has only Lua and libxkbcommon: the static rules and loader parity.
+- `native` runs in the newest Arch container with its current Hyprland, which is what users get with
+  their next update, and adds `Hyprland --verify-config` for every bind. The Monday run is the early
+  warning that a new Hyprland changed the Lua API under the loader.
+
+`auto-release.yml` calls this workflow and its version bump `needs` it, so every automatic release
+waits for both jobs and a failing shortcut stops the release. Fix it and push, or re-run the failed
+jobs if it was a mirror hiccup (`gh run rerun <id> --failed`); the release goes out once they pass.
+Marking both jobs as required status checks in the branch protection rules for `main` would also
+keep a failing pull request from merging; the workflow has no path filter, so a required check
+never sits pending. The lab is the one check left to run by hand before a release.
 
 ---
 

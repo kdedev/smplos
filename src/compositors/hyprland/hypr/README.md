@@ -15,9 +15,10 @@ hyprland.lua          ←  Lua entry point (preferred by Hyprland 0.55+)
 │  └ apps/
 │     ├ browser.lua  jetbrains.lua  pip.lua  qemu.lua  steam.lua
 │     └ system.lua   terminals.lua
-├ autostart.lua       ←  hl.on("hyprland.start", …) — 16 exec_cmd entries
+├ autostart.lua       ←  hl.on("hyprland.start", …) — 19 exec_cmd entries
 ├ theme.lua           ←  parses ~/.config/hypr/theme.conf $vars into a Lua table
 ├ monitors_loader.lua ←  parses ~/.config/hypr/monitors.conf → hl.monitor calls
+├ pointer_loader.lua  ←  parses ~/.config/hypr/pointer.conf  → hl.config calls
 └ bindings_loader.lua ←  parses ~/.config/smplos/bindings.conf  → hl.bind calls
                          + ~/.config/hypr/messenger-bindings.conf (auto-gen)
 
@@ -33,6 +34,7 @@ into Lua**):
 ```
 ~/.config/hypr/theme.conf                ←  written by theme-set
 ~/.config/hypr/monitors.conf             ←  written by Settings → Display
+~/.config/hypr/pointer.conf              ←  written by Settings → Mouse (read by the Lua side only)
 ~/.config/hypr/messenger-bindings.conf   ←  written by generate-messenger-bindings
 ~/.config/smplos/bindings.conf           ←  shared with DWM-X11 + keybind-help
 ```
@@ -44,11 +46,11 @@ into Lua**):
 * **smplOS has external consumers** that parse the hyprlang format:
   * The DWM-X11 build (planned) will parse `bindings.conf` into C structs.
   * `keybind-help` renders the EWW overlay from `bindings.conf`.
-  * The Settings app writes `monitors.conf` in hyprlang.
+  * The Settings app writes `monitors.conf` and `pointer.conf` in hyprlang.
   * `theme-set` writes `theme.conf` in hyprlang.
 * We keep the existing `.conf` files **untouched** so reverting is one rename
   away. The Lua side bridges to these files via `theme.lua`,
-  `monitors_loader.lua`, and `bindings_loader.lua`.
+  `monitors_loader.lua`, `pointer_loader.lua`, and `bindings_loader.lua`.
 
 ## Which provider is active?
 
@@ -91,6 +93,11 @@ mv ~/.config/hypr/hyprland.conf.disabled ~/.config/hypr/hyprland.conf
   atomic replacement, and apply through `hypridle.service`; compositor reload
   alone does not apply idle rules. Stock DPMS commands use `smplos-hypr-dpms`,
   which selects syntax from the running provider rather than package version.
+  Settings -> Power edits the file in place and refuses commands outside its
+  grammar, so the stock file must stay inside it (`UPDATING.md`, "Power
+  preferences"; pinned by `IdleSettingsContractTests`). Screen off always wins
+  over the lock screen: `lock-screen` never wakes a sleeping display
+  (`LockScreenTests`).
 * **Session services**: hypridle, voxtype and the XR watcher are
   `WantedBy=graphical-session.target`. Hyprland starts without a session
   manager, so both autostart trees run `smplos-session-services`, which
@@ -99,6 +106,22 @@ mv ~/.config/hypr/hyprland.conf.disabled ~/.config/hypr/hyprland.conf
   that is not running, stops one that still fails (so `Restart=` cannot loop)
   and notifies (power timers at every login, others once per change). Never
   start these daemons bare from autostart.
+* **Compositor log**: Hyprland logs to a tmpfs (`$XDG_RUNTIME_DIR/hypr/…`)
+  without timestamps, so a GPU hang that forces a reboot used to erase it.
+  Both autostart trees run `smplos-hypr-log-journal`, which mirrors that log
+  (minus per-click libinput traces) into the persistent journal and exits
+  with Hyprland. Read the previous session with `journalctl -b -1 -t hyprland`.
+  `start-hyprland` sends the launcher's stdout/stderr (watchdog, EGL/GBM and
+  driver library messages) to the journal as `hyprland-session`, falling back
+  to a plain launch if journald is unavailable.
+* **GPU faults**: the root `smplos-gpu-watch.service` follows the kernel log
+  for NVIDIA/amdgpu/i915/xe/nouveau/DRM faults and runs `smplos-gpu-snapshot`,
+  which saves the kernel log, the last 15 min of the journal, each live
+  Hyprland log and `hyprctl` state, DRM debugfs state, connector status,
+  `nvidia-smi -q` and `nvidia-bug-report.sh` to
+  `/var/log/smplos/gpu-incidents/<time>/` (newest 10 kept, readable by
+  `wheel`), then notifies the user. `60-smplos-sync.conf` makes journald sync
+  to disk every 15s so a forced power-off loses little.
 * **Keybindings**: edit `src/shared/configs/smplos/bindings.conf` (hyprlang).
   The Lua side reads the exact same file via `bindings_loader.lua`.
 * **Theme variables**: edit by running `theme-set <name>`. Both providers pick
@@ -108,6 +131,14 @@ mv ~/.config/hypr/hyprland.conf.disabled ~/.config/hypr/hyprland.conf
   both providers (the normal case during the transition), edit both. The Lua
   file is intentionally a one-to-one translation, so a diff between
   `windows.conf` and `windows.lua` should show only translation noise.
+* **Screenshot overlay**: slurp's region-selection overlay is the layer
+  namespace `selection`. It must keep a `no_anim` layer rule, otherwise grim
+  (which runs the instant slurp exits) captures its close animation as a white
+  wash plus black border baked into every region screenshot. The `screenshot`
+  script also settles briefly before capturing, for other compositors. Satty,
+  the annotation editor, belongs in the `compositor-opaque` tag so screenshots
+  being edited are not shown through the theme's window opacity
+  (`tests/test_screenshot_overlay.py`).
 
 ## monitors.conf contract
 
@@ -164,6 +195,49 @@ Settings UI and the live layout cannot disagree silently.
 * **Login guard**: `start-hyprland` runs `monitors-guard` first. Only a file
   that would leave every connected display disabled is treated as corrupt
   and restored from the newest usable backup or moved aside.
+
+## pointer.conf contract
+
+`~/.config/hypr/pointer.conf` holds the pointer options saved by Settings →
+Mouse. Settings also applies each change to the running compositor as the
+control moves, so the file matters when Hyprland starts or reloads:
+`pointer_loader.lua` puts the saved choices back on top of the defaults that
+`input.lua` has just set.
+
+* **Location and ownership**: always `$HOME/.config/hypr/pointer.conf`. The
+  user and Settings own it. Updates never replace it (it is in the protected
+  lists of `smplos-os-update` and `smplos-update-check`), the ISO ships none,
+  and a missing file leaves the `input.lua` defaults in place.
+* **Grammar**: a top-level `input { }` block with up to four options. `#`
+  starts a comment anywhere on a line. Everything else is ignored: other
+  blocks, nested blocks such as `touchpad { }`, and the flat
+  `input:option =` form.
+  * `sensitivity`: decimal from −1 to 1.
+  * `accel_profile`: `flat`, `adaptive` or `custom STEP POINT…` (a step and at
+    least one point, numbers only). Empty or `[[EMPTY]]` selects the device
+    default; Settings writes that choice by leaving the line out.
+  * `natural_scroll`: `true` or `false` (`yes`/`no`, `on`/`off` and `1`/`0`
+    work too).
+  * `scroll_factor`: decimal from 0.1 to 10.
+* **Reading rules**: they follow Settings' own reader, so the file, the
+  Settings UI and the live pointer agree. Numbers are plain decimals (no hex
+  or exponent). A number outside its range is clamped to it and noted in the
+  log. The last valid assignment of an option wins, and an invalid later one
+  is logged without cancelling an earlier valid one. An option the file does
+  not set is never applied.
+* **Loading**: `hyprland.lua` runs the loader right after `input.lua`, with
+  one `hl.config()` call per option so a value Hyprland refuses cannot hold
+  back the rest. Anything invalid is logged as
+  `pointer_loader: <file>:<line>: …` and skipped instead of being handed to
+  Hyprland, so a hand edit cannot raise a config-error banner, and a loader
+  failure cannot stop bindings and autostart from loading.
+* **Rollback limitation**: `hyprland.conf` does not source this file.
+  Hyprland reports a missing `source =` target as a config error, and
+  Settings creates `pointer.conf` only when the user first changes a pointer
+  option, so an unconditional `source` line would raise an error banner for
+  everyone who has not. After the one-rename rollback to hyprlang, Settings
+  still applies changes live, but they are not restored at login.
+  `tests/test_pointer_loader.py` pins this.
 
 ## Long-term plan
 

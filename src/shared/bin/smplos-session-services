@@ -25,10 +25,19 @@ LOG="$LOG_DIR/session-services.log"
 # Failing units are announced when the set changes; power timers every login.
 FAILED_FILE="${XDG_STATE_HOME:-$HOME/.local/state}/smplos/session-services.failed"
 ALWAYS_REPORT=(hypridle.service)
+DEVICE_SERVICES=(control-surface.service mouse-remap.service)
 mkdir -p "$LOG_DIR" "${FAILED_FILE%/*}" 2>/dev/null
 log() { printf '%s %s\n' "$(date '+%F %T')" "$*" >> "$LOG"; }
 sc() { systemctl --user "$@"; }
 prop() { sc show "$1" -p "$2" --value 2>/dev/null; }
+
+device_for_service() {
+    case "$1" in
+        control-surface.service) echo smplos-keypad.device ;;
+        mouse-remap.service) echo smplos-mouse.device ;;
+        *) return 1 ;;
+    esac
+}
 
 enabled_session_units() {
     local dir
@@ -46,7 +55,8 @@ condition_skipped() {
 
 unit_ready() {
     # Unplugging during verification is not a startup failure.
-    if [[ "$1" == control-surface.service ]] && ! sc is-active --quiet smplos-keypad.device; then
+    local device
+    if device=$(device_for_service "$1") && ! sc is-active --quiet "$device"; then
         return 0
     fi
     local state
@@ -59,8 +69,12 @@ unit_ready() {
 }
 
 failure_reason() {
-    if [[ "$1" == control-surface.service ]] && condition_skipped "$1"; then
-        echo "keypad app unavailable; retry Update OS and check the unit's executable path"
+    if device_for_service "$1" >/dev/null && condition_skipped "$1"; then
+        case "$1" in
+            control-surface.service) printf 'keypad app' ;;
+            mouse-remap.service) printf 'mouse remapper' ;;
+        esac
+        echo " unavailable; retry Update OS and check the unit's executable path"
     else
         printf '%s (exit status %s)' "$(prop "$1" Result)" "$(prop "$1" ExecMainStatus)"
     fi
@@ -72,6 +86,7 @@ describe() {
         voxtype.service) echo "Dictation" ;;
         xr-glasses.service) echo "XR glasses watcher" ;;
         control-surface.service) echo "Macro keypad app" ;;
+        mouse-remap.service) echo "Mouse button remapping" ;;
         *) prop "$1" Description ;;
     esac
 }
@@ -100,26 +115,32 @@ if [[ "$MODE" != --verify ]]; then
     fi
 
     # Coldplug may have been missed, or started the app before environment
-    # import. Rebind it once after the target starts, only with a keypad.
-    if sc is-active --quiet smplos-keypad.device 2>/dev/null; then
-        sc reset-failed control-surface.service 2>>"$LOG"
-        sc restart control-surface.service 2>>"$LOG" || log "could not restart control-surface.service"
-    fi
+    # import. Rebind each backend once, only while its own device is present.
+    for unit in "${DEVICE_SERVICES[@]}"; do
+        device=$(device_for_service "$unit")
+        if sc is-active --quiet "$device" 2>/dev/null; then
+            sc reset-failed "$unit" 2>>"$LOG"
+            sc restart "$unit" 2>>"$LOG" || log "could not restart $unit"
+        fi
+    done
 fi
 
-# This device-triggered service has no enablement link, but must be verified
+# These device-triggered services have no enablement links, but must be verified
 # when hardware is present. --verify does not restart an already-running app.
-if sc is-active --quiet smplos-keypad.device 2>/dev/null \
-    && [[ " ${units[*]} " != *" control-surface.service "* ]]; then
-    units+=(control-surface.service)
-fi
+for unit in "${DEVICE_SERVICES[@]}"; do
+    device=$(device_for_service "$unit")
+    if sc is-active --quiet "$device" 2>/dev/null \
+        && [[ " ${units[*]} " != *" $unit "* ]]; then
+        units+=("$unit")
+    fi
+done
 
 sleep "${SMPLOS_SESSION_SETTLE:-5}"
 failed=()
 declare -A failure_reasons=()
 for unit in "${units[@]}"; do
     unit_ready "$unit" && continue
-    if [[ "$unit" != control-surface.service ]] && condition_skipped "$unit"; then
+    if ! device_for_service "$unit" >/dev/null && condition_skipped "$unit"; then
         continue
     fi
     log "$unit is $(prop "$unit" ActiveState); restarting"

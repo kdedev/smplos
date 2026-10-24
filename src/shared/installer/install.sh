@@ -56,6 +56,8 @@ fi
 source "$SMPLOS_PATH/lib/smplos-keypad-units.sh"
 smplos_keypad_sync_units "$SMPLOS_PATH/config/systemd/user" \
   "$HOME/.config/systemd/user" "$HOME/.local/state/smplos/keypad-units"
+smplos_mouse_sync_units "$SMPLOS_PATH/config/systemd/user" \
+  "$HOME/.config/systemd/user" "$HOME/.local/state/smplos/mouse-units"
 
 # smplOS fonts (keypad cheatsheet icons: Tabler Icons subset, MIT; see KEYPAD.md)
 if compgen -G "$SMPLOS_PATH/fonts/*.ttf" >/dev/null; then
@@ -158,21 +160,23 @@ if [[ -d "$SMPLOS_PATH/system/udev" ]]; then
   sudo udevadm trigger --subsystem-match=usb 2>/dev/null || true
 fi
 
+# GPU fault recorder and faster journal sync, so display hangs leave evidence
+if [[ -d "$SMPLOS_PATH/system/journald" ]]; then
+  echo "==> Deploying journald settings..."
+  sudo install -Dm644 -t /etc/systemd/journald.conf.d "$SMPLOS_PATH/system/journald/"*.conf
+fi
+if [[ -d "$SMPLOS_PATH/system/systemd" ]]; then
+  echo "==> Deploying system services..."
+  sudo install -Dm644 -t /etc/systemd/system "$SMPLOS_PATH/system/systemd/"*.service
+  for unit in "$SMPLOS_PATH/system/systemd/"*.service; do
+    chrootable_systemctl_enable "${unit##*/}" || true
+  done
+fi
+
 # Deploy pacman hooks
 echo "==> Installing pacman hooks..."
 sudo mkdir -p /etc/pacman.d/hooks
-sudo tee /etc/pacman.d/hooks/90-rebuild-paru.hook >/dev/null << 'PARUHOOK'
-[Trigger]
-Type = Package
-Operation = Upgrade
-Target = pacman
-
-[Action]
-Description = Checking if paru needs rebuild after pacman upgrade...
-When = PostTransaction
-Exec = /usr/local/bin/rebuild-paru
-NeedsTargets
-PARUHOOK
+sudo rm -f /etc/pacman.d/hooks/90-rebuild-paru.hook
 
 # Rebuild start-menu app index after any package install/remove/upgrade.
 # Pacman hooks run as root; we sudo to the real user so the cache lands in

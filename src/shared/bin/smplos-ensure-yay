@@ -1,0 +1,47 @@
+#!/bin/bash
+# Enroll/repair the AUR helper only after the full base transaction.
+set -euo pipefail
+
+die() { echo "ERROR: $*" >&2; exit 1; }
+yay_works() { yay --version >/dev/null 2>&1 && yay -Q pacman >/dev/null 2>&1; }
+
+[[ $EUID -ne 0 ]] || die "Run Update OS as your desktop user, without sudo."
+[[ "${SMPLOS_SYSTEM_UPGRADED:-0}" == 1 ]] ||
+    die "Yay enrollment requires a completed base upgrade. Run smplos-update --mode full."
+if [[ "${SMPLOS_SUDO_READY:-0}" != 1 ]]; then
+    command sudo -v || die "Authentication failed."
+fi
+sudo() { command sudo -n "$@"; }
+export -f sudo
+
+repo="${SMPLOS_PATH:-$HOME/.local/share/smplos}/repo"
+recipe="$repo/src/shared/pkgbuilds/yay-bin"
+library="$repo/src/shared/lib/smplos-pkgbuild.sh"
+[[ -r "$recipe/PKGBUILD" && -r "$library" ]] || die "Missing prebuilt Yay recipe/helper; rerun enrollment."
+source "$library"
+want="$(sed -n 's/^pkgver=//p' "$recipe/PKGBUILD")-$(sed -n 's/^pkgrel=//p' "$recipe/PKGBUILD")"
+have=$(smplos_pkg_version yay-bin)
+ready=0
+if [[ -n "$have" ]]; then
+    comparison=$(vercmp "$have" "$want")
+    case "$comparison" in -1|0|1) ;; *) die "Cannot compare installed Yay with the pinned release." ;; esac
+    if [[ "$comparison" != -1 ]] && yay_works; then
+        ready=1
+    elif [[ "$comparison" == 1 ]]; then
+        die "Installed yay-bin $have is newer than the repair recipe $want; refusing a downgrade."
+    fi
+fi
+if [[ $ready -eq 0 ]]; then
+    if pacman -Si yay >/dev/null 2>&1; then
+        if ! pacman -Q yay >/dev/null 2>&1 || ! yay_works; then
+            echo "  Installing Yay from the configured pacman repository..."
+            sudo pacman -S --noconfirm --ask 4 yay || die "Repository Yay installation failed."
+        fi
+    else
+        echo "  Installing prebuilt yay-bin $want (binary packaging only; no Go/Rust compilation)..."
+        smplos_pkgbuild_install "$recipe" --ask 4 || die "Prebuilt Yay installation failed."
+    fi
+fi
+yay_works || die "Yay cannot access the installed pacman/libalpm database; AUR update stopped."
+
+echo "  Yay is ready; no Paru rebuild is needed."

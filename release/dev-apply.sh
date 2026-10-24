@@ -448,6 +448,29 @@ systemctl is-active --quiet NetworkManager 2>/dev/null || {
     systemctl start NetworkManager 2>/dev/null && log "  NetworkManager started" || warn "  Failed to start NetworkManager"
 }
 
+# ── Compositor plugins ──────────────────────────────────────
+# Compiled in the VM against its own Hyprland: a plugin only loads into the
+# exact build it was compiled for.
+plugin_action=""
+if [[ -d "$SHARE/plugins" && -f "$SHARE/bin/smplos-plugins" ]]; then
+    if [[ -r /usr/include/hyprland/src/version.h ]]; then
+        log "Building compositor plugins..."
+        plugin_state() { { stat -c '%n %Y %i' /usr/local/lib/smplos/plugins/* 2>/dev/null || true; } | sort | sha256sum; }
+        plugins_before=$(plugin_state)
+        if SMPLOS_INVOKER_USER="${REAL_USER:-}" bash "$SHARE/bin/smplos-plugins" sync --src "$SHARE/plugins"; then
+            if [[ "$(plugin_state)" == "$plugins_before" ]]; then
+                plugin_action=load
+            else
+                plugin_action=reload
+            fi
+        else
+            warn "  plugin build failed"
+        fi
+    else
+        warn "Skipping compositor plugins: the Hyprland headers are not installed"
+    fi
+fi
+
 # ── Restart services ────────────────────────────────────────
 
 # Re-apply current theme (copies theme-colors.scss, bakes SVG icons, etc.)
@@ -486,6 +509,11 @@ if $restart_hypr; then
     run_as_user "pkill rofi" 2>/dev/null || true
     run_as_user "hyprctl reload" 2>/dev/null || warn "  hyprctl reload failed"
     log "  Hyprland reloaded"
+fi
+
+if [[ -n "$plugin_action" ]]; then
+    log "Plugins: $plugin_action..."
+    run_as_user "smplos-plugins $plugin_action" || warn "  plugin $plugin_action failed"
 fi
 
 log ""

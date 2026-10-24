@@ -158,7 +158,7 @@ def make_nemo_css(c):
     sel_bg    = c.get("selection_background", accent)
     sel_fg    = selection_foreground(c)
     danger    = c.get("danger", c.get("accent_alt", accent))
-    rounding  = c.get("rounding", "4")
+    app_rounding = c.get("app_rounding", c.get("rounding", "4"))
     accent_fg = readable_foreground(accent, sel_fg, fg, bg)
     danger_fg = readable_foreground(danger, fg, bg)
     tab_fg    = readable_foreground(bg, accent, fg)
@@ -679,7 +679,7 @@ toolbar.primary-toolbar button.suggested-action label {{
 
 /* Window decoration (shadow/rounding from WM) */
 .nemo-quick-preview decoration {{
-    border-radius: {rounding}px;
+    border-radius: {app_rounding}px;
 }}
 
 /* Scrollbars inside the preview */

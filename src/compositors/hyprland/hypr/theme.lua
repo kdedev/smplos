@@ -26,6 +26,7 @@ parse(os.getenv("HOME") .. "/.config/hypr/theme.conf")
 M.activeBorderColor        = M.activeBorderColor        or "rgb(89b4fa)"
 M.inactiveBorderColor      = M.inactiveBorderColor      or "rgba(585b70aa)"
 M.themeRounding            = M.themeRounding            or "3"
+M.themeRoundingPower       = M.themeRoundingPower       or "2.0"
 M.themeGapsIn              = M.themeGapsIn              or "2"
 M.themeGapsOut             = M.themeGapsOut             or "4"
 M.themeBorderSize          = M.themeBorderSize          or "2"
@@ -38,6 +39,19 @@ M.themeTermOpacityInactive = M.themeTermOpacityInactive or "0.95"
 M.themePopupOpacity        = M.themePopupOpacity        or "0.60"
 M.themeMessengerOpacity    = M.themeMessengerOpacity    or "0.85"
 M.themeBrowserOpacity      = M.themeBrowserOpacity      or "1.0"
+
+-- Window effects. Defaults are the classic look (subtle shadow, no glow,
+-- static border), so themes that predate these variables are unchanged.
+M.themeShadowRange         = M.themeShadowRange         or "2"
+M.themeShadowRenderPower   = M.themeShadowRenderPower   or "3"
+M.themeShadowColor         = M.themeShadowColor         or "rgba(1a1a1aee)"
+M.themeShadowColorInactive = M.themeShadowColorInactive or M.themeShadowColor
+M.themeGlow                = M.themeGlow                or "0"
+M.themeGlowRange           = M.themeGlowRange           or "10"
+M.themeGlowRenderPower     = M.themeGlowRenderPower     or "3"
+M.themeGlowColor           = M.themeGlowColor           or "rgba(89b4fab0)"
+M.themeGlowColorInactive   = M.themeGlowColorInactive   or M.themeGlowColor
+M.themeBorderAnimation     = M.themeBorderAnimation     or "0"
 
 -- Convert a hyprlang color/gradient string into the value the Hyprland Lua
 -- config API (hl.config) expects.

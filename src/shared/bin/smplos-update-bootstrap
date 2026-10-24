@@ -1,0 +1,81 @@
+#!/bin/bash
+# Fetch verified updater source without running installed legacy orchestration.
+set -euo pipefail
+
+if [[ "${1:-}" == --help || "${1:-}" == -h ]]; then
+    echo "Usage: smplos-update-bootstrap [--mode full|apps] [--bootstrap-only]"
+    echo "Without --mode, install/verify updater scripts only; --mode continues into that update."
+    exit 0
+fi
+mode=""
+bootstrap_only=0
+legacy_handoff=""
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --mode)
+            [[ "${2:-}" == full || "${2:-}" == apps ]] ||
+                { echo "ERROR: invalid update mode" >&2; exit 1; }
+            mode="$2"; shift ;;
+        --bootstrap-only) bootstrap_only=1 ;;
+        --legacy-handoff)
+            [[ -n "${2:-}" ]] || { echo "ERROR: missing handoff record" >&2; exit 1; }
+            legacy_handoff="$2"; shift ;;
+        *) echo "ERROR: unexpected bootstrap argument: $1" >&2; exit 1 ;;
+    esac
+    shift
+done
+args=(--bootstrap-only)
+if [[ -n "$mode" ]]; then
+    args=(--mode "$mode")
+    [[ $bootstrap_only -eq 0 ]] || args+=(--bootstrap-only)
+fi
+[[ -z "$legacy_handoff" ]] || args+=(--legacy-handoff "$legacy_handoff")
+[[ $EUID -ne 0 ]] || { echo "Run enrollment as your desktop user, without sudo." >&2; exit 1; }
+
+export SMPLOS_PATH="${SMPLOS_PATH:-$HOME/.local/share/smplos}"
+repo="$SMPLOS_PATH/repo"
+state="$HOME/.local/state/smplos/update"
+mkdir -p "$state"
+log="$state/bootstrap-$(date +%Y%m%d-%H%M%S)-$$.log"
+
+die() { echo "ERROR: $*" >&2; exit 1; }
+
+if [[ "${SMPLOS_UPDATE_LOCKED:-0}" != 1 ]]; then
+    exec 9>"$state/update.lock"
+fi
+flock -n 9 || die "Another smplOS update/enrollment is already running."
+export SMPLOS_UPDATE_LOCKED=1
+
+prepare_source() {
+    if [[ ! -e "$repo" ]]; then
+        mkdir -p "$SMPLOS_PATH"
+        git clone --branch main https://github.com/smpl-os/smplos.git "$repo" ||
+            die "Cannot clone smplOS; enrollment stopped."
+    fi
+    git -C "$repo" rev-parse --is-inside-work-tree >/dev/null ||
+        die "Not a Git checkout: $repo. Nothing was overwritten."
+    case "$(git -C "$repo" remote get-url origin)" in
+        https://github.com/smpl-os/smplos|https://github.com/smpl-os/smplos.git|git@github.com:smpl-os/smplos.git) ;;
+        *) die "Unexpected smplOS origin; stop and inspect $repo." ;;
+    esac
+    [[ "$(git -C "$repo" branch --show-current)" == main ]] ||
+        die "Checkout is not on main; preserve local work before enrollment."
+    for operation in rebase-merge rebase-apply MERGE_HEAD CHERRY_PICK_HEAD REVERT_HEAD; do
+        pending=$(git -C "$repo" rev-parse --path-format=absolute --git-path "$operation")
+        [[ ! -e "$pending" ]] || die "Unfinished Git operation: $operation. Nothing was reset."
+    done
+    [[ -z "$(git -C "$repo" status --porcelain)" ]] ||
+        die "Local changes in $repo; preserve them before enrollment."
+    git -C "$repo" fetch origin main || die "Fetch failed; enrollment stopped."
+    git -C "$repo" merge --ff-only origin/main ||
+        die "Checkout diverged; local commits were preserved."
+    [[ "$(git -C "$repo" rev-parse HEAD)" == "$(git -C "$repo" rev-parse origin/main)" ]] ||
+        die "Local commits are ahead of origin/main; nothing was discarded."
+    grep -qxF 'SMPLOS_UPDATE_PROTOCOL=1' "$repo/src/shared/bin/smplos-os-update" ||
+        die "This upstream does not contain the new updater protocol yet."
+    echo "Enrollment source: $(git -C "$repo" rev-parse HEAD)"
+}
+
+prepare_source 2>&1 | tee -a "$log"
+# Keep stdout attached to the user's terminal for the authentication prompt.
+exec bash "$repo/src/shared/bin/smplos-update" "${args[@]}"

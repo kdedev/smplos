@@ -616,7 +616,7 @@ process_aur_packages() {
     log_info "AUR packages processed"
     
     # AUR packages have dependencies on official repo packages (e.g. eww needs
-    # gtk-layer-shell, logseq needs nodejs, vscode needs lsof).  Extract those
+    # gtk-layer-shell, vscode needs lsof). Extract those
     # deps from the prebuilt .PKGINFO and download them to the offline mirror.
     log_info "Resolving AUR package dependencies..."
     local aur_deps=()
@@ -665,8 +665,55 @@ process_aur_packages() {
 # Create Repository Database
 ###############################################################################
 
+stage_selected_app_formats() {
+    local airootfs="$1" entry name archive
+    mkdir -p "$airootfs/opt/appimages" "$airootfs/opt/flatpaks" || return 1
+    rm -f -- "$airootfs/opt/appimages/Logseq.AppImage" || return 1
+    for entry in "${APPIMAGE_PACKAGES[@]}"; do
+        name="${entry%%|*}"
+        archive="$CACHE_DIR/appimages/$name.AppImage"
+        if [[ ! -f "$archive" ]]; then
+            log_error "Selected AppImage is missing from the build cache: $name"
+            return 1
+        fi
+        install -m755 -- "$archive" "$airootfs/opt/appimages/$name.AppImage" || return 1
+    done
+    if (( ${#FLATPAK_PACKAGES[@]} )); then
+        printf '%s\n' "${FLATPAK_PACKAGES[@]}" > "$airootfs/opt/flatpaks/install-online.txt" || return 1
+    else
+        rm -f -- "$airootfs/opt/flatpaks/install-online.txt" || return 1
+    fi
+    log_info "Bundled ${#APPIMAGE_PACKAGES[@]} selected AppImage(s); ${#FLATPAK_PACKAGES[@]} selected Flatpak(s)"
+}
+
+prune_retired_note_packages() {
+    local package archive candidate entries=""
+    local database="$OFFLINE_MIRROR_DIR/offline.db.tar.gz"
+    if [[ -f "$database" ]]; then
+        entries=$(bsdtar -tf "$database") || return 1
+    fi
+    # Grafium is temporarily unbundled pending its AUR package.
+    for package in grafium-bin logseq logseq-bin logseq-git logseq-desktop logseq-desktop-bin logseq-desktop-git; do
+        for archive in "$OFFLINE_MIRROR_DIR/$package"-[0-9]*.pkg.tar.{zst,xz} \
+                       "$OFFLINE_MIRROR_DIR/$package-debug"-[0-9]*.pkg.tar.{zst,xz}; do
+            [[ -f "$archive" ]] || continue
+            log_info "Removing retired build package: $(basename "$archive")"
+            rm -f -- "$archive" "$archive.sig" || return 1
+        done
+        for candidate in "$package" "$package-debug"; do
+            if grep -qE "^${candidate}-[0-9][^/]*/desc$" <<< "$entries"; then
+                repo-remove "$database" "$candidate" || return 1
+            fi
+        done
+    done
+}
+
 create_repo_database() {
     log_step "Creating offline repository database"
+    prune_retired_note_packages || {
+        log_error "Cannot exclude unbundled notes packages from the offline build cache"
+        return 1
+    }
     
     cd "$OFFLINE_MIRROR_DIR"
 
@@ -1012,6 +1059,60 @@ install_keypad_packaging() {
         "$airootfs/etc/skel/.local/state/smplos/keypad-units"
     install -Dm644 "$SRC_DIR/shared/configs/systemd/user/control-surface.service" \
         "$airootfs/root/smplos/config/systemd/user/control-surface.service"
+    smplos_mouse_sync_units "$SRC_DIR/shared/configs/systemd/user" \
+        "$airootfs/etc/skel/.config/systemd/user" \
+        "$airootfs/etc/skel/.local/state/smplos/mouse-units"
+    install -Dm644 "$SRC_DIR/shared/configs/systemd/user/mouse-remap.service" \
+        "$airootfs/root/smplos/config/systemd/user/mouse-remap.service"
+}
+
+###############################################################################
+# Build the Hyprland compositor plugins (smpl-hud, ...)
+#
+# A Hyprland plugin only loads into the exact Hyprland build it was compiled
+# against, so it is compiled here against the very hyprland package this ISO
+# installs and stored under that build's ABI key in
+# /usr/local/lib/smplos/plugins, where both the live session and the installed
+# system load it from. The build and key logic is smplos-plugins' own, so the
+# ISO and Update OS (which rebuilds after a Hyprland update) cannot drift.
+#
+# The plugin only adds the HUD window frames, so a failure warns instead of
+# failing the ISO build; windows then keep their stock borders.
+###############################################################################
+
+# Newest package file for $1 in the offline mirror (empty when there is none).
+mirror_package_file() {
+    find "$OFFLINE_MIRROR_DIR" -maxdepth 1 -name "$1-[0-9]*.pkg.tar.*" ! -name '*.sig' 2>/dev/null \
+        | sort -V | tail -n1
+}
+
+build_hyprland_plugins() {
+    local src="$SRC_DIR/compositors/hyprland/plugins"
+    [[ "$COMPOSITOR" == "hyprland" && -d "$src" ]] || return 0
+    log_step "Building Hyprland plugins"
+
+    local plugin_dir="$PROFILE_DIR/airootfs/usr/local/lib/smplos/plugins" package
+    package=$(mirror_package_file hyprland)
+    if [[ -z "$package" ]]; then
+        log_warn "Hyprland plugins skipped: no hyprland package in the offline mirror"
+        return 0
+    fi
+
+    # The headers must come from the package the ISO ships, not from whatever
+    # version the repositories carry today.
+    if ! retry pacman --noconfirm -Sy || ! retry pacman --noconfirm -U --needed "$package"; then
+        log_warn "Hyprland plugins skipped: could not install $(basename "$package") to compile against"
+        return 0
+    fi
+
+    mkdir -p "$plugin_dir"
+    if SMPLOS_PLUGIN_DIR="$plugin_dir" bash "$SRC_DIR/shared/bin/smplos-plugins" sync --src "$src" \
+        && compgen -G "$plugin_dir/*.so" >/dev/null; then
+        log_info "Hyprland plugins built for $(basename "$package")"
+    else
+        rm -rf "$plugin_dir"
+        log_warn "Hyprland plugins skipped: the build failed (see above); windows keep their stock borders"
+    fi
 }
 
 ###############################################################################
@@ -1048,28 +1149,7 @@ setup_airootfs() {
     mkdir -p "$airootfs/opt/flatpaks"
     mkdir -p "$airootfs/var/cache/smplos/mirror"
 
-    # Copy cached AppImages into airootfs
-    local appimage_cache="$CACHE_DIR/appimages"
-    if [[ -d "$appimage_cache" ]] && ls "$appimage_cache"/*.AppImage &>/dev/null; then
-        log_info "Copying AppImages into ISO..."
-        cp "$appimage_cache"/*.AppImage "$airootfs/opt/appimages/"
-        chmod +x "$airootfs/opt/appimages/"*.AppImage
-        local ai_count
-        ai_count=$(ls -1 "$airootfs/opt/appimages/"*.AppImage 2>/dev/null | wc -l)
-        log_info "Bundled $ai_count AppImage(s)"
-    fi
-
-    # Copy Flatpak online-install list (offline bundles are complex;
-    # for now we install from Flathub on first boot when internet is available)
-    local flatpak_cache="$CACHE_DIR/flatpaks"
-    if [[ -f "$flatpak_cache/install-online.txt" ]]; then
-        cp "$flatpak_cache/install-online.txt" "$airootfs/opt/flatpaks/install-online.txt"
-    fi
-    # Write the flatpak list directly from our package array
-    if [[ ${#FLATPAK_PACKAGES[@]} -gt 0 ]]; then
-        printf '%s\n' "${FLATPAK_PACKAGES[@]}" > "$airootfs/opt/flatpaks/install-online.txt"
-        log_info "Flatpak install list: ${#FLATPAK_PACKAGES[@]} app(s)"
-    fi
+    stage_selected_app_formats "$airootfs" || return 1
 
     # ── Bundle Whisper AI models for offline dictation ──────────────────────────
     local whisper_cache="$CACHE_DIR/models/whisper"
@@ -1219,6 +1299,14 @@ DCONF_PROFILE
         mkdir -p "$airootfs/root/smplos/system/udev"
         cp "$SRC_DIR/shared/system/udev/"*.rules "$airootfs/root/smplos/system/udev/" 2>/dev/null || true
     fi
+
+    # Stage system units and journald drop-ins (GPU fault recorder) for the installer
+    for kind in systemd journald; do
+        if [[ -d "$SRC_DIR/shared/system/$kind" ]]; then
+            mkdir -p "$airootfs/root/smplos/system/$kind"
+            cp "$SRC_DIR/shared/system/$kind/"* "$airootfs/root/smplos/system/$kind/"
+        fi
+    done
     
     # Copy EWW configs
     if [[ -d "$SRC_DIR/shared/eww" ]]; then
@@ -1544,21 +1632,6 @@ Exec = /usr/bin/fc-cache -f
 FCHOOK
     log_info "Font cache pacman hook installed"
 
-    # Paru rebuild hook: auto-rebuild paru when pacman/libalpm updates
-    cat > "$airootfs/etc/pacman.d/hooks/90-rebuild-paru.hook" << 'PARUHOOK'
-[Trigger]
-Type = Package
-Operation = Upgrade
-Target = pacman
-
-[Action]
-Description = Checking if paru needs rebuild after pacman upgrade...
-When = PostTransaction
-Exec = /usr/local/bin/rebuild-paru
-NeedsTargets
-PARUHOOK
-    log_info "Paru rebuild pacman hook installed"
-    
     # Copy configs for post-install
     if [[ -d "$SRC_DIR/shared/configs" ]]; then
         cp -r "$SRC_DIR/shared/configs/"* "$airootfs/root/smplos/config/" 2>/dev/null || true
@@ -2254,6 +2327,7 @@ main() {
     update_profiledef
     setup_airootfs
     install_prebuilt_apps
+    build_hyprland_plugins
     setup_boot
     build_iso
     

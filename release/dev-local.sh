@@ -5,12 +5,17 @@ set -euo pipefail
 #
 # Usage:  sudo ./dev-local.sh [component...]
 #
-# Components:  eww bin hypr themes configs apps rust st all
+# Components:  eww bin hypr themes configs apps icons plugins rust st all
 #   (default: all except st and rust -- use 'st' or 'rust' explicitly)
+#
+# 'plugins' compiles the Hyprland plugins in src/compositors/hyprland/plugins
+# against the installed Hyprland (as the real user; only the install is root)
+# and reloads them in the running session when a build changed.
 #
 # Examples:
 #   sudo ./dev-local.sh              # configs + scripts + eww + themes
 #   sudo ./dev-local.sh eww          # just EWW
+#   sudo ./dev-local.sh plugins      # rebuild + reload the HUD plugin
 #   sudo ./dev-local.sh rust         # rebuild all Rust apps
 #   sudo ./dev-local.sh eww rust     # EWW configs + rebuild Rust apps
 #   sudo ./dev-local.sh all          # everything including st + Rust
@@ -77,7 +82,7 @@ run_as_user() {
 components=("$@")
 if [[ ${#components[@]} -eq 0 ]]; then
     # Default: everything except st and rust (those are slow)
-    components=(eww bin hypr themes configs apps icons)
+    components=(eww bin hypr themes configs apps icons plugins)
 fi
 
 do_component() {
@@ -90,6 +95,7 @@ do_component() {
 
 restart_eww=false
 restart_hypr=false
+plugin_action=""
 
 log "${BOLD}Applying from:${NC} $SRC_DIR"
 log "${BOLD}Target user:${NC}  $REAL_USER ($USER_HOME)"
@@ -216,6 +222,32 @@ if do_component themes; then
     log "  $(ls -1d "$SRC_DIR/shared/themes/"*/ 2>/dev/null | wc -l) themes"
 fi
 
+# ── Compositor plugins ──────────────────────────────────────
+# Compiled against the installed Hyprland by the same tool Update OS uses. It
+# builds as the real user and installs as root; the session is reached below.
+if do_component plugins; then
+    PLUGIN_TOOL="$SRC_DIR/shared/bin/smplos-plugins"
+    PLUGIN_SRC="$SRC_DIR/compositors/hyprland/plugins"
+    PLUGIN_DIR="${SMPLOS_PLUGIN_DIR:-/usr/local/lib/smplos/plugins}"
+    if [[ ! -r "${SMPLOS_HYPRLAND_VERSION_H:-/usr/include/hyprland/src/version.h}" ]]; then
+        warn "Skipping compositor plugins: the Hyprland headers are not installed"
+    elif [[ -d "$PLUGIN_SRC" ]]; then
+        log "Building compositor plugins..."
+        plugin_state() { { stat -c '%n %Y %i' "$PLUGIN_DIR"/* 2>/dev/null || true; } | sort | sha256sum; }
+        plugins_before=$(plugin_state)
+        SMPLOS_INVOKER_USER="$REAL_USER" bash "$PLUGIN_TOOL" sync --src "$PLUGIN_SRC" || {
+            err "Plugin build failed; deployment is incomplete."
+            exit 1
+        }
+        # A rebuilt binary must replace the one the compositor has mapped.
+        if [[ "$(plugin_state)" == "$plugins_before" ]]; then
+            plugin_action=load
+        else
+            plugin_action=reload
+        fi
+    fi
+fi
+
 # ── Rust apps (use container-built binaries -- only with 'rust' or 'all') ──
 if do_component rust; then
     BIN_DIR="$(dirname "$SCRIPT_DIR")/.cache/app-binaries"
@@ -324,6 +356,14 @@ if $restart_hypr; then
         exit 1
     }
     log "  done"
+fi
+
+if [[ -n "$plugin_action" ]]; then
+    log "Plugins: $plugin_action..."
+    run_as_user "bash '$SRC_DIR/shared/bin/smplos-plugins' $plugin_action" || {
+        err "Plugin $plugin_action failed; deployment is incomplete."
+        exit 1
+    }
 fi
 
 echo ""

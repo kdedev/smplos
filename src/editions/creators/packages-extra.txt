@@ -10,17 +10,17 @@ winetricks
 wine-mono
 wine-gecko
 lib32-gnutls
-lib32-sdl2
 lib32-libpulse
 lib32-alsa-plugins
 lib32-pipewire
-lib32-openal
 lib32-libxcomposite
 lib32-libxinerama
 lib32-opencl-icd-loader
 # NOTE: lib32-gst-plugins-base / lib32-gst-plugins-good no longer exist in
 # Arch multilib (removed upstream). Wine functions fine without them; only
 # affects legacy GStreamer audio backends, which Wine has deprecated.
+# Same for lib32-sdl2 and lib32-openal: multilib dropped them, and Arch's wine
+# no longer depends on any lib32 package.
 
 # ── Audio production (JACK/low-latency for DAWs) ─────────────
 realtime-privileges

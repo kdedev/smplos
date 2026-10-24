@@ -388,7 +388,8 @@ class IconSyncTests(KeypadCase):
         self.tool("fc-cache", 'echo "fc-cache $*" >> "$CALLS"\n')
         script = ("set -euo pipefail\nheader() { :; }\nok() { :; }\ndie() { echo \"$*\" >&2; exit 1; }\n"
                   "as_invoker() { [[ $1 == mv ]] && echo \"mv ${@: -1}\" >> \"$CALLS\"; \"$@\"; }\n"
-                  + function("copy_user_config") + function("sync_configs") + "sync_configs\n")
+                  + function("copy_user_config") + function("sync_config_defaults")
+                  + function("sync_configs") + "sync_configs\n")
         env = dict(self.env, SMPLOS_REPO=str(repo))
         for _ in range(2):
             subprocess.run(["bash", "-c", script], env=env, check=True, capture_output=True, text=True, timeout=20)
@@ -617,12 +618,14 @@ class LifecycleTests(unittest.TestCase):
                     self.assertIn(f"{recipe}:/build/pkg:ro", after)
                 self.assertEqual(old.read_bytes(), b"old cache fixture", "keep the prior cache until replacement succeeds")
 
-    def package(self, daemon):
+    def package(self, daemon, *, mouse=True):
         temp = tempfile.TemporaryDirectory()
         self.addCleanup(temp.cleanup)
         srcdir, pkgdir = Path(temp.name) / "src", Path(temp.name) / "pkg"
         files = {"usr/bin/control-surfaced": daemon, "usr/bin/ch552-padprog": b"\x7fELF",
                  "usr/share/control-surface/firmware/fw.bin": b"fw"}
+        if mouse:
+            files["usr/bin/mouse-remapperd"] = b"\x7fELF"
         for name, data in files.items():
             path = srcdir / name
             path.parent.mkdir(parents=True, exist_ok=True)
@@ -640,6 +643,7 @@ class LifecycleTests(unittest.TestCase):
         for name, data in files.items():
             self.assertEqual((pkgdir / name).read_bytes(), data)
         self.assertEqual((pkgdir / "usr/bin/control-surfaced").stat().st_mode & 0o777, 0o755)
+        self.assertEqual((pkgdir / "usr/bin/mouse-remapperd").stat().st_mode & 0o777, 0o755)
         self.assertEqual((pkgdir / "usr/share/control-surface/firmware/fw.bin").stat().st_mode & 0o777, 0o644)
 
     def test_package_refuses_a_daemon_without_the_units_flags(self):
@@ -648,17 +652,27 @@ class LifecycleTests(unittest.TestCase):
         self.assertIn("too old", result.stderr)
         self.assertFalse((pkgdir / "usr").exists())
 
+    def test_package_refuses_a_release_without_the_mouse_daemon(self):
+        daemon = b"\x7fELF..." + "--eww-window".encode("utf-16-le")
+        result, pkgdir, _ = self.package(daemon, mouse=False)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("mouse-remapperd is missing", result.stderr)
+        self.assertFalse((pkgdir / "usr").exists())
+
     def test_package_smoke_test_refuses_a_runtime_incompatible_release(self):
         with tempfile.TemporaryDirectory() as temp:
             src = Path(temp)
-            daemon = src / "usr/bin/control-surfaced"
-            daemon.parent.mkdir(parents=True)
+            (src / "usr/bin").mkdir(parents=True)
             script = f'source "{PKGBUILD}"\nsrcdir="{src}"\ncheck\n'
-            for status in (0, 127):
-                daemon.write_text(f'#!/bin/sh\n[ "$*" = "features --json" ] || exit 1\nexit {status}\n')
-                daemon.chmod(0o755)
-                result = subprocess.run(["bash", "-c", script], capture_output=True, text=True, timeout=20)
-                self.assertEqual(result.returncode, status)
+            for keypad_status, mouse_status in ((0, 0), (127, 0), (0, 127)):
+                with self.subTest(keypad=keypad_status, mouse=mouse_status):
+                    for name, status in (("control-surfaced", keypad_status),
+                                         ("mouse-remapperd", mouse_status)):
+                        daemon = src / "usr/bin" / name
+                        daemon.write_text(f'#!/bin/sh\n[ "$*" = "features --json" ] || exit 1\nexit {status}\n')
+                        daemon.chmod(0o755)
+                    result = subprocess.run(["bash", "-c", script], capture_output=True, text=True, timeout=20)
+                    self.assertEqual(result.returncode, keypad_status or mouse_status)
 
 
 class OneShotSyncTests(KeypadCase):
@@ -819,7 +833,7 @@ class MigrationTests(KeypadCase):
         output = self.migrate()
         self.assertEqual((self.units / "control-surface.service").read_text(), UNIT.read_text())
         self.assertFalse((wants / "control-surface.service").is_symlink())
-        self.assertIn("Removed obsolete keypad login link", output)
+        self.assertIn("Removed obsolete device-service login link", output)
         backups = list(self.unit_state.glob("backup.*/preimage"))
         self.assertIn(old, [p.read_text() for p in backups if not p.is_symlink()])
 
@@ -835,7 +849,8 @@ class MigrationTests(KeypadCase):
                 self.env["PKG_VERSION"] = version
                 output = self.migrate()
                 calls = self.calls_made()
-                self.assertIn("makepkg -s --noconfirm --skippgpcheck", calls)
+                self.assertIn("makepkg -s --noconfirm", calls)
+                self.assertNotIn("--skippgpcheck", calls)
                 self.assertTrue(any(c.startswith("pacman -U --noconfirm ") and
                                     c.endswith(f"/control-surface-{self.pkgver}-1-x86_64.pkg.tar.zst") for c in calls), calls)
                 self.assertIn("Installed control-surface", output)
@@ -1016,6 +1031,13 @@ stage_fixture() {
         self.assertEqual((live / ".config/systemd/user/control-surface.service").read_bytes(),
                          (self.units / "control-surface.service").read_bytes())
         self.assertEqual((payload / "config/systemd/user/control-surface.service").read_bytes(), UNIT.read_bytes())
+        mouse_unit = ROOT / "src/shared/configs/systemd/user/mouse-remap.service"
+        mouse_rule = ROOT / "src/shared/system/udev/70-smplos-mice.rules"
+        self.assertEqual((live / ".config/systemd/user/mouse-remap.service").read_bytes(), mouse_unit.read_bytes())
+        self.assertEqual((payload / "config/systemd/user/mouse-remap.service").read_bytes(), mouse_unit.read_bytes())
+        for staged in (iso / "etc/udev/rules.d/70-smplos-mice.rules",
+                       payload / "system/udev/70-smplos-mice.rules"):
+            self.assertEqual(staged.read_bytes(), mouse_rule.read_bytes())
         self.assertEqual((live / ".local/state/smplos/keypad-units/last-installed.service").read_bytes(),
                          (self.unit_state / "last-installed.service").read_bytes())
         for staged in (iso / "usr/local/bin/smplos-session-services", payload / "bin/smplos-session-services"):
@@ -1046,6 +1068,10 @@ stage_fixture() {
         for home in (live, installed_home):
             self.assertFalse(list((home / ".config/systemd/user").glob("*.wants/*keypad*")))
             self.assertFalse(list((home / ".config/systemd/user").glob("*.wants/control-surface.service")))
+            self.assertFalse(list((home / ".config/systemd/user").glob("*.wants/mouse-remap.service")))
+            self.assertEqual((home / ".config/systemd/user/mouse-remap.service").read_bytes(), mouse_unit.read_bytes())
+            self.assertEqual((home / ".local/state/smplos/mouse-units/last-installed.service").read_bytes(),
+                             mouse_unit.read_bytes())
         self.assertIn('install_keypad_packaging "$airootfs"', build)
         self.assertIn('cp -r "$SRC_DIR/shared/bin/"* "$airootfs/usr/local/bin/"', build)
         self.assertIn('cp -r "$SRC_DIR/shared/bin/"* "$airootfs/root/smplos/bin/"', build)
@@ -1074,13 +1100,15 @@ class EwwPassthroughMigrationTests(KeypadCase):
     def test_pkgbuild_pins_the_passthrough_commit(self):
         pkgbuild = EWW_PKGBUILD.read_text()
         self.assertIn("_commit=0eb460422278dfaec64e5a527c1fd35dd3b35a1b\n", pkgbuild)
-        self.assertIn("pkgrel=2\n", pkgbuild)
+        self.assertIn("pkgrel=5\n", pkgbuild)
+        self.assertIn("options=(!debug)", pkgbuild)
         self.assertIn("Verified on X11 only", (ROOT / "KEYPAD.md").read_text())
 
     def test_rebuilds_only_an_older_eww_smplos_and_never_restarts_the_bar(self):
         code, output, calls = self.migrate("0.6.0.r840.g78105f3-1")
         self.assertEqual(code, 0, output)
-        self.assertIn("makepkg -s --noconfirm --skippgpcheck", calls)
+        self.assertIn("makepkg -s --noconfirm", calls)
+        self.assertNotIn("--skippgpcheck", calls)
         self.assertTrue(any(c.startswith("pacman -U --noconfirm ") for c in calls), calls)
         self.assertFalse(any("eww" in c and "kill" in c or "bar-ctl" in c for c in calls))
         for version, expected in (("0.6.0.r841.g0eb4604-2", "already at 0eb4604"), ("", "not installed")):

@@ -1,3 +1,4 @@
+import fcntl
 import json
 import os
 from pathlib import Path
@@ -5,7 +6,9 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
+from test_app_delivery import function
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -25,6 +28,24 @@ case "$name" in
   bar-ctl) exit "${FAIL_RELOAD:-0}" ;;
   theme-set-st) exit "${FAIL_TERMINAL:-0}" ;;
   theme-set-copilot) exit "${FAIL_COPILOT:-0}" ;;
+  hyprctl)
+    case "$1" in
+      eval)
+        if [[ "${2:-}" == assert* ]]; then
+          case "${HYPR_PROVIDER:-lua}" in
+            lua) echo ok ;;
+            legacy) echo 'eval is only supported with the lua config manager' ;;
+            *) echo 'unknown request'; exit 1 ;;
+          esac
+        else
+          echo "${HYPR_ENV_REPLY:-ok}"
+          exit "${HYPR_ENV_STATUS:-0}"
+        fi ;;
+      keyword)
+        echo "${HYPR_ENV_REPLY:-ok}"
+        exit "${HYPR_ENV_STATUS:-0}" ;;
+      version) echo "Hyprland ${HYPR_VERSION:-0.54.3} built from fixture" ;;
+    esac ;;
   code|codium|cursor) exit 0 ;;
 esac
 """
@@ -120,6 +141,48 @@ class ThemeSwitchingTests(unittest.TestCase):
         settings = self.home / ".config/Code/User/settings.json"
         # VS Code accepts JSONC (including the trailing comma on a new settings file).
         self.assertIn(f'"workbench.colorTheme": "{name}"', settings.read_text())
+
+    def test_core_theme_skips_optional_editors_and_apps_phase_keeps_core_unchanged(self):
+        (self.stock / "new/foot.ini").write_text("new foot colors\n")
+        (self.stock / "new/btop.theme").write_text("new btop colors\n")
+        core = subprocess.run(
+            ["bash", str(BIN / "theme-set"), "--core", "new"],
+            env=self.env, capture_output=True, text=True, timeout=15,
+        )
+        self.assertEqual(core.returncode, 0, core.stderr)
+        palette = self.home / ".config/eww/theme-colors.scss"
+        nemo = self.home / ".config/smplos/nemo-theme.css"
+        before = (palette.read_bytes(), nemo.read_bytes(), (self.current / "theme.name").read_bytes())
+        self.assertFalse((self.home / ".config/Code/User/settings.json").exists())
+        self.assertFalse((self.home / ".config/foot/theme.ini").exists())
+        self.assertFalse((self.home / ".config/btop/themes/current.theme").exists())
+        apps = subprocess.run(
+            ["bash", str(BIN / "theme-set"), "--apps"],
+            env=self.env, capture_output=True, text=True, timeout=15,
+        )
+        self.assertEqual(apps.returncode, 0, apps.stderr)
+        self.assertEqual(before, (palette.read_bytes(), nemo.read_bytes(),
+                                  (self.current / "theme.name").read_bytes()))
+        self.assert_switched("new")
+        self.assertEqual((self.home / ".config/foot/theme.ini").read_text(), "new foot colors\n")
+        self.assertEqual((self.home / ".config/btop/themes/current.theme").read_text(), "new btop colors\n")
+
+    def test_failed_optional_theme_copy_is_visible_and_leaves_verified_core_unchanged(self):
+        self.assertEqual(subprocess.run(
+            ["bash", str(BIN / "theme-set"), "--core", "new"],
+            env=self.env, capture_output=True, timeout=15,
+        ).returncode, 0)
+        (self.current / "theme/foot.ini").write_text("optional colors\n")
+        palette = self.home / ".config/eww/theme-colors.scss"
+        nemo = self.home / ".config/smplos/nemo-theme.css"
+        before = (palette.read_bytes(), nemo.read_bytes())
+        apps = subprocess.run(
+            ["bash", str(BIN / "theme-set"), "--apps"],
+            env={**self.env, "FAIL_COPY": "1"}, capture_output=True, timeout=15,
+        )
+        self.assertNotEqual(apps.returncode, 0)
+        self.assertEqual(before, (palette.read_bytes(), nemo.read_bytes()))
+        self.assertEqual((self.current / "theme.name").read_text().strip(), "new")
 
     def test_switch_updates_all_consumers_and_keeps_editor_settings(self):
         settings = self.home / ".config/Code/User/settings.json"
@@ -235,62 +298,11 @@ class ThemeSwitchingTests(unittest.TestCase):
                       (self.home / ".config/environment.d/gtk.conf").read_text())
         self.assertIn("background = \"#0b2230\"", (self.current / "theme/colors.toml").read_text())
 
-    def test_logseq_preferences_merge_preserves_data_and_backs_up_before_switching(self):
-        prefs = self.home / ".logseq/preferences.json"
-        prefs.parent.mkdir()
-        original = {
-            "externals": ["file:///keep/my-graph"],
-            "window": {"width": 1234},
-            "theme": {"mode": "light", "custom": True, "pid": "old", "url": "old", "name": "old"},
-            "themes": {"mode": "light", "other": ["keep"]},
-        }
-        preimage = json.dumps(original).encode()
-        prefs.write_bytes(preimage)
-        prefs.chmod(0o640)
-        plugin = prefs.parent / "plugins/logseq-catppuccin/ctp-mocha.css"
-        plugin.parent.mkdir(parents=True)
-        plugin.write_text("/* installed plugin */")
-        with (self.stock / "new/colors.toml").open("a") as file:
-            file.write('app_theme_logseq = "catppuccin"\n')
-        (self.stock / "old/light.mode").touch()
-        for name, mode, pid in (("new", "dark", "logseq-catppuccin"), ("old", "light", None),
-                                ("new", "dark", "logseq-catppuccin")):
-            result = self.switch(name)
-            self.assertEqual(result.returncode, 0, result.stderr)
-            actual = json.loads(prefs.read_text())
-            self.assertEqual(actual["externals"], original["externals"])
-            self.assertEqual(actual["window"], original["window"])
-            self.assertTrue(actual["theme"]["custom"])
-            self.assertEqual(actual["theme"]["mode"], mode)
-            self.assertEqual(actual["themes"], {**original["themes"], "mode": mode})
-            self.assertEqual(actual["theme"].get("pid"), pid)
-            if pid is None:
-                self.assertNotIn("name", actual["theme"])
-                self.assertNotIn("url", actual["theme"])
-            else:
-                self.assertEqual(actual["theme"]["url"], f"assets://{plugin}")
-            self.assertEqual(prefs.stat().st_mode & 0o777, 0o640)
-        self.assertIn(preimage, [file.read_bytes() for file in prefs.parent.glob("preferences.json.backup.*")])
-
-    def test_logseq_invalid_preferences_are_preserved_with_visible_partial_failure(self):
-        prefs = self.home / ".logseq/preferences.json"
-        prefs.parent.mkdir()
-        for invalid in ('{broken', '', '[]', '{"theme":false}', '{"themes":[]}'):
-            with self.subTest(content=invalid):
-                prefs.write_text(invalid)
-                result = self.switch("new")
-                self.assertNotEqual(result.returncode, 0)
-                self.assertEqual(prefs.read_text(), invalid)
-                self.assertIn("existing user data is preserved", result.stderr)
-                self.assertIn("Logseq integration is incomplete", result.stderr)
-                self.assertNotIn("Theme set to:", result.stdout)
-                self.assert_switched("new")
-        self.assertIn("notify-send Theme applied with warnings", self.log.read_text())
-
-    def test_logseq_config_and_custom_css_are_never_replaced(self):
+    def test_retired_logseq_data_never_changes_or_blocks_theme_switching(self):
         theme = self.stock / "new"
         (theme / "logseq-custom.css").write_text('body { color: "blue"; }\n')
         files = {
+            self.home / ".logseq/preferences.json": '{broken but must remain untouched',
             self.home / ".logseq/config/config.edn":
                 ';; personal config\n{:journals-directory "notes" :shortcuts {:x "a"}\n'
                 ' :custom-css-url "my css"}\n',
@@ -301,12 +313,14 @@ class ThemeSwitchingTests(unittest.TestCase):
         for path, content in files.items():
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text(content)
-        result = self.switch("new")
-        self.assertNotEqual(result.returncode, 0)
-        for path, content in files.items():
-            self.assertEqual(path.read_text(), content)
-        self.assertIn("safe EDN merge unavailable", result.stderr)
-        self.assertIn("Skipped custom CSS", result.stderr)
+        original_paths = set((self.home / ".logseq").rglob("*"))
+        for name in ("new", "old", "new"):
+            result = self.switch(name)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn(f"Theme set to: {name}", result.stdout)
+            for path, content in files.items():
+                self.assertEqual(path.read_text(), content)
+        self.assertEqual(set((self.home / ".logseq").rglob("*")), original_paths)
         self.assert_switched("new")
 
     def test_logseq_symlink_preferences_are_preserved(self):
@@ -316,19 +330,16 @@ class ThemeSwitchingTests(unittest.TestCase):
         target.write_text('{"externals":["keep"]}')
         prefs.symlink_to(target)
         result = self.switch("new")
-        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(result.returncode, 0, result.stderr)
         self.assertTrue(prefs.is_symlink())
         self.assertEqual(target.read_text(), '{"externals":["keep"]}')
-        self.assertIn("Cannot safely update", result.stderr)
+        self.assertNotIn("Logseq", result.stderr)
 
-    def test_new_logseq_inline_theme_is_css_content_not_a_url(self):
+    def test_theme_switch_does_not_initialize_retired_logseq(self):
         (self.stock / "new/logseq-custom.css").write_text('body { content: "\\\\"; }\n')
         result = self.switch("new")
         self.assertEqual(result.returncode, 0, result.stderr)
-        edn = self.home / ".logseq/config/config.edn"
-        self.assertIn(':custom-css-url "body {', edn.read_text())
-        self.assertNotIn("file://", edn.read_text())
-        self.assertNotIn("assets://", edn.read_text())
+        self.assertFalse((self.home / ".logseq").exists())
 
     def test_copilot_sync_is_opt_in_and_failure_does_not_abort_theme_switch(self):
         helper = self.bin / "theme-set-copilot"
@@ -356,9 +367,67 @@ class ThemeSwitchingTests(unittest.TestCase):
         eww.chmod(0o755)
         result = subprocess.run(
             ["bash", str(BIN / "bar-ctl"), "reload"],
-            env=self.env, capture_output=True, timeout=5,
+            env={**self.env, "HYPRLAND_INSTANCE_SIGNATURE": ""}, capture_output=True, timeout=5,
         )
         self.assertEqual(result.returncode, 42)
+
+    def test_same_palette_is_not_republished_and_failed_reload_releases_batch_lock(self):
+        self.assertEqual(self.switch("new").returncode, 0)
+        palette = self.home / ".config/eww/theme-colors.scss"
+        before = palette.stat()
+        self.assertEqual(self.switch("new").returncode, 0)
+        after = palette.stat()
+        self.assertEqual((before.st_ino, before.st_mtime_ns), (after.st_ino, after.st_mtime_ns))
+        self.assertNotEqual(self.switch("old", FAIL_RELOAD="1").returncode, 0)
+        with (self.home / ".config/eww/.smplos-reload.lock").open("r") as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+
+    def test_hyprland_environment_uses_running_lua_or_legacy_provider_not_setenv(self):
+        for provider in ("lua", "legacy", "old"):
+            with self.subTest(provider=provider):
+                self.log.write_text("")
+                result = self.switch(
+                    "new", WAYLAND_DISPLAY="wayland-test",
+                    HYPRLAND_INSTANCE_SIGNATURE="fixture", HYPR_PROVIDER=provider,
+                )
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                calls = self.log.read_text()
+                self.assertNotIn("hyprctl setenv ", calls)
+                self.assertNotIn("unknown request", result.stdout + result.stderr)
+                if provider == "lua":
+                    self.assertIn("hyprctl eval hl.env('GTK_THEME', 'Adwaita:dark'); "
+                                  "hl.env('XCURSOR_THEME', 'Adwaita')", calls)
+                    self.assertNotIn("hyprctl keyword env", calls)
+                else:
+                    self.assertIn("hyprctl keyword env GTK_THEME,Adwaita:dark", calls)
+                    self.assertIn("hyprctl keyword env XCURSOR_THEME,Adwaita", calls)
+
+    def test_hyprland_environment_rejects_unknown_apis_and_success_exit_with_error_reply(self):
+        for extra in (
+            {"HYPR_PROVIDER": "unknown", "HYPR_VERSION": "0.56.2"},
+            {"HYPR_ENV_REPLY": "unknown request"},
+            {"HYPR_ENV_STATUS": "1", "HYPR_ENV_REPLY": "connection refused"},
+        ):
+            with self.subTest(extra=extra):
+                result = self.switch(
+                    "new", WAYLAND_DISPLAY="wayland-test",
+                    HYPRLAND_INSTANCE_SIGNATURE="fixture", **extra,
+                )
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("theme-set:", result.stderr)
+                self.assertNotIn("Theme set to:", result.stdout)
+
+    def test_no_hyprland_environment_request_for_x11_or_other_wayland_compositors(self):
+        for wayland, signature in (("", "stale"), ("niri-test", "")):
+            self.log.write_text("")
+            result = self.switch(
+                "new", WAYLAND_DISPLAY=wayland, HYPRLAND_INSTANCE_SIGNATURE=signature,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            calls = self.log.read_text()
+            self.assertNotIn("hyprctl eval ", calls)
+            self.assertNotIn("hyprctl keyword env ", calls)
+            self.assertNotIn("hyprctl setenv ", calls)
 
     def refresh_terminal(self, name, paused=False):
         child = subprocess.Popen(
@@ -400,6 +469,28 @@ class ThemeSwitchingTests(unittest.TestCase):
         self.assertEqual(payload, b"")
         self.assertEqual(signalled, "False")
 
+    def test_exited_unreaped_terminal_has_no_pty_and_is_not_a_refresh_failure(self):
+        self.assertEqual(self.switch("new").returncode, 0)
+        child = subprocess.Popen(
+            [sys.executable, "-c", 'open("/proc/self/comm", "w").write("st-wl")'],
+            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        )
+        try:
+            status = Path(f"/proc/{child.pid}/status")
+            deadline = time.monotonic() + 5
+            while "\nState:\tZ " not in status.read_text() and time.monotonic() < deadline:
+                time.sleep(0.01)
+            self.assertIn("\nState:\tZ ", status.read_text())
+            result = subprocess.run(
+                ["bash", str(BIN / "theme-set-st")],
+                env={**self.env, "ST_PID": str(child.pid)},
+                text=True, capture_output=True, timeout=5,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertNotIn("Cannot find PTY", result.stderr)
+        finally:
+            child.wait(timeout=5)
+
     def test_post_deploy_drops_privileges_without_retrying_failed_switch(self):
         source = (BIN / "smplos-os-update").read_text()
         function = source.split("post_deploy() {", 1)[1].split("# ── Main", 1)[0]
@@ -429,6 +520,104 @@ post_deploy() {
                     self.assertIn(f"{runner} theme-set new", result.stdout)
                     self.assertEqual(result.stdout.count("theme-set new"), 1)
                     self.assertNotIn("BUG:", result.stdout)
+
+
+class StockThemeSyncTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.base = Path(self.temp.name)
+        self.home = self.base / "home"
+        self.home.mkdir()
+        self.repo = self.base / "repo"
+        self.source = self.repo / "src/shared/themes/amber"
+        self.source.mkdir(parents=True)
+        (self.source / "colors.toml").write_text('background = "#123456"\n')
+        (self.source / "nemo.css").write_text("latest CSS\n")
+        self.stock = self.home / ".local/share/smplos/themes/amber"
+        self.override = self.home / ".config/smplos/themes/amber"
+        self.backups = self.home / ".local/state/smplos/theme-backups"
+        self.env = {**os.environ, "HOME": str(self.home),
+                    "XDG_STATE_HOME": str(self.home / ".local/state"),
+                    "SMPLOS_REPO": str(self.repo)}
+        script = BIN / "smplos-os-update"
+        self.script = "\n".join(function(script, name) for name in ("replace_theme_tree", "sync_themes"))
+        self.script += """
+die() { echo "$*" >&2; exit 1; }
+header() { :; }; ok() { echo "$*"; }
+THEMES_CHANGED=0
+sync_themes
+echo "changed=$THEMES_CHANGED"
+"""
+
+    def sync(self, prefix=""):
+        return subprocess.run(["bash", "-c", prefix + self.script], env=self.env,
+                              capture_output=True, text=True, timeout=10)
+
+    def seed(self, path, content="personal old theme"):
+        path.mkdir(parents=True)
+        (path / "colors.toml").write_text(content)
+        (path / "obsolete.css").write_text("stale file must not survive replacement")
+
+    def test_exact_replacement_and_verified_backups_include_matching_overrides(self):
+        self.seed(self.stock, "old stock modifications")
+        self.seed(self.override, "personal overrides")
+        custom = self.override.parent / "my-personal-theme"
+        self.seed(custom)
+        result = self.sync()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        for destination in (self.stock, self.override):
+            self.assertEqual({p.name: p.read_bytes() for p in destination.iterdir()},
+                             {p.name: p.read_bytes() for p in self.source.iterdir()})
+        self.assertEqual((custom / "colors.toml").read_text(), "personal old theme")
+        backups = {Path((p / "path").read_text().strip()): p for p in self.backups.iterdir()}
+        self.assertEqual(set(backups), {self.stock, self.override})
+        self.assertEqual((backups[self.stock] / "original/colors.toml").read_text(),
+                         "old stock modifications")
+        self.assertEqual((backups[self.override] / "original/colors.toml").read_text(), "personal overrides")
+        self.assertTrue((backups[self.override] / "original/obsolete.css").is_file())
+        self.assertIn("changed=1", result.stdout)
+        second = self.sync()
+        self.assertEqual(second.returncode, 0, second.stderr)
+        self.assertIn("changed=0", second.stdout)
+        self.assertEqual(len(list(self.backups.iterdir())), 2)
+        self.assertEqual(list(self.stock.parent.glob(".*.update.*")), [])
+        self.assertEqual(list(self.override.parent.glob(".*.update.*")), [])
+
+    def test_backup_failure_never_replaces_personal_theme(self):
+        self.seed(self.stock)
+        result = self.sync('cp() { [[ "$*" != *"/original"* ]] || return 23; command cp "$@"; }\n')
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("Cannot verify theme backup", result.stderr)
+        self.assertEqual((self.stock / "colors.toml").read_text(), "personal old theme")
+
+    def test_failed_publication_restores_old_tree_and_keeps_backup(self):
+        self.seed(self.stock)
+        prefix = """mv() {
+if [[ "$2" == -- && "$3" == *".update."* && "$3" != *.previous && "$4" == *"/themes/amber" ]]; then
+    return 24
+fi
+command mv "$@"
+}
+"""
+        result = self.sync(prefix)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("previous theme restored", result.stderr)
+        self.assertEqual((self.stock / "colors.toml").read_text(), "personal old theme")
+        self.assertTrue(next(self.backups.glob("*/original/obsolete.css")).is_file())
+
+    def test_symlink_override_is_replaced_without_touching_its_target(self):
+        custom = self.home / "my-original-theme"
+        self.seed(custom)
+        self.override.parent.mkdir(parents=True)
+        self.override.symlink_to(custom, target_is_directory=True)
+        result = self.sync()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertFalse(self.override.is_symlink())
+        self.assertEqual((custom / "colors.toml").read_text(), "personal old theme")
+        original = next(self.backups.glob("*/original"))
+        self.assertTrue(original.is_symlink())
+        self.assertEqual(original.readlink(), custom)
 
 
 if __name__ == "__main__":

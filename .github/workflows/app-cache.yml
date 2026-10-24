@@ -5,11 +5,11 @@ on:
     branches: [main]
     paths:
       - 'src/shared/bin/rebuild-app-cache'
+      - 'src/shared/bin/smplos-settings'
       - 'src/shared/bin/smplos-*update*'
       - 'src/shared/lib/smplos-app-bundle.sh'
       - 'src/shared/lib/smplos-release-package.sh'
       - 'src/shared/pkgbuilds/nemo-smpl/PKGBUILD'
-      - 'src/shared/pkgbuilds/grafium-bin/PKGBUILD'
       - 'src/shared/configs/systemd/user/smplos-app-cache.*'
       - 'src/shared/installer/install.sh'
       - 'src/fetch-apps.sh'
@@ -22,11 +22,11 @@ on:
   pull_request:
     paths:
       - 'src/shared/bin/rebuild-app-cache'
+      - 'src/shared/bin/smplos-settings'
       - 'src/shared/bin/smplos-*update*'
       - 'src/shared/lib/smplos-app-bundle.sh'
       - 'src/shared/lib/smplos-release-package.sh'
       - 'src/shared/pkgbuilds/nemo-smpl/PKGBUILD'
-      - 'src/shared/pkgbuilds/grafium-bin/PKGBUILD'
       - 'src/shared/configs/systemd/user/smplos-app-cache.*'
       - 'src/shared/installer/install.sh'
       - 'src/fetch-apps.sh'
@@ -48,6 +48,7 @@ jobs:
       - name: Check shell syntax
         run: |
           bash -n src/shared/bin/rebuild-app-cache
+          bash -n src/shared/bin/smplos-settings
           bash -n src/shared/bin/smplos-os-update
           bash -n src/shared/bin/smplos-update-apps
           bash -n src/shared/lib/smplos-app-bundle.sh

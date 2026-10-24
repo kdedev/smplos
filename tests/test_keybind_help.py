@@ -79,6 +79,24 @@ class KeybindHelpTests(unittest.TestCase):
         self.assertTrue((self.home / "custom-cache/smplos/keybinds.cache").is_file())
         self.assertFalse(self.cache.exists())
 
+    def test_stock_scrolling_shortcuts_have_one_help_row_per_action(self):
+        (self.home / ".config/smplos/bindings.conf").write_bytes(
+            (ROOT / "src/shared/configs/smplos/bindings.conf").read_bytes()
+        )
+        _, rows = self.launch()
+        for chord, description in (
+            ("Super+Shift+Left", "Swap window left"),
+            ("Super+Shift+Right", "Swap window right"),
+            ("Super+R", "Expand column to fill"),
+            ("Super+Ctrl+R", "Resize mode"),
+            ("Super+S", "Signal"),
+            ("Super+Ctrl+S", "Toggle scratchpad"),
+        ):
+            matches = [row for row in rows.splitlines() if row.split()[0] == chord]
+            self.assertEqual(len(matches), 1, matches)
+            self.assertIn(description, matches[0])
+        self.assertNotIn("orientation", rows)
+
     def test_script_update_rebuilds_existing_cache(self):
         self.cache.write_text("stale fuzzy-search listing\n")
         older = time.time() - 10
@@ -102,18 +120,23 @@ class KeybindHelpTests(unittest.TestCase):
         original_bindings = bindings.read_bytes()
         updater = (ROOT / "src/shared/bin/smplos-os-update").read_text()
         sync = updater.split("sync_scripts() {", 1)[1].split("\n}\n", 1)[0]
-        # Exercise the production sync loop while redirecting its one privileged
-        # install to a fixture, never invoking the real updater or sudo.
+        sync = sync.replace('dest="/usr/local/bin/$name"', 'dest="$TEST_INSTALLED"')
+        atomic = updater.split("install_system_file() {", 1)[1].split("\n}\n", 1)[0]
+        # Exercise atomic publication entirely within a private fixture.
         script = """
 set -euo pipefail
 header() { :; }
 ok() { :; }
 warn() { echo "$*" >&2; exit 1; }
+die() { echo "$*" >&2; exit 1; }
 sync_libs() { :; }
-cmp() { return 1; }
 sudo() {
-    [[ "$1" == install && "$2" == -m755 && "$4" == /usr/local/bin/keybind-help ]]
-    install "$2" "$3" "$TEST_INSTALLED"
+    [[ "$1" == mktemp || "$1" == install || "$1" == mv || "$1" == rm ]] || return 99
+    [[ "${@: -1}" == "$TEST_INSTALLED" || "${@: -1}" == "$TEST_INSTALLED."* ]] || return 99
+    "$@"
+}
+install_system_file() {
+""" + atomic + """
 }
 sync_scripts() {
 """ + sync + "\n}\nsync_scripts\n"

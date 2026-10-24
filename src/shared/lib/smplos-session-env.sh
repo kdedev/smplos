@@ -4,7 +4,7 @@
 # SOURCE THIS FILE, DO NOT EXECUTE IT.
 #
 # ── Why this exists ──────────────────────────────────────────────────────────
-# `smplos-update` elevates with `exec pkexec bash "$SELF" "$@"`. pkexec
+# Legacy updaters elevated the entire orchestration with pkexec. pkexec
 # sanitizes the environment: XDG_RUNTIME_DIR, WAYLAND_DISPLAY, DISPLAY,
 # DBUS_SESSION_BUS_ADDRESS and HYPRLAND_INSTANCE_SIGNATURE are all dropped.
 # `smplos-os-update` restores HOME/USER/LOGNAME and exports SMPLOS_INVOKER_*,
@@ -12,6 +12,8 @@
 # restores the *identity* but cannot restore variables that no longer exist in
 # the parent environment — so migrations run as the right user with no
 # graphical session attached.
+# Current Update OS stays in the desktop user's tty and elevates individual
+# operations; this helper still supports legacy callers and session recovery.
 #
 # Consequences observed on real machines:
 #   * eww derives its IPC socket from $XDG_RUNTIME_DIR and silently falls back

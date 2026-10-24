@@ -1,0 +1,31 @@
+# Package the verified upstream binary; no Go compiler or source build.
+pkgname=yay-bin
+pkgver=13.0.1
+pkgrel=1
+pkgdesc='Yet another yogurt: prebuilt AUR helper'
+arch=(x86_64)
+url='https://github.com/Jguer/yay'
+license=(GPL-3.0-or-later)
+depends=('pacman>=7.0' git)
+provides=("yay=$pkgver")
+conflicts=(yay yay-git)
+options=(!strip !debug)
+source=("https://github.com/Jguer/yay/releases/download/v${pkgver}/yay_${pkgver}_x86_64.tar.gz")
+sha256sums=('1fdfcb5f7f387bc858d3a5754bdf4e4575bfbddac9560535a716d0ed7189c057')
+
+check() {
+    "$srcdir/yay_${pkgver}_x86_64/yay" --version
+    "$srcdir/yay_${pkgver}_x86_64/yay" -Q pacman
+}
+
+package() {
+    local bundle="$srcdir/yay_${pkgver}_x86_64" locale
+    install -Dm755 "$bundle/yay" "$pkgdir/usr/bin/yay"
+    install -Dm644 "$bundle/yay.8" "$pkgdir/usr/share/man/man8/yay.8"
+    install -Dm644 "$bundle/bash" "$pkgdir/usr/share/bash-completion/completions/yay"
+    install -Dm644 "$bundle/zsh" "$pkgdir/usr/share/zsh/site-functions/_yay"
+    install -Dm644 "$bundle/fish" "$pkgdir/usr/share/fish/vendor_completions.d/yay.fish"
+    for locale in "$bundle"/*.mo; do
+        install -Dm644 "$locale" "$pkgdir/usr/share/locale/$(basename "$locale" .mo)/LC_MESSAGES/yay.mo"
+    done
+}

@@ -1,0 +1,12 @@
+[Unit]
+Description=smplOS GPU fault recorder
+After=systemd-journald.service
+
+[Service]
+ExecStart=/usr/local/bin/smplos-gpu-watch
+Restart=always
+RestartSec=5
+Nice=5
+
+[Install]
+WantedBy=multi-user.target

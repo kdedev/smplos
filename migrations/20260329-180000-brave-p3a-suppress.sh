@@ -1,4 +1,5 @@
 #!/bin/bash
+# SMPLOS_UPDATE_PRIORITY=optional
 # Migration: Suppress Brave P3A analytics dialog on webapp launch
 # Context: When --clear-on-exit is enabled, the profile is wiped every launch,
 # so Brave shows its "completely private product analytics" notice repeatedly.

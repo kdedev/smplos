@@ -2,6 +2,10 @@
 -- Mirrors src/compositors/hyprland/hypr/autostart.conf.
 
 hl.on("hyprland.start", function()
+    -- Keep this session's compositor log after a hang or reboot
+    -- (journalctl -b -1 -t hyprland).
+    hl.exec_cmd("smplos-hypr-log-journal")
+
     -- Core services
     -- NOTE: hypridle is now managed by the packaged systemd user unit
     -- (hypridle.service, enabled via /etc/skel + migration). Launching it
@@ -29,6 +33,10 @@ hl.on("hyprland.start", function()
 
     -- Window guard — snap floating windows that end up off-screen back into view
     hl.exec_cmd("window-guard")
+
+    -- HUD borders: load the compositor plugin (draws nothing unless the active
+    -- theme sets hud_frame = true; a silent no-op if no build matches this Hyprland)
+    hl.exec_cmd("smplos-plugins load")
 
     -- Restore workspace-group monitor assignments
     hl.exec_cmd("bash -c 'sleep 1 && workspace-session-init'")

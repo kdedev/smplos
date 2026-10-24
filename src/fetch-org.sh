@@ -32,6 +32,8 @@ set -euo pipefail
 ORG="smpl-os"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
+source "$SCRIPT_DIR/shared/lib/smplos-update-entry.sh"
+smplos_update_entry_guard "$PROJECT_ROOT"
 source "$SCRIPT_DIR/shared/lib/smplos-app-bundle.sh"
 
 STAGE="$PROJECT_ROOT/.cache/org-binaries"

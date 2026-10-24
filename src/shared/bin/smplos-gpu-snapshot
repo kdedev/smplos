@@ -1,0 +1,96 @@
+#!/bin/bash
+# Record GPU, DRM and compositor state for a GPU fault.
+# Usage: smplos-gpu-snapshot [trigger line]     (root; run by smplos-gpu-watch)
+#
+# A display hang usually ends in a reboot, which loses the live DRM state and
+# Hyprland's tmpfs log. Cheap, safe captures run first; reads that can block
+# on a wedged driver run last, in parallel, each under a timeout.
+set -uo pipefail
+
+ROOT=${SMPLOS_GPU_INCIDENTS:-/var/log/smplos/gpu-incidents}
+KEEP=${SMPLOS_GPU_KEEP:-10}
+RUNTIME=${SMPLOS_RUNTIME_ROOT:-/run/user}
+DRM_DEBUG=${SMPLOS_DRM_DEBUGFS:-/sys/kernel/debug/dri}
+DRM_SYSFS=${SMPLOS_DRM_SYSFS:-/sys/class/drm}
+
+die() { echo "smplos-gpu-snapshot: $*" >&2; exit 1; }
+cap() { local out=$1 secs=$2; shift 2; timeout -k 5 "$secs" "$@" >"$dir/$out" 2>&1; }
+
+install -d -m 0750 -g wheel "$ROOT" 2>/dev/null || install -d -m 0750 "$ROOT" || die "cannot create $ROOT"
+umask 027
+dir="$ROOT/$(date +%Y%m%d-%H%M%S)"
+[[ -e "$dir" ]] && dir+="-$$"
+mkdir -p "$dir/hyprland" "$dir/drm" || die "cannot create $dir"
+# Readable by admins from the first file on; a capture may block forever.
+chgrp wheel "$dir" "$dir/hyprland" "$dir/drm" 2>/dev/null && chmod g+s "$dir" "$dir/hyprland" "$dir/drm"
+
+printf '%s\n' "${*:-manual snapshot}" >"$dir/trigger.txt"
+cap kernel.log 30 journalctl -k -b --no-pager -o short-iso-precise
+cap journal-15min.log 60 journalctl -b --since "-15 min" --no-pager -o short-iso-precise
+cap processes.txt 10 ps -eo pid,ppid,user,stat,wchan:32,etime,pcpu,rss,args
+cap packages.txt 20 bash -c 'uname -a; cat /sys/module/nvidia/version 2>/dev/null; pacman -Q 2>/dev/null |
+    grep -E "^(hyprland|aquamarine|hypr[a-z-]*|xdg-desktop-portal-hyprland|nvidia[a-z0-9-]*|lib32-nvidia-utils|egl-[a-z]+|mesa|libdrm|libinput|linux[a-z-]*|wayland|wayland-protocols) "'
+
+for c in "$DRM_SYSFS"/card*-*; do
+    [[ -d "$c" ]] || continue
+    printf '%s status=%s enabled=%s dpms=%s first_mode=%s\n' "${c##*/}" \
+        "$(cat "$c/status" 2>/dev/null)" "$(cat "$c/enabled" 2>/dev/null)" \
+        "$(cat "$c/dpms" 2>/dev/null)" "$(head -n1 "$c/modes" 2>/dev/null)"
+done >"$dir/connectors.txt"
+
+# User-owned paths are read with the owner's rights, never root's.
+as_user() { local uid=$1; shift; timeout -k 2 10 setpriv --reuid="$uid" --regid="$(id -g "$uid")" --init-groups \
+    env XDG_RUNTIME_DIR="$RUNTIME/$uid" DBUS_SESSION_BUS_ADDRESS="unix:path=$RUNTIME/$uid/bus" "$@"; }
+
+# Every live Hyprland instance and its owner, for the compositor captures below.
+sessions=()
+for lock in "$RUNTIME"/*/hypr/*/hyprland.lock; do
+    instance=${lock%/hyprland.lock}
+    uid=${instance#"$RUNTIME"/}; uid=${uid%%/*}
+    [[ "$uid" =~ ^[0-9]+$ ]] || continue
+    pid=$(as_user "$uid" head -c 32 "$lock" 2>/dev/null | head -n1)
+    [[ "$pid" =~ ^[0-9]+$ ]] && kill -0 "$pid" 2>/dev/null && sessions+=("$uid:${instance##*/}")
+done
+
+# Keep the newest $KEEP incidents.
+mapfile -t old < <(find "$ROOT" -mindepth 1 -maxdepth 1 -type d -name '20[0-9][0-9][0-1][0-9]*' | sort | head -n -"$KEEP")
+(( ${#old[@]} )) && rm -rf -- "${old[@]}"
+
+# The full log, including the input traces the journal mirror drops.
+for s in "${sessions[@]}"; do
+    as_user "${s%%:*}" cat "$RUNTIME/${s%%:*}/hypr/${s#*:}/hyprland.log" >"$dir/hyprland/${s#*:}.log" 2>&1
+done
+# A frozen display often ends in a forced power-off within seconds.
+sync -f "$dir"
+
+for s in "${sessions[@]}"; do
+    as_user "${s%%:*}" notify-send -u critical -a smplOS "GPU error recorded" \
+        "Saving diagnostics to $dir. If you can, wait a minute before rebooting." >/dev/null 2>&1 &
+done
+
+# May block on a wedged GPU or compositor.
+for s in "${sessions[@]}"; do
+    uid=${s%%:*} sig=${s#*:}
+    for q in version monitors clients workspaces layers; do
+        as_user "$uid" env HYPRLAND_INSTANCE_SIGNATURE="$sig" hyprctl -j "$q" \
+            >"$dir/hyprland/$sig.$q.json" 2>&1 &
+    done
+done
+for card in "$DRM_DEBUG"/*/; do
+    [[ -r "$card/state" ]] || continue
+    n=${card%/}; n=${n##*/}
+    for f in name state clients; do
+        [[ -r "$card/$f" ]] && cap "drm/$n.$f" 15 cat "$card/$f" &
+    done
+done
+if command -v nvidia-smi >/dev/null; then
+    cap nvidia-smi.txt 30 nvidia-smi -q &
+fi
+if command -v nvidia-bug-report.sh >/dev/null; then
+    # --safe-mode skips nvidia-debugdump and other queries that can stall the GPU.
+    (cd "$dir" && timeout -k 10 300 nice -n 19 ionice -c 3 nvidia-bug-report.sh --safe-mode \
+        --output-file "$dir/nvidia-bug-report.log" >"$dir/nvidia-bug-report.out" 2>&1) &
+fi
+wait
+sync -f "$dir"
+echo "$dir"

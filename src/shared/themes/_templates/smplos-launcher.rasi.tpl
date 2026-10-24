@@ -26,7 +26,7 @@ configuration {
     selected:                    {{ accent }};
     active:                      {{ accent }};
     urgent:                      {{ danger }};
-    border-rad:                  {{ rounding }}px;
+    border-rad:                  {{ app_rounding }}px;
     background-color:            transparent;
     text-color:                  @foreground;
 

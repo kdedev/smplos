@@ -43,7 +43,6 @@ Each theme lives in:
 - `hyprland.conf`
 - `niri-theme.kdl`
 - `hyprlock.conf`
-- `logseq-custom.css`
 - `micro.theme`
 - `smplos-launcher.rasi`
 - `nemo.css` (dedicated Python generator, not a template)
@@ -67,6 +66,18 @@ These are app-specific preset payloads used by selectors in `colors.toml`:
 - `tide.theme`
 - `backgrounds/`
 - `preview.png`
+
+### Bundled wallpapers
+
+Put wallpaper images directly in `backgrounds/` (`.png`, `.jpg`, `.jpeg`, or
+`.webp`). They are bundled automatically; adding images alone does not require
+regenerating theme configs. Amber HUD includes 18 wallpapers, Neon 16, and
+Matrix HUD 4.
+
+`theme-set <name>` copies the selected theme into the active theme directory
+and picks a wallpaper. Press **Super+Shift+W** (`theme-bg-next`) to randomly
+choose another without repeating the current image. An empty `backgrounds/`
+directory intentionally uses the theme's solid background color instead.
 
 ---
 
@@ -166,17 +177,186 @@ Most themes never need overrides. Use `term_N` only when a terminal slot should 
 
 ### Decoration, Layout, and App Selectors
 
-- **Decoration**: `rounding`, `blur_size`, `blur_passes`, `opacity_active`, `opacity_inactive`, `app_background_opacity`, `term_opacity_active`, `term_opacity_inactive`, `popup_opacity`, `messenger_opacity`, `browser_opacity`
+- **Decoration**: `rounding`, `app_rounding` (optional), `blur_size`, `blur_passes`, `opacity_active`, `opacity_inactive`, `app_background_opacity`, `term_opacity_active`, `term_opacity_inactive`, `popup_opacity`, `messenger_opacity`, `browser_opacity`
 - **Layout**: `gaps_in`, `gaps_out`, `border_size`, `border_active` (optional), `border_inactive` (optional)
-- **App selectors**: `app_theme_nvim`, `app_theme_vscode`, `app_theme_logseq`
+- **Effects** (optional, Hyprland only): `rounding_power`, `shadow_range`, `shadow_render_power`, `shadow_color`, `shadow_color_inactive`, `glow`, `glow_range`, `glow_render_power`, `glow_color`, `glow_color_inactive`, `border_animation`, `hud_frame`, `hud_hide_border`, `hud_style`, `hud_gap`, `hud_chamfer`, `hud_line_width`, `hud_float_glow_range`, `hud_sweep`, `hud_sweep_speed`, `hud_sweep_length`, `hud_glyph_color`, `hud_side_opacity`, `hud_edge_opacity`, `hud_underglow`, `hud_scanner`, `hud_scanner_blur`
+- **App selectors**: `app_theme_nvim`, `app_theme_vscode`
 
 Example:
 
 ```toml
 app_theme_nvim = "tokyo-night"
 app_theme_vscode = "tokyo-night"
-app_theme_logseq = "tokyo-night"
 ```
+
+### Glow, Shadow and Animated Borders (optional, Hyprland only)
+
+All keys are optional. Absent keys reproduce the classic look (a small dark
+shadow, no glow, static borders), so a theme that does not use them is
+unchanged. niri and other compositors ignore them.
+
+| Key | Default | Notes |
+|-----|---------|-------|
+| `rounding_power` | `"2.0"` | Number from 1 to 10 shaping the corners `rounding` sets. `2` is circular; `1` makes straight 45° cuts with legs of `rounding` / 2 − 1 px (rounded down: `rounding = "42"` cuts 20 px), so windows become octagons |
+| `shadow_range`, `shadow_render_power` | `"2"`, `"3"` | Size and falloff sharpness of the drop shadow |
+| `shadow_color`, `shadow_color_inactive` | `"rgba(1a1a1aee)"`, same as active | A single color; Hyprland rejects gradients here |
+| `glow` | `"false"` | `"true"` or `"false"` only |
+| `glow_range`, `glow_render_power` | `"10"`, `"3"` | Depth and falloff sharpness of the inner glow |
+| `glow_color`, `glow_color_inactive` | accent at 69% alpha, same as active | Single color or gradient |
+| `border_animation` | `"false"` | `"true"` or `"false"` only |
+| `hud_frame` | `"false"` | `"true"` or `"false"` only; turns on the HUD frames the `smpl-hud` Hyprland plugin draws around windows |
+| `hud_hide_border` | `"false"` | `"true"` or `"false"` only, and needs `hud_frame = "true"`; hides Hyprland's own border so the frame's outline is the only line (Hyprland gets a border size of 0; `border_size` stays what compositors without the frame draw) |
+| `hud_style` | `"scifi"` | Name of the HUD look: `scifi` (outline, halos, corner brackets, edge tabs), `minimal` (outline and halos only), `panel` (notched outline with a step, a ghost line and a cut corner, circuit traces ending in beads, two dots circling the outline in opposite directions and a dot bouncing along each trace, the circling ones glowing as they near a bouncing dot or each other) or `matrix` (the same outline as one line with its glow, Matrix characters falling down both sides in three columns on each, the first on the line itself and each further one smaller, dimmer and softer, and glows drifting along the top and the bottom). Lowercase letters, digits, `-` and `_`; an unknown name shows a notification and draws nothing |
+| `hud_gap`, `hud_chamfer` | `"5"`, `"10"` | Non-negative integers: outline distance from the window and corner-cut size, in px. The notches of a `panel` or `matrix` frame are 9 px deep with a `hud_gap` of 13 or more, shrink below that and are gone under 7 (`matrix-hud` uses `"3"`: a plain outline right at the window's edge) |
+| `hud_line_width` | `"3"` | Number from 1 to 9.99: outline thickness in px; corner brackets and edge tabs follow it |
+| `hud_float_glow_range` | `"0"` | Non-negative integer. Floating windows glow brighter than tiled ones and their halo reaches at least this many px; `"0"` keeps the style's own reach (14 px for `scifi`) |
+| `hud_sweep` | `"false"` | `"true"` or `"false"` only; a soft glow drifts slowly along the focused window's outline, in the outline's own colors, and fades in and out as focus moves. In the `panel` style it also sets the dots moving along the lines, in the `matrix` style the falling characters and the drifting glows |
+| `hud_sweep_speed`, `hud_sweep_length` | `"80"`, `"180"` | Integers: speed in px per second (10 to 400; the dots of a `panel` run 0.8 times as fast and the characters of a `matrix` fall 0.6 times as fast) and length along the line in px (40 to 600; the longest a glow of a `matrix` gets, which also decides how many fit on an edge). Keep the speed low: it reads as light moving along the frame, not as a spinner (Neon: `"70"`, a lap takes tens of seconds) |
+| `hud_glyph_color` | `"none"` | `"rgb(rrggbb)"` (hex digits, no `#`) or `"none"`: the colour of the characters of a glyph style such as `matrix`, for the falling rain, and of its lamps, with the heads and the glow of the characters derived from it (the heads are the same colour lightened). `"none"` gives them the colours of the outline and its glow. `matrix-hud` uses `"rgb(3cff28)"`, hue 114°, a yellower green than its teal outline, like the film's code. Styles without characters ignore it |
+| `hud_side_opacity` | `"1"` | Decimal from `"0"` to `"1"`: how visible the outline of a `panel` or `matrix` frame is down its left and right sides, its halo beside it with it; the corners fade between that and the top and the bottom edge's (`hud_edge_opacity`). Dim it where characters fall so that they stand out: `matrix-hud` uses `"0.1"`, almost unseen, and `"0"` draws no line there at all. `"1"` is as strong as the rest. The ring styles ignore it |
+| `hud_edge_opacity` | `"1"` | Decimal from `"0"` to `"1"`: the same along the top and the bottom edge of a `panel` or `matrix` frame. `"1"` is the full line; `matrix-hud` uses `"0.1"`, as dark as its sides, and `"0"` draws no line there at all (the lamps of a `matrix` and the underglow are not dimmed by it). The ring styles ignore it |
+| `hud_underglow` | `"0"` | Decimal from `"0"` to `"1"`: how bright a glow with no line is along the window's own top and bottom edge, fading out away from it, as if the light shone from under the window (an opaque window hides the half of it that lies under it, a see-through one shows it). `matrix-hud` uses `"0.3"`; `"0"` has none. The ring styles ignore it |
+| `hud_scanner` | `"0"` | `"0"` (none) or an integer from `"24"` to `"160"`: the width in px of a small animated scanner in the bottom right corner of every framed window, like the radar of a space game (a flat disc seen at a slant, three rings, the ship in the middle, an arm that sweeps round and lights the contacts it passes). In a `panel` frame the outline bulges out into a pod to hold it, in place of the bottom right cut, and the dots skirt the pod; elsewhere it stands in the corner of the window. It is painted over the window's content in the colors of the frame, so keep it small; it moves only in the focused window (the others show it dimmed, where it stopped), steps aside while the pointer is near it, and is left out of fullscreen and unframed windows and of windows smaller than five times its size. Its animation is a loop of 22 s whose frames are made once and shared by every window (about 10 MiB of GPU memory), which adds roughly 0.2 to 0.5 % of one CPU core while a window has focus. `amber-hud` uses `"72"` (about three quarters of an inch) |
+| `hud_scanner_blur` | `"true"` | `"true"` or `"false"`: whether the glass of the scanner's pod blurs what lies under it, as a translucent window does. It blurs only while the compositor's own blur (`decoration:blur:enabled`) is on and `xray` is off; with `"false"`, or without a pod, the glass is flat and more opaque, which also costs a little less. `amber-hud` uses `"true"` |
+
+Gradients use the same syntax as `border_active`: one or more `rgba(rrggbbaa)`
+stops and an optional angle, e.g. `"rgba(00f0ffb0) rgba(2f7bff80) 45deg"`.
+
+- The glow is painted inside the window edge, over its content. Keep it short
+  and translucent (Neon: 12 px on tiled windows, 24 px on floating ones, at most
+  69% alpha) so text near the edge stays readable.
+- Hyprland has one global glow range. To give floating windows a deeper glow
+  than tiled ones, set `hud_float_glow_range` above the style's reach; the
+  `smpl-hud` plugin then draws the deeper, brighter halo on floating windows.
+  Without the plugin, floating windows keep `glow_range`.
+- `border_animation = "true"` rotates the border gradient, and the glow
+  gradient on Hyprland 0.56+, continuously, which redraws every frame. Hyprland
+  alone starts the loop when a window opens, on every window, so windows that
+  are already open keep the static gradient until they are reopened. With
+  `smpl-hud` (`hud_frame = "true"`) only the focused window turns, whenever it
+  gets focus; a window that loses focus finishes the lap it is on and rests, and
+  a fullscreen window does not turn. The cost is that of one window, however many
+  are open.
+- Frame and glow are separate color roles. The border and the plugin's
+  outline, brackets and tabs use `border_active` / `border_inactive`; the
+  shadow, the inner glow and the halos around the outline use `shadow_color`
+  and `glow_color`. Pick a related but different hue for the glow (Neon: a
+  cyan-to-azure frame, a violet glow) so the two do not blend into one color.
+- `hud_frame = "true"` turns on `smpl-hud` (see "HUD frames" in the README
+  and the plugin's own README): an outline with a gradient glow, corner
+  brackets and edge tabs. It is a compositor-side window decoration, so it
+  follows its window with no lag. It reads these keys from the generated
+  `~/.config/hypr/theme.conf` and applies a change on the next Hyprland config
+  reload (`theme-set` triggers one). Neighbouring tiled outlines sit
+  `2 * (gaps_in + border) - 2 * hud_gap` apart, where `border` is `border_size`,
+  or 0 with `hud_hide_border`. Keep that larger than
+  `hud_line_width` or their lines touch, and at least `hud_line_width + 13` if
+  their halos (about 6 px beyond each line are clearly visible) should stay
+  separate; widen `gaps_in` to get there (Neon: `gaps_in = "18"` leaves 28 px).
+  A tiled window at the screen edge sits `gaps_out` from it, so keep `gaps_out`
+  at least as wide as the frame's reach (`hud_gap`, the line and its halo) or the
+  frame is cut off there. Floating windows have no such margin, so the plugin
+  keeps them on screen itself: when one opens, becomes floating or moves to
+  another workspace or monitor, it is moved in from the monitor's edge by the
+  frame's reach, and made smaller only if it cannot fit (a window you move or
+  resize yourself stays where you put it). A script that puts a window at a
+  position of its own, as the messenger toggle does, asks for the same with
+  `hyprctl smplhud fit <window address>` once it is done.
+- `hud_sweep = "true"` adds a soft glow that drifts along the focused window's
+  outline, in the outline's own colors, fading in over half a second when a
+  window gets focus and out when it loses it. It is one small sprite, rebuilt
+  about 20 times a second only while it moves and repainted only where it
+  moves, so it costs about one percent of one CPU core however many windows are
+  open, and next to no GPU time; it pauses while the focused window is hidden
+  or fullscreen. Keep `hud_sweep_speed` low (Neon: 70 px/s). It needs
+  `hud_frame = "true"`, and the outline's corner shape is the window's
+  (`rounding_power`: 1 chamfered, 2 circular, 4 and up squircle).
+- With `rounding_power = "1"` the windows themselves are octagons and the
+  outline follows them at a constant distance, so `hud_chamfer` only sets a
+  minimum cut; a larger one crosses the window's own corner cut. With square
+  windows (`rounding = "0"`) keep `hud_chamfer` at or below roughly
+  `2 * hud_gap - hud_line_width`, or the window's square corner pokes through
+  the outline's cut.
+- `app_rounding` (a non-negative integer, default `rounding`) is the circular
+  corner radius used where Hyprland does not clip: the rofi launcher and
+  dialogs, the Nemo quick preview and niri. Those cannot cut 45 degrees, so an
+  octagonal theme sets a tiny value (Neon: `app_rounding = "2"`) and keeps
+  their corners nearly square.
+- `neon/colors.toml` is a complete example: octagonal windows (`rounding = "42"`
+  for 20 px cuts, `rounding_power = "1.0"`, `app_rounding = "2"`), wide gaps
+  (`gaps_in = "18"`, `gaps_out = "24"`) so the glows stay separate, a
+  cyan-to-azure gradient frame, a violet shadow and gradient glow, and the HUD
+  frames in the `scifi` style.
+- The `panel` style draws a fixed polyline outline instead of rings: chamfered
+  corners, a notch and a step on the top edge, a raised line and a fading ghost
+  line along the bottom, a bigger cut at the bottom left and three circuit traces
+  ending in beads. While a window has focus (and `hud_sweep = "true"`), two dots
+  circle the outline in opposite directions and one dot bounces back and forth
+  along each trace, between the beads at its ends; a circling dot glows as it
+  nears a bouncing dot, and both glow as they near each other, as if about to
+  merge. With a `hud_scanner` the bottom right corner is not cut but bulges out
+  into a pod round the scanner (the window must be five times the scanner's size
+  for it), and the dots skirt the pod. The window itself stays a chamfered rectangle (`rounding`,
+  `rounding_power`); the shape lives in the lines around it, and the bottom-left
+  cut can only be as deep as the window's own corner cut, so raise `rounding` (and
+  `hud_gap`) for a bigger one. It needs room: keep `hud_gap` at 13 or more for
+  full notches (under 7 there are none), and know that a frame smaller than
+  480 × 160 logical px gets a plain chamfered outline with two dots. Keep
+  `border_animation = "false"` in a panel theme: a turning gradient recolours
+  every line, so the whole outline would be repainted at each step.
+  `amber-hud/colors.toml` is a complete example: Amber's text and accent colors on
+  warm near-black backgrounds at 0.85 opacity, `rounding = "42"` with
+  `rounding_power = "1.0"`, `gaps_in = "24"`, `hud_gap = "15"` (outlines 22 px
+  apart), `hud_line_width = "2"`, an amber gradient frame, and an orange glow.
+- The `matrix` style keeps the `panel`'s outline and nothing else of its line
+  work: **one line with its glow**. Give it a small `hud_gap` (`matrix-hud` uses
+  `"3"`, as close as a 2 px line gets) so that the outline hugs the window and is
+  a plain chamfered one; from 13 the notches of the `panel` come back (in a frame
+  of at least 480 × 160 logical px). Set `hud_hide_border = "true"` so Hyprland's
+  own border is not a second line, and turn Hyprland's glow and shadow off
+  (`glow = "false"`, `shadow_range = "0"`; `1` still draws a thin ring); the
+  plugin's halo, tinted by `glow_color`, is then the only glow, and
+  `hud_float_glow_range` widens it on floating windows. Matrix characters fall
+  down the left and right edges, top to bottom, in three columns on each side: the
+  first on the line itself, as if the characters slid along it, the second tucked
+  partly under it, beyond it and inside its glow, and the third under that, each
+  smaller, dimmer and softer than the one before (the second half as tall, the
+  third a third as tall, and the third only a faint haze), which makes them look
+  further and further away. Each fall is one bright head that glides smoothly
+  down, keeping its shape
+  for four or five rows before it turns into another, with a
+  fading tail of other characters behind it (a random length each time) and a
+  slight glow of its own; the characters come in three sizes and a range of
+  brightness. They fall as slowly as the lamps drift, so that they stay at the
+  edge of the eye. `hud_glyph_color` gives the characters and the lamps a colour
+  of their own (`rgb(rrggbb)`; the heads are it lightened), as `matrix-hud` does
+  with a green of hue 114° (`"rgb(3cff28)"`), yellower than its teal outline, like
+  the film's code; without it they take the outline's and the glow's colours.
+  `hud_side_opacity` is how visible the line is down the two sides where they fall
+  and `hud_edge_opacity` how visible it is along the top and the bottom
+  (`matrix-hud`: `"0.1"` for both, almost unseen, so that the characters and the
+  lamps are what the eye sees; the corners fade between the two); `"1"`, the
+  default, keeps the whole line. `hud_underglow` puts light back along the window's
+  own top and bottom edge, a soft glow with no line that fades out away from it, as
+  if it shone from under the window (`matrix-hud`: `"0.3"`; `"0"`, the default, has
+  none). An opaque window hides the half of it that lies under it and a
+  see-through one shows it.
+  Along the top and the bottom up to two ellipses of light per edge (the lamps)
+  drift slowly to and fro and pulse, in the colour of the
+  characters. Only the focused window moves, and `hud_sweep = "true"` drives all
+  of it (`"false"` leaves the outline and its halo); keep
+  `border_animation = "false"`. The three columns reach about 13 px from the
+  line, so they need room: the outlines of neighbouring windows have to be at
+  least about 26 px apart (`2 * gaps_in - 2 * hud_gap` with the border hidden;
+  `matrix-hud`: `gaps_in = "28"` leaves 50 px) and the screen's edge about 16 px
+  from the window (`gaps_out`; `matrix-hud`: `"34"`). The frame is drawn under the
+  window, so the part of the first column's characters that lies over the window
+  box (a fifth of each at a `hud_gap` of 3) is hidden by it. To have fewer columns
+  edit `glyphColumns` of the style in the plugin. Without the plugin the theme has no
+  border line at all. `matrix-hud/colors.toml` is a complete example: the Matrix
+  text, accent and status colors on a near-black green background at 0.85
+  opacity, a frame that shades from mint white through green to teal and a
+  deeper emerald-to-aqua glow so the two layers stay apart.
 
 ## 4) Generate theme files
 
@@ -224,7 +404,6 @@ theme-set <theme>
 
 - `app_theme_nvim`
 - `app_theme_vscode`
-- `app_theme_logseq`
 
 Then it resolves that theme ID from:
 
@@ -232,6 +411,9 @@ Then it resolves that theme ID from:
 2. `~/.local/share/smplos/themes/<id>` (stock)
 
 So one theme can reuse another theme's app presets without duplicating settings.
+Full OS updates reset overrides whose names match bundled themes after verified
+backups in `~/.local/state/smplos/theme-backups/`. Use a distinct name for a
+custom theme that should remain independent of stock updates.
 
 ---
 
@@ -243,7 +425,6 @@ So one theme can reuse another theme's app presets without duplicating settings.
 - `foot.ini` -- generated terminal palette (auto-derived from semantic names)
 - `neovim.lua` → app preset payload for LazyVim/Lazy.nvim colorscheme
 - `vscode.json` → app preset payload (theme name + extension/vsix)
-- `logseq-custom.css` → generated Logseq custom css layer
 - `nemo.css` → generated Nemo GTK controls and capability-gated backgrounds
 
 ### Nemo control and alpha checks
@@ -374,7 +555,7 @@ ARGB surfaces and undecorated windows in the native app repos.
 
 ### Stock palette audit
 
-All 18 themes set ordinary active/inactive, browser and messenger multipliers
+All 21 themes set ordinary active/inactive, browser and messenger multipliers
 equal to the native background intensity below. Native surfaces still receive
 compositor **1.0**, not this multiplier. Popup and terminal values are unchanged.
 
@@ -384,7 +565,7 @@ compositor **1.0**, not this multiplier. Popup and terminal values are unchanged
 | Frosted | 0.35 |
 | Tokyo Night | 0.70 |
 | Ethereal | 0.75 |
-| Everforest, Gruvbox, Hackerman, Kanagawa, Matte Black, Nord, Osaka Jade, Ristretto, Rose Pine | 0.85 |
+| Amber HUD, Everforest, Gruvbox, Hackerman, Kanagawa, Matrix HUD, Matte Black, Neon, Nord, Osaka Jade, Ristretto, Rose Pine | 0.85 |
 | Catppuccin Latte, Flexoki Light | 0.90 |
 | Amber, Grafium, Matrix | 1.0 (intentionally opaque) |
 
@@ -468,22 +649,14 @@ blur contrast/brightness/vibrancy controls are shared, not per-layer material
 properties. Vibrancy boosts saturation; zero disables that boost but is not
 desaturation. This material does not change those global controls.
 
-### Logseq data preservation during switching
+### Grafium and retired Logseq support
 
-`theme-set` merges only known dark/light and plugin theme fields in
-`preferences.json`, preserving graph/external lists, unrelated settings and
-other nested theme fields. Existing preferences receive a byte-verified
-`preferences.json.backup.*` preimage before publication. Invalid or unsupported
-JSON and symbolic links are left unchanged.
-
-There is no safe arbitrary-EDN merge helper in this checkout. Existing
-`config/config.edn` and custom CSS (global or graph-local) are never replaced
-by theme switching; missing files can be initialized. A skipped update emits
-a visible desktop warning and nonzero partial-failure status after the desktop
-theme applies. This deliberately leaves Logseq's previous custom theme intact
-rather than erasing unrelated user configuration. Updating existing Logseq CSS
-requires an explicit, backed-up manual merge; inline CSS is content, not a
-`file://` or `assets://` URL.
+Grafium follows the active theme automatically, including atomic theme-directory
+replacement; it does not need a separate app selector. Logseq is no longer
+bundled or configured by `theme-set`. Existing graphs, `~/.logseq`, graph-local
+configuration and Flatpak application data must remain untouched. Legacy
+`logseq-custom.css` and `app_theme_logseq` assets may remain in theme bundles
+but are ignored; do not revive the removed configuration-writing hooks.
 
 ### Native Frosted rendering
 

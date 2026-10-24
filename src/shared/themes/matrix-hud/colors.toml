@@ -1,0 +1,163 @@
+# Matrix HUD: the Matrix palette in a sci-fi panel frame. Near-black green glass
+# panels in octagonal windows, each wrapped in ONE green outline right at the
+# window's edge, with a soft glow on both sides of it. Matrix characters rain down
+# the left and right edges, outside the outline and inside its glow, and slow
+# ellipses of light drift along the top and the bottom (Hyprland effects and the
+# smpl-hud plugin; see "Window effects"). Hyprland's own border is hidden so the
+# outline is the only line: without the plugin the windows have no border line.
+
+# -- Backgrounds --
+background = "#020a04"
+bg_light = "#0D1A0D"
+bg_lighter = "#1A2E1A"
+surface = "#0D1A0D"
+
+# -- Foregrounds --
+foreground = "#00FF00"
+fg_dim = "#66FF66"
+fg_alt = "#00FF00"
+muted = "#55BB55"
+autosuggestion = "#4DDD4D"
+
+# -- Interactive --
+accent = "#00FF00"
+accent_alt = "#FF9900"
+cursor = "#66FF66"
+selection_foreground = "#020a04"
+selection_background = "#66FF66"
+
+# -- Status --
+danger = "#FF9900"
+success = "#00FF00"
+warning = "#FFCC33"
+info = "#33FFAA"
+
+# -- Bright Variants (terminal palette + btop gradients) --
+danger_bright = "#FFCC33"
+success_bright = "#66FF66"
+warning_bright = "#FFEE66"
+accent_bright = "#55FFAA"
+accent_alt_bright = "#FFBB33"
+info_bright = "#77FFCC"
+
+# -- Terminal Palette Overrides --
+# term_4 differs from accent for this theme
+term_4 = "#22BB55"
+
+# -- Decoration --
+# rounding_power 1 turns rounding into straight 45 degree cuts (legs of
+# rounding / 2 - 1 = 20 px): every window is an octagon, like the frame around it.
+rounding = "42"
+rounding_power = "1.0"
+# Rofi, the Nemo quick preview and niri can only round circularly: a small
+# radius keeps their corners nearly square, so Hyprland's cuts stay the corner shape.
+app_rounding = "2"
+blur_size = "12"
+blur_passes = "3"
+opacity_active = "0.85"
+opacity_inactive = "0.85"
+term_opacity_active = "0.80"
+term_opacity_inactive = "0.70"
+popup_opacity = "0.85"
+app_background_opacity = "0.85"
+messenger_opacity = "0.85"
+browser_opacity = "0.85"
+
+# -- Layout --
+# The outline hugs the window and the first column of characters rides on it, the
+# other two just beyond, so together they reach about 16 px from the window's edge:
+# neighbours are 2 * gaps_in = 56 px apart (Hyprland's own border is hidden, so
+# border_size adds nothing), room for the columns of both with some to spare, and
+# the outer gap leaves the columns and the halo room at the screen edge.
+# border_size is the width compositors without the frame (niri) draw; Hyprland
+# is given 0 because of hud_hide_border. border_active / border_inactive still
+# colour the outline.
+gaps_in = "28"
+gaps_out = "34"
+border_size = "2"
+border_active = "rgba(b8ffd0ff) rgba(1fe86aff) rgba(00c8b4ff) 45deg"
+border_inactive = "rgba(22a653cc) rgba(0f6a38cc) 45deg"
+
+# -- Window effects (Hyprland only; all optional, see CREATING_MODIFYING_A_THEME.md) --
+# The outline shades from mint white through green to teal along its diagonal
+# (border_active); the glow beside it is a deeper emerald to aqua (glow_color):
+# the same green palette, so the two read as separate layers. The smpl-hud plugin
+# draws that glow itself, 22 px on both sides of the line (a larger
+# hud_float_glow_range widens it on floating windows).
+# Hyprland's own shadow and glow are off on purpose: they are flat bands round
+# the window rectangle that ignore the corner cuts, and they would be a second glow
+# beside the outline. A shadow range of 0 draws nothing at all (1 still draws a
+# thin ring). glow_color keeps colouring the plugin's glow.
+shadow_range = "0"
+shadow_render_power = "2"
+shadow_color = "rgba(00c96488)"
+shadow_color_inactive = "rgba(00c96434)"
+glow = "false"
+glow_range = "10"
+glow_render_power = "3"
+glow_color = "rgba(00d48cb0) rgba(009cb880) 45deg"
+glow_color_inactive = "rgba(00d48c50)"
+# Off on purpose: the gradient stays put and the frame is animated by the falling
+# characters and the drifting glows instead. A turning gradient recolours the
+# outline at every step, and the plugin repaints all of it when it does.
+border_animation = "false"
+
+# -- HUD frames (smpl-hud Hyprland plugin; see CREATING_MODIFYING_A_THEME.md) --
+# Style "matrix": ONE outline and its glow, nothing else drawn as a line. It
+# follows the window's cut corners at hud_gap px from its edge, so with a gap this
+# small it is a plain chamfered outline; the notches and the step of a wider frame
+# are not drawn. The outline is the only line because Hyprland's own border is
+# hidden (hud_hide_border), and its glow is the plugin's halo, 22 px on both sides
+# of the line.
+# Matrix characters fall down the left and right edges in three columns on each: the
+# first on the line itself, as if they slid along it, the second tucked partly under
+# it, beyond it and inside its glow, and the third under that, each smaller, dimmer and
+# softer than the one before, which makes them look further and further away.
+# They fall from top to bottom and pause now and then, with a
+# slight glow of their own. A bright head slides smoothly down and keeps its shape
+# for four or five rows before it turns into another character; behind it a tail
+# of other, different characters fades out, each the one the head was a few rows
+# earlier. The characters come in three sizes and a range of brightness, so no two
+# look alike. Along the top and the bottom a few ellipses of light drift slowly to
+# and fro and pulse, in the green of the characters, inside the same glow.
+# Only the focused window moves (the rain falls as slowly as the glows drift,
+# which go at most hud_sweep_speed px/s, so it stays at the edge of the eye); the
+# others keep their outline and halo. All of it is
+# small cached sprites, repainted ~20 times a second only where something
+# changes, and only while the window is visible. hud_sweep = false turns the
+# rain and the ellipses off and leaves the outline.
+# hud_glyph_color is the green of the characters and of the ellipses, a yellower,
+# more natural one than the teal outline (hue 114 degrees, like the film's code);
+# the heads are the same green lightened. none gives them the colours of the line.
+# hud_side_opacity is how visible the outline is down the left and right edges, where
+# the characters fall: 0.1 leaves it almost unseen so that they dominate there, and
+# the corners fade between that and the line along the top and the bottom. The
+# halo beside it fades with it. 1 would bring the whole line back.
+# hud_edge_opacity is the same along the top and the bottom: 0.1 draws that line as
+# dark as the sides, and the lamps and the glow still pulse on it.
+# hud_underglow is a glow along the window's own top and bottom edge, with no line to
+# it, as if light spilled from under the window. It is seen beyond the window's edge
+# and, through the windows that are translucent, under it too. 0 has none.
+# hud_sweep_length is how long an ellipse is at most, which decides how many fit
+# on an edge (two at most).
+# hud_gap is how far the outline stands off the window; 3 is as close as a 2 px
+# line gets. A larger one brings the notches and the step back, at their full
+# depth from 13.
+hud_frame = "true"
+hud_hide_border = "true"
+hud_style = "matrix"
+hud_gap = "3"
+hud_line_width = "2"
+hud_chamfer = "10"
+hud_float_glow_range = "24"
+hud_sweep = "true"
+hud_sweep_speed = "60"
+hud_sweep_length = "180"
+hud_glyph_color = "rgb(3cff28)"
+hud_side_opacity = "0.1"
+hud_edge_opacity = "0.1"
+hud_underglow = "0.3"
+
+# -- App Theme Selectors --
+app_theme_nvim = "matrix"
+app_theme_vscode = "matrix"

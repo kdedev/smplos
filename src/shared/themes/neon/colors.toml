@@ -1,0 +1,117 @@
+# Neon: sci-fi HUD. Near-black navy panels in octagonal frames: glowing
+# cyan-to-azure gradient borders with a violet glow (Hyprland effects; see "Window effects").
+
+# -- Backgrounds --
+background = "#03121c"
+bg_light = "#0a2433"
+bg_lighter = "#103447"
+surface = "#0a2433"
+
+# -- Foregrounds --
+foreground = "#d6f5ff"
+fg_dim = "#8fd0e3"
+fg_alt = "#b8e8f5"
+muted = "#4e93a9"
+autosuggestion = "#4e93a9"
+
+# -- Interactive --
+accent = "#00f0ff"
+accent_alt = "#3f8cff"
+cursor = "#00f0ff"
+selection_foreground = "#03121c"
+selection_background = "#00f0ff"
+
+# -- Status --
+danger = "#ff4d6d"
+success = "#2dffb2"
+warning = "#ffd24a"
+info = "#8fe8ff"
+
+# -- Bright Variants (terminal palette + btop gradients) --
+danger_bright = "#ff8099"
+success_bright = "#7affcc"
+warning_bright = "#ffe488"
+accent_bright = "#7dfaff"
+accent_alt_bright = "#7fb1ff"
+info_bright = "#d0f7ff"
+
+# -- Terminal palette overrides --
+# accent/accent_alt are both blue-cyan, so pin ANSI blue/magenta/cyan to
+# distinct hues, and keep bright white brighter than white.
+term_4 = "#3f8cff"
+term_5 = "#a98bff"
+term_6 = "#00f0ff"
+term_12 = "#7fb1ff"
+term_13 = "#c9b6ff"
+term_14 = "#7dfaff"
+term_15 = "#eefcff"
+
+# -- Decoration --
+# rounding_power 1 turns rounding into straight 45 degree cuts (legs of
+# rounding / 2 - 1 = 20 px): every window is an octagon, like the HUD frame around it.
+rounding = "42"
+rounding_power = "1.0"
+# Rofi, the Nemo quick preview and niri can only round circularly: a small
+# radius keeps their corners nearly square, so Hyprland's cuts stay the corner shape.
+app_rounding = "2"
+blur_size = "12"
+blur_passes = "3"
+opacity_active = "0.85"
+opacity_inactive = "0.85"
+term_opacity_active = "0.80"
+term_opacity_inactive = "0.70"
+popup_opacity = "0.85"
+app_background_opacity = "0.85"
+messenger_opacity = "0.85"
+browser_opacity = "0.85"
+
+# -- Layout --
+# Wide gaps: neighbouring outlines sit 2 * (gaps_in + border_size) - 2 * hud_gap
+# = 28 px apart, enough for their halos to stay separate and read as glow.
+gaps_in = "18"
+gaps_out = "24"
+border_size = "2"
+border_active = "rgba(00f0ffff) rgba(2f7bffff) rgba(00f0ffff) 45deg"
+border_inactive = "rgba(0b8a9acc) rgba(0b3f66cc) 45deg"
+
+# -- Window effects (Hyprland only; all optional, see CREATING_MODIFYING_A_THEME.md) --
+# The frame (border, outline, brackets) is cyan to azure; the glow (shadow, inner
+# glow, halos around the outline) is violet to indigo: same cool palette, so the
+# two read as separate layers. The native glow is 12 px; the smpl-hud plugin draws
+# the halos around the outline, 14 px on tiled windows and hud_float_glow_range
+# on floating ones.
+shadow_range = "30"
+shadow_render_power = "2"
+shadow_color = "rgba(8a6bff88)"
+shadow_color_inactive = "rgba(8a6bff34)"
+glow = "true"
+glow_range = "12"
+glow_render_power = "3"
+glow_color = "rgba(a98bffb0) rgba(7b6bff80) 45deg"
+glow_color_inactive = "rgba(a98bff50)"
+# Rotating gradient. Costs GPU time per window. With the smpl-hud plugin only
+# the focused window turns it; without, it starts for windows opened after the
+# theme is applied.
+border_animation = "true"
+
+# -- HUD frames (smpl-hud Hyprland plugin; see CREATING_MODIFYING_A_THEME.md) --
+# Chamfered outline, corner brackets and tabs drawn just outside each window,
+# in the compositor, so they move with the window frame by frame. With
+# rounding_power 1 the outline stays concentric with the window's own cuts.
+# A soft ellipse of light drifts slowly around the focused window's outline
+# (about 70 px/s, so a lap takes tens of seconds), fading in and out as focus
+# comes and goes; it is a small cached sprite, repainted ~20 times a second
+# only where it moves, and only while that window is visible.
+hud_frame = "true"
+hud_style = "scifi"
+hud_gap = "6"
+hud_line_width = "3"
+hud_chamfer = "10"
+hud_float_glow_range = "24"
+hud_sweep = "true"
+hud_sweep_speed = "70"
+hud_sweep_length = "180"
+
+# -- App Theme Selectors --
+app_theme_nvim = "tokyo-night"
+app_theme_vscode = "tokyo-night"

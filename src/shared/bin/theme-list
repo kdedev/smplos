@@ -7,5 +7,5 @@ SMPLOS_PATH="${SMPLOS_PATH:-$HOME/.local/share/smplos}"
   find "$HOME/.config/smplos/themes/" -mindepth 1 -maxdepth 1 \( -type d -o -type l \) -not -name '_*' -printf '%f\n' 2>/dev/null
   find "$SMPLOS_PATH/themes/" -mindepth 1 -maxdepth 1 -type d -not -name '_*' -printf '%f\n' 2>/dev/null
 } | sort -u | while read -r name; do
-  echo "$name" | sed -E 's/(^|-)([a-z])/\1\u\2/g; s/-/ /g'
+  echo "$name" | sed -E 's/(^|-)([a-z])/\1\u\2/g; s/-/ /g; s/\bHud\b/HUD/g'
 done

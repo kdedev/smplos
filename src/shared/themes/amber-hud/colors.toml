@@ -1,0 +1,129 @@
+# Amber HUD: the Amber palette in a sci-fi panel frame. Near-black warm glass
+# panels in octagonal windows, each wrapped in a notched amber outline with
+# glowing circuit traces and dots that run along the lines (Hyprland effects and
+# the smpl-hud plugin; see "Window effects"). Without the plugin the windows
+# keep their glowing amber border.
+
+# -- Backgrounds --
+background = "#0a0603"
+bg_light = "#1A0F03"
+bg_lighter = "#2E1D0A"
+surface = "#1A0F03"
+
+# -- Foregrounds --
+foreground = "#FFA033"
+fg_dim = "#FFC266"
+fg_alt = "#FFA033"
+muted = "#C77F33"
+autosuggestion = "#D9933D"
+
+# -- Interactive --
+accent = "#FFA033"
+accent_alt = "#FFD24D"
+cursor = "#FFC266"
+selection_foreground = "#0a0603"
+selection_background = "#FFC266"
+
+# -- Status --
+danger = "#FF5A2C"
+success = "#FFB000"
+warning = "#FFCC33"
+info = "#FFBB4D"
+
+# -- Bright Variants (terminal palette + btop gradients) --
+danger_bright = "#FF7A44"
+success_bright = "#FFC266"
+warning_bright = "#FFEE66"
+accent_bright = "#FFC266"
+accent_alt_bright = "#FFDA66"
+info_bright = "#FFD699"
+
+# -- Terminal Palette Overrides --
+# term_4 differs from accent for this theme
+term_4 = "#CC7A2C"
+
+# -- Decoration --
+# rounding_power 1 turns rounding into straight 45 degree cuts (legs of
+# rounding / 2 - 1 = 20 px): every window is an octagon, like the frame around it.
+rounding = "42"
+rounding_power = "1.0"
+# Rofi, the Nemo quick preview and niri can only round circularly: a small
+# radius keeps their corners nearly square, so Hyprland's cuts stay the corner shape.
+app_rounding = "2"
+blur_size = "12"
+blur_passes = "3"
+opacity_active = "0.85"
+opacity_inactive = "0.85"
+term_opacity_active = "0.80"
+term_opacity_inactive = "0.70"
+popup_opacity = "0.85"
+app_background_opacity = "0.85"
+messenger_opacity = "0.85"
+browser_opacity = "0.85"
+
+# -- Layout --
+# The panel frame stands 15 px off the window, so the gaps are wide: neighbouring
+# outlines sit 2 * (gaps_in + border_size) - 2 * hud_gap = 22 px apart, enough
+# for their halos to stay separate, and the outer gap leaves the outline and
+# its traces room at the screen edge.
+gaps_in = "24"
+gaps_out = "34"
+border_size = "2"
+border_active = "rgba(ffc233ff) rgba(ff9a1fff) rgba(ffc233ff) 45deg"
+border_inactive = "rgba(b87a1ecc) rgba(6e430fcc) 45deg"
+
+# -- Window effects (Hyprland only; all optional, see CREATING_MODIFYING_A_THEME.md) --
+# The frame (border, outline, traces) is gold to amber; the glow (shadow, inner
+# glow, halos around the outline) is a deeper red-orange: the same warm palette,
+# so the two read as separate layers. The native glow is 10 px; the smpl-hud
+# plugin draws the halos around the outline, 9 px on tiled windows and
+# hud_float_glow_range on floating ones.
+shadow_range = "30"
+shadow_render_power = "2"
+shadow_color = "rgba(ff6a1a88)"
+shadow_color_inactive = "rgba(ff6a1a34)"
+glow = "true"
+glow_range = "10"
+glow_render_power = "3"
+glow_color = "rgba(ff7a2fb0) rgba(ff5a1f80) 45deg"
+glow_color_inactive = "rgba(ff7a2f50)"
+# Off on purpose: the gradients stay put and the frame is animated by the dots
+# and the travelling glow instead. A turning gradient recolours every piece of
+# the frame at each step, and the plugin repaints those pieces when it does.
+border_animation = "false"
+
+# -- HUD frames (smpl-hud Hyprland plugin; see CREATING_MODIFYING_A_THEME.md) --
+# Style "panel": a notched outline drawn just outside each window, in the
+# compositor, so it moves with the window frame by frame. The top and bottom
+# edges step in and out, a ghost line fades out along the bottom, three circuit
+# traces end in beads, and the bottom left corner is cut off. Windows that are
+# too small for all of that get a plain chamfered outline. Two dots circle the
+# outline in opposite directions and one bounces along each trace; a circling
+# dot glows as it nears a bouncing one, and both swell and brighten as they near
+# each other, brightest as they pass. A soft ellipse of light drifts slowly around the
+# focused window's outline (about 60 px/s, the dots 0.8 times as fast), fading
+# in and out as focus comes and goes. Both are small cached sprites, repainted
+# ~20 times a second only where they move, and only while the window is visible.
+# The scanner is a flat disc of rings in the bottom right corner of each window,
+# like the radar of a space game: a small ship at its heart, an arm that sweeps
+# round and lights up the contacts it passes. The outline bulges out round it to
+# make room, and the dots circling the outline skirt it. hud_scanner is the
+# width of its picture in px (0 for none, otherwise 24 to 160); it moves only in
+# the focused window. hud_scanner_blur makes its glass blur what is under it, as
+# long as the compositor's own blur is on; "false" leaves the glass clear.
+# hud_gap is how far the outline stands off the window: the notches need at least 13.
+hud_frame = "true"
+hud_style = "panel"
+hud_gap = "15"
+hud_line_width = "2"
+hud_chamfer = "10"
+hud_float_glow_range = "14"
+hud_sweep = "true"
+hud_sweep_speed = "60"
+hud_sweep_length = "180"
+hud_scanner = "72"
+hud_scanner_blur = "true"
+
+# -- App Theme Selectors --
+app_theme_nvim = "amber"
+app_theme_vscode = "amber"

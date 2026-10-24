@@ -14,6 +14,14 @@
 # case where the compositor thinks the output is already on and skips the
 # CRTC power write.
 #
+# Locking never wakes the display. When "turn monitor off" fires before the
+# lock timeout the monitors are already asleep and must stay asleep: Hyprland
+# accepts the session lock on DPMS-off outputs as they are, and wakes them on
+# the next key press or mouse move (misc:key_press_enables_dpms and
+# mouse_move_enables_dpms) with the lock surface already in place. An
+# unconditional "dpms on" here used to light the monitors up showing only the
+# lock-screen clock, and nothing turned them off again until the next input.
+#
 # Every step is logged to a persistent file so that, when the black-screen
 # bug DOES bite and the user has to hard-reboot, we can inspect what
 # actually ran after unlock. /tmp is tmpfs on Arch and gets wiped on boot,
@@ -27,12 +35,20 @@ if [[ -f "$LOG" ]] && [[ $(stat -c%s "$LOG" 2>/dev/null || echo 0) -gt 204800 ]]
     tail -c 102400 "$LOG" > "$LOG.tmp" && mv "$LOG.tmp" "$LOG"
 fi
 log() { printf '%s %s\n' "$(date '+%Y-%m-%d %H:%M:%S.%3N')" "$*" >> "$LOG"; }
+# Per-output power state for the log, e.g. "HDMI-A-1=off DP-3=on". Bounded so a
+# wedged compositor can never delay the lock.
+output_power_state() {
+    local state
+    state=$(timeout 2 hyprctl monitors 2>/dev/null | awk '
+        /^Monitor / { name = $2 }
+        /dpmsStatus:/ { printf "%s%s=%s", sep, name, ($2 == 1 ? "on" : "off"); sep = " " }')
+    echo "${state:-unknown}"
+}
 log "=== lock-screen invoked (pid $$, WAYLAND_DISPLAY=${WAYLAND_DISPLAY:-none}) ==="
 
 if [[ -n "$WAYLAND_DISPLAY" ]]; then
-    # Turn screen on first so the user sees the lock dialog
-    hyprctl dispatch "hl.dsp.dpms({state='on'})" 2>>"$LOG"
-    log "pre-lock dpms on -> exit $?"
+    # Observe only: sleeping monitors stay asleep (see the header).
+    log "outputs at lock: $(output_power_state)"
     # Launch hyprlock (skip if already running) — SYNCHRONOUS so we can
     # run post-unlock recovery below.
     if pidof hyprlock &>/dev/null; then

@@ -7,6 +7,7 @@ on:
       - "src/shared/bin/smplos-os-update"
       - "src/shared/bin/smplos-migrate"
       - "src/shared/bin/smplos-hypr-dpms"
+      - "src/shared/bin/lock-screen"
       - "src/shared/bin/smplos-session-services"
       - "src/shared/configs/systemd/**"
       - "src/shared/lib/smplos-hypridle*"
@@ -35,6 +36,7 @@ on:
       - "src/shared/bin/smplos-os-update"
       - "src/shared/bin/smplos-migrate"
       - "src/shared/bin/smplos-hypr-dpms"
+      - "src/shared/bin/lock-screen"
       - "src/shared/bin/smplos-session-services"
       - "src/shared/configs/systemd/**"
       - "src/shared/lib/smplos-hypridle*"
@@ -75,8 +77,9 @@ jobs:
           python3 -m unittest discover -s tests -p 'test_workspace_rollout.py' -v
           python3 -m unittest discover -s tests -p 'test_keypad.py' -v
           python3 -m unittest discover -s tests -p 'test_keypad_glass.py' -v
-          bash -n src/shared/bin/smplos-os-update src/shared/bin/smplos-migrate \
-            src/shared/bin/smplos-hypr-dpms src/shared/lib/smplos-hypridle.sh \
+          for script in src/shared/bin/smplos-os-update src/shared/bin/smplos-migrate \
+            src/shared/bin/smplos-hypr-dpms src/shared/bin/lock-screen \
+            src/shared/lib/smplos-hypridle.sh \
             migrations/20260707-210000-hypridle-legacy-dpms-syntax.sh \
             migrations/20260720-120000-enable-hypridle-service.sh \
             migrations/20260930-120000-preserve-idle-preferences.sh \
@@ -84,4 +87,6 @@ jobs:
             src/builder/build.sh src/build-iso.sh src/shared/installer/install.sh \
             src/shared/pkgbuilds/control-surface/PKGBUILD \
             migrations/20261007-123000-macro-keypad-support.sh \
-            migrations/20261009-010000-keypad-login-recovery.sh
+            migrations/20261009-010000-keypad-login-recovery.sh; do
+            bash -n "$script" || exit 1
+          done

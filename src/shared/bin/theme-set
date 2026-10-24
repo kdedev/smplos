@@ -3,8 +3,13 @@
 # Sets the active theme and regenerates all configs
 # Usage: theme-set <theme-name>
 
-if [[ -z ${1:-} ]]; then
-  echo "Usage: theme-set <theme-name>"
+THEME_SCOPE=all
+case "${1:-}" in
+  --core) THEME_SCOPE=core; shift ;;
+  --apps) THEME_SCOPE=apps; shift ;;
+esac
+if [[ -z ${1:-} && "$THEME_SCOPE" != apps ]]; then
+  echo "Usage: theme-set [--core] <theme-name> | theme-set --apps"
   exit 1
 fi
 
@@ -37,14 +42,41 @@ resolve_theme_path() {
 
 toml_get() {
   local file="$1" key="$2"
-  grep -E "^${key}[[:space:]]*=" "$file" 2>/dev/null | head -1 | sed 's/.*"\([^"]*\)".*/\1/'
+  awk -v key="$key" '$0 ~ ("^" key "[[:space:]]*=") {
+    n = split($0, parts, "\""); print n >= 3 ? parts[2] : $0; exit
+  }' "$file"
+}
+
+hyprland_request() {
+  local reply
+  reply=$(timeout 3 hyprctl "$@" 2>&1) || die "Hyprland request failed ($*): $reply"
+  [[ "$reply" == ok ]] || die "Hyprland request rejected ($*): $reply"
+}
+
+apply_hyprland_environment() {
+  [[ -n "${WAYLAND_DISPLAY:-}" && -n "${HYPRLAND_INSTANCE_SIGNATURE:-}" ]] || return 0
+  local probe probe_status=0 version
+  probe=$(timeout 3 hyprctl eval "assert(type(hl.env) == 'function')" 2>&1) || probe_status=$?
+  if [[ $probe_status -eq 0 && "$probe" == ok ]]; then
+    hyprland_request eval "hl.env('GTK_THEME', '$GTK_THEME'); hl.env('XCURSOR_THEME', '$_cursor_theme')"
+    return
+  fi
+  if [[ $probe_status -ne 0 || "$probe" != "eval is only supported with the lua config manager" ]]; then
+    version=$(timeout 3 hyprctl version 2>&1) || die "Cannot query running compositor: $version"
+    if [[ ! "$version" =~ ^Hyprland[[:space:]]v?0\.([0-9]+)\.([0-9]+)[[:space:]] ]] \
+        || (( 10#${BASH_REMATCH[1]} > 54 )); then
+      die "Unsupported/unavailable Hyprland environment API: $probe"
+    fi
+  fi
+  hyprland_request keyword env "GTK_THEME,$GTK_THEME"
+  hyprland_request keyword env "XCURSOR_THEME,$_cursor_theme"
 }
 
 # Normalize theme name: strip markup, lowercase, spaces to hyphens
-THEME_NAME=$(echo "$1" | sed -E 's/<[^>]+>//g' | tr '[:upper:]' '[:lower:]' | tr ' ' '-')
+THEME_NAME=$(echo "${1:-}" | sed -E 's/<[^>]+>//g' | tr '[:upper:]' '[:lower:]' | tr ' ' '-')
 
 # Resolve theme path (user themes take precedence)
-if ! THEME_PATH="$(resolve_theme_path "$THEME_NAME")"; then
+if [[ "$THEME_SCOPE" != apps ]] && ! THEME_PATH="$(resolve_theme_path "$THEME_NAME")"; then
   echo "Theme '$THEME_NAME' does not exist"
   exit 1
 fi
@@ -54,10 +86,14 @@ fi
 mkdir -p "$CURRENT_PATH" || die "Cannot create $CURRENT_PATH"
 exec 9>"$CURRENT_PATH/.theme-set.lock" || die "Cannot open theme lock"
 flock 9 || die "Cannot lock theme state"
-trap 'flock -u 9' EXIT
+mkdir -p "$HOME/.config/eww" || die "Cannot create EWW config directory"
+exec 8>"$HOME/.config/eww/.smplos-reload.lock" || die "Cannot open EWW publication lock"
+flock 8 || die "Cannot lock EWW publication"
+trap 'flock -u 8; flock -u 9' EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
 
+if [[ "$THEME_SCOPE" != apps ]]; then
 [[ -s "$THEME_PATH/colors.toml" ]] || die "Theme '$THEME_NAME' has no colors.toml"
 NEXT_THEME_PATH=$(mktemp -d "$CURRENT_PATH/.theme-set.XXXXXX") || die "Cannot stage theme"
 PREVIOUS_THEME_PATH="${NEXT_THEME_PATH}.previous"
@@ -93,7 +129,8 @@ fi
 rm -rf -- "$NEXT_THEME_PATH" || die "Cannot clean theme staging directory"
 
 # Link EWW theme colors into EWW config dir
-if [[ -f "$CURRENT_THEME_PATH/eww-colors.scss" ]]; then
+if [[ -f "$CURRENT_THEME_PATH/eww-colors.scss" ]] &&
+    ! cmp -s "$CURRENT_THEME_PATH/eww-colors.scss" "$HOME/.config/eww/theme-colors.scss"; then
   mkdir -p "$HOME/.config/eww"
   cp "$CURRENT_THEME_PATH/eww-colors.scss" "$HOME/.config/eww/theme-colors.scss.tmp" \
     && mv -f "$HOME/.config/eww/theme-colors.scss.tmp" "$HOME/.config/eww/theme-colors.scss" \
@@ -173,12 +210,6 @@ if [[ -f "$CURRENT_THEME_PATH/dunstrc.theme" ]]; then
   rm -f "$HOME/.config/dunst/dunstrc.active"
 fi
 
-# Link foot theme
-if [[ -f "$CURRENT_THEME_PATH/foot.ini" ]]; then
-  mkdir -p "$HOME/.config/foot"
-  cp "$CURRENT_THEME_PATH/foot.ini" "$HOME/.config/foot/theme.ini"
-fi
-
 # Link rofi theme (single file used by launcher + all dialogs)
 mkdir -p "$HOME/.config/rofi"
 if [[ -f "$CURRENT_THEME_PATH/smplos-launcher.rasi" ]]; then
@@ -187,12 +218,6 @@ fi
 
 # st (suckless terminal) -- colors applied at runtime via OSC escape sequences
 # No config file copy needed; theme-set-st reads colors.toml directly
-
-# Link btop theme
-if [[ -f "$CURRENT_THEME_PATH/btop.theme" ]]; then
-  mkdir -p "$HOME/.config/btop/themes"
-  cp "$CURRENT_THEME_PATH/btop.theme" "$HOME/.config/btop/themes/current.theme"
-fi
 
 # micro text editor — deploy colorscheme (reloads on next file open)
 if [[ -f "$CURRENT_THEME_PATH/micro.theme" ]]; then
@@ -254,20 +279,10 @@ theme-set-st || terminal_status=$?
 # Double Commander — regenerate colors.json from theme palette
 # theme-set-dc removed — DC replaced by Nemo (GTK3, live-reloads via gtk.css)
 
-# Foot terminal — reload via SIGUSR1 (if running)
-while read -r pid; do
-  kill -SIGUSR1 "$pid"
-done < <(pgrep -u "$UID" -x foot)
-
 # Dunst notification daemon
 if pgrep -x dunst >/dev/null; then
   dunstctl reload 2>/dev/null
 fi
-
-# btop — SIGUSR2 triggers config reload
-while read -r pid; do
-  kill -USR2 "$pid"
-done < <(pgrep -u "$UID" -x btop)
 
 # =========================================================================
 # APP-SPECIFIC THEMES — optional integrations
@@ -331,20 +346,45 @@ export GTK_THEME="$_gtk_env"
 mkdir -p "$HOME/.config/environment.d"
 printf 'GTK_THEME=%s\nXCURSOR_THEME=%s\n' "$_gtk_env" "$_cursor_theme" > "$HOME/.config/environment.d/gtk.conf"
 # Push to Hyprland + systemd so portal services see the change without reboot
-command -v hyprctl &>/dev/null && hyprctl setenv GTK_THEME "$GTK_THEME" 2>/dev/null || true
-command -v hyprctl &>/dev/null && hyprctl setenv XCURSOR_THEME "$_cursor_theme" 2>/dev/null || true
+apply_hyprland_environment
 systemctl --user import-environment GTK_THEME XCURSOR_THEME 2>/dev/null || true
 # Restart portal-gtk so it picks up the new GTK_THEME
 systemctl --user restart xdg-desktop-portal-gtk 2>/dev/null || true
+fi
+
+if [[ "$THEME_SCOPE" == core ]]; then
+  if (( terminal_status != 0 )); then
+    die "Theme '$THEME_NAME' applied, but terminal refresh failed; see errors above"
+  fi
+  echo "Core theme set to: $THEME_NAME"
+  exit 0
+elif [[ "$THEME_SCOPE" == apps ]]; then
+  THEME_NAME=$(cat "$CURRENT_PATH/theme.name") || die "Cannot read the active theme name"
+  [[ -s "$CURRENT_THEME_PATH/colors.toml" ]] || die "No active theme for app integration"
+  set -eo pipefail
+fi
+
+if [[ -f "$CURRENT_THEME_PATH/foot.ini" ]]; then
+  mkdir -p "$HOME/.config/foot"
+  cp "$CURRENT_THEME_PATH/foot.ini" "$HOME/.config/foot/theme.ini"
+fi
+if [[ -f "$CURRENT_THEME_PATH/btop.theme" ]]; then
+  mkdir -p "$HOME/.config/btop/themes"
+  cp "$CURRENT_THEME_PATH/btop.theme" "$HOME/.config/btop/themes/current.theme"
+fi
+while read -r pid; do
+  kill -SIGUSR1 "$pid"
+done < <(pgrep -u "$UID" -x foot)
+while read -r pid; do
+  kill -USR2 "$pid"
+done < <(pgrep -u "$UID" -x btop)
 
 # App-theme selectors live in colors.toml so each theme can point to any preset.
 # Defaults keep legacy behavior: use this theme's own app presets.
 NVM_PRESET="$(toml_get "$CURRENT_THEME_PATH/colors.toml" app_theme_nvim)"
 VSCODE_PRESET="$(toml_get "$CURRENT_THEME_PATH/colors.toml" app_theme_vscode)"
-LOGSEQ_PRESET="$(toml_get "$CURRENT_THEME_PATH/colors.toml" app_theme_logseq)"
 NVM_PRESET="${NVM_PRESET:-$THEME_NAME}"
 VSCODE_PRESET="${VSCODE_PRESET:-$THEME_NAME}"
-LOGSEQ_PRESET="${LOGSEQ_PRESET:-$THEME_NAME}"
 
 # Neovim — deploy lazy.nvim colorscheme spec from selected preset
 NVM_THEME_PATH="$(resolve_theme_path "$NVM_PRESET" 2>/dev/null || true)"
@@ -404,11 +444,11 @@ if [[ -n "${VSCODE_THEME_PATH:-}" && -f "$VSCODE_THEME_PATH/vscode.json" ]]; the
     if [[ -n "$vsix" && -f "$VSCODE_THEME_PATH/$vsix" ]]; then
       local _before _after
       _before=$("$cmd" --list-extensions 2>/dev/null | sort)
-      "$cmd" --install-extension "$VSCODE_THEME_PATH/$vsix" --force >/dev/null 2>&1 || true
+      "$cmd" --install-extension "$VSCODE_THEME_PATH/$vsix" --force || return 1
       _after=$("$cmd" --list-extensions 2>/dev/null | sort)
       [[ -n "$(comm -13 <(printf '%s' "$_before") <(printf '%s' "$_after"))" ]] && newly_installed=1
     elif [[ -n "$extension" ]] && ! "$cmd" --list-extensions 2>/dev/null | grep -Fxq "$extension"; then
-      "$cmd" --install-extension "$extension" >/dev/null 2>&1 || true
+      "$cmd" --install-extension "$extension" || return 1
       newly_installed=1
     fi
 
@@ -424,6 +464,7 @@ if [[ -n "${VSCODE_THEME_PATH:-}" && -f "$VSCODE_THEME_PATH/vscode.json" ]]; the
     # A freshly installed extension isn't loaded in the running window until it
     # reloads; do it automatically so the new theme actually renders.
     [[ "$newly_installed" -eq 1 ]] && _reload_editor_window "$wclass"
+    return 0
   }
 
   _set_vscode_theme "code"   "$HOME/.config/Code/User/settings.json"     "^code$"
@@ -440,153 +481,6 @@ if [[ -f "$HOME/.config/smplos/copilot-theme-sync.enabled" ]]; then
   fi
 fi
 
-# Logseq — switch theme via preferences.json + custom.css
-# Plugin themes are optional — enhance theming if plugins are installed
-logseq_status=0
-logseq_warning() {
-  echo "theme-set: Logseq: $*; existing user data is preserved" >&2
-  logseq_status=1
-}
-
-mkdir -p "$HOME/.logseq"
-_logseq_prefs="$HOME/.logseq/preferences.json"
-_lp="$HOME/.logseq/plugins"
-
-# Detect dark vs light from marker file
-_lq_mode=dark
-[[ -f "$CURRENT_THEME_PATH/light.mode" ]] && _lq_mode=light
-
-# Map smplOS theme names to Logseq plugin themes (only if plugins are installed)
-_lq_name="" _lq_css="" _lq_pid=""
-if [[ -d "$_lp" ]]; then
-  case "$LOGSEQ_PRESET" in
-    catppuccin)       _lq_name="Catppuccin Mocha"          _lq_css="$_lp/logseq-catppuccin/ctp-mocha.css"              _lq_pid=logseq-catppuccin ;;
-    catppuccin-latte) _lq_name="Catppuccin Latte"          _lq_css="$_lp/logseq-catppuccin/ctp-latte.css"              _lq_pid=logseq-catppuccin ;;
-    tokyo-night)      _lq_name="Tokyo Night"               _lq_css="$_lp/tokyo-night/tokyo.css"                        _lq_pid=tokyo-night ;;
-    everforest)       _lq_name="Everforest Dark Medium"    _lq_css="$_lp/logseq-everforest-theme/everforest-dark-medium.css" _lq_pid=logseq-everforest-theme ;;
-    rose-pine)        _lq_name="Rosé Pine Dawn"            _lq_css="$_lp/logseq-rose-pine-theme/src/rose-pine-dawn.css" _lq_pid=logseq-rose-pine-theme ;;
-    flexoki-light)    _lq_name="Flexoki Light"             _lq_css="$_lp/logseq-flexoki-theme/flexoki-theme.css"        _lq_pid=logseq-flexoki-theme ;;
-    hackerman)        _lq_name="Matrix AMOLED Dark"        _lq_css="$_lp/logseq-matrixamoled-theme/matrix.css"          _lq_pid=logseq-matrixamoled-theme ;;
-    matrix)           _lq_name="Matrix AMOLED Dark"        _lq_css="$_lp/logseq-matrixamoled-theme/matrix.css"          _lq_pid=logseq-matrixamoled-theme ;;
-    matte-black)      _lq_name="D42ker Logseq"             _lq_css="$_lp/logseq-d42ker-theme/custom.css"               _lq_pid=logseq-d42ker-theme ;;
-    gruvbox)          _lq_name="Everforest Dark Soft"      _lq_css="$_lp/logseq-everforest-theme/everforest-dark-soft.css" _lq_pid=logseq-everforest-theme ;;
-    kanagawa)         _lq_name="Rosé Pine"                 _lq_css="$_lp/logseq-rose-pine-theme/src/rose-pine.css"      _lq_pid=logseq-rose-pine-theme ;;
-    nord)             _lq_name="Rosé Pine Moon"            _lq_css="$_lp/logseq-rose-pine-theme/src/rose-pine-moon.css" _lq_pid=logseq-rose-pine-theme ;;
-    osaka-jade)       _lq_name="Everforest Dark Hard"      _lq_css="$_lp/logseq-everforest-theme/everforest-dark-hard.css" _lq_pid=logseq-everforest-theme ;;
-    ristretto)        _lq_name="Catppuccin Macchiato"      _lq_css="$_lp/logseq-catppuccin/ctp-macchiato.css"           _lq_pid=logseq-catppuccin ;;
-    ethereal)         _lq_name="Catppuccin Mocha"          _lq_css="$_lp/logseq-catppuccin/ctp-mocha.css"              _lq_pid=logseq-catppuccin ;;
-  esac
-fi
-
-if [[ -n "$_lq_pid" && -f "$_lq_css" ]]; then
-  _lq_url="assets://$_lq_css"
-else
-  _lq_name="" _lq_url="" _lq_pid=""
-fi
-
-update_logseq_preferences() {
-  local input="$_logseq_prefs" temporary backup=""
-  if [[ -L "$input" || ( -e "$input" && ( ! -f "$input" || ! -r "$input" ) ) ]]; then
-    logseq_warning "Cannot safely update $input"
-    return
-  fi
-  temporary=$(mktemp "${_logseq_prefs}.tmp.XXXXXX") || {
-    logseq_warning "Cannot stage preferences"
-    return
-  }
-  if [[ -f "$input" ]]; then
-    backup=$(mktemp "${_logseq_prefs}.backup.XXXXXX") || {
-      rm -f -- "$temporary"
-      logseq_warning "Cannot back up preferences"
-      return
-    }
-    if ! cp -p "$input" "$backup" || ! cmp -s "$input" "$backup" ||
-       ! chmod --reference="$backup" "$temporary"; then
-      rm -f -- "$temporary"
-      logseq_warning "Cannot verify preferences backup $backup"
-      return
-    fi
-    input="$backup"
-  else
-    input=/dev/stdin
-  fi
-  if ! jq -e --arg mode "$_lq_mode" --arg name "$_lq_name" \
-      --arg url "$_lq_url" --arg pid "$_lq_pid" '
-      if type != "object" or
-         (.theme != null and (.theme | type) != "object") or
-         (.themes != null and (.themes | type) != "object")
-      then error("unsupported Logseq preferences structure")
-      else
-        .theme = ((.theme // {}) | del(.name, .url, .pid) + {mode: $mode} +
-          (if $pid == "" then {} else {name: $name, url: $url, pid: $pid} end)) |
-        .themes = ((.themes // {}) + {mode: $mode}) |
-        if has("externals") then . else . + {externals: []} end
-      end' "$input" < <(printf '{}\n') > "$temporary"; then
-    rm -f -- "$temporary"
-    logseq_warning "Preferences merge failed"
-    return
-  fi
-  if [[ -n "$backup" ]]; then
-    if ! cmp -s "$backup" "$_logseq_prefs"; then
-      rm -f -- "$temporary"
-      logseq_warning "Preferences changed during merge"
-      return
-    fi
-    if cmp -s "$temporary" "$_logseq_prefs"; then
-      rm -f -- "$temporary"
-      return
-    fi
-  elif [[ -e "$_logseq_prefs" || -L "$_logseq_prefs" ]]; then
-    rm -f -- "$temporary"
-    logseq_warning "Preferences appeared during merge"
-    return
-  fi
-  if ! mv -f -- "$temporary" "$_logseq_prefs"; then
-    rm -f -- "$temporary"
-    logseq_warning "Cannot publish merged preferences"
-  fi
-}
-update_logseq_preferences
-
-# Do not replace a user's custom CSS or parse arbitrary EDN with text filters.
-install_logseq_css() {
-  local target="$1"
-  if [[ -e "$target" || -L "$target" ]]; then
-    cmp -s "$CURRENT_THEME_PATH/logseq-custom.css" "$target" ||
-      logseq_warning "Skipped custom CSS at $target"
-  elif ! (set -o noclobber; cat "$CURRENT_THEME_PATH/logseq-custom.css" > "$target"); then
-    logseq_warning "Cannot create custom CSS at $target"
-  fi
-}
-
-# Deploy Logseq theme CSS.
-# Logseq's add-style! embeds the :custom-css-url value as CSS *content* in a
-# data URL — it does NOT fetch it as a URL. So we must embed the CSS text
-# directly into config.edn's :custom-css-url field (not a file:// or assets:// URL).
-# Also write to any file-based graph dirs for live-reload via file watcher.
-if [[ -f "$CURRENT_THEME_PATH/logseq-custom.css" ]]; then
-  mkdir -p "$HOME/.logseq/config"
-  install_logseq_css "$HOME/.logseq/custom.css"
-
-  # Embed CSS content directly into config.edn as the :custom-css-url value.
-  # EDN strings: escape backslashes then double-quotes; collapse to single line.
-  _css_content=$(sed 's/\\/\\\\/g; s/"/\\"/g' "$CURRENT_THEME_PATH/logseq-custom.css" \
-                 | tr '\n' ' ' | sed 's/[[:space:]]\+/ /g')
-  _lq_global_cfg="$HOME/.logseq/config/config.edn"
-
-  if [[ -e "$_lq_global_cfg" || -L "$_lq_global_cfg" ]]; then
-    logseq_warning "Skipped inline CSS in $_lq_global_cfg (safe EDN merge unavailable)"
-  elif ! (set -o noclobber; printf '{:custom-css-url "%s"}\n' "$_css_content" > "$_lq_global_cfg"); then
-    logseq_warning "Cannot create inline CSS in $_lq_global_cfg"
-  fi
-
-  # Also write to any file-based graph's logseq/custom.css (live-reloaded by file watcher)
-  while IFS= read -r _lq_config; do
-    install_logseq_css "$(dirname "$_lq_config")/custom.css"
-  done < <(find "$HOME" -maxdepth 5 -name "config.edn" -path "*/logseq/config.edn" \
-             -not -path "$HOME/.logseq/*" 2>/dev/null)
-fi
-
 # Chromium / Brave -- full theme support
 # Generates a Chrome theme extension from colors.toml (no root required).
 # Browser toolbar/tab colors apply on next Brave launch.
@@ -599,8 +493,7 @@ _hex_to_rgb_array() {
 }
 
 _toml_color() {
-  grep "^${1}[[:space:]]*=" "$CURRENT_THEME_PATH/colors.toml" 2>/dev/null \
-    | head -1 | sed 's/.*"\(#[^"]*\)".*/\1/'
+  toml_get "$CURRENT_THEME_PATH/colors.toml" "$1"
 }
 
 _bg=$(      _toml_color background)
@@ -677,7 +570,7 @@ EOJSON
       -e '/^--force-dark-mode$/d' \
       -e '/^--enable-features=.*WebUIDarkMode/d' \
       -e '/^--load-extension=.*smplos\/brave-theme/d' \
-      "$flags_file" 2>/dev/null || true
+      "$flags_file"
 
     # Dark mode flags (controls browser chrome + forces sites dark)
     if $DARK_MODE; then
@@ -710,15 +603,7 @@ EOJSON
   fi
 fi
 
-if (( terminal_status != 0 )); then
+if (( ${terminal_status:-0} != 0 )); then
   die "Theme '$THEME_NAME' applied, but terminal refresh failed; see errors above"
-fi
-if (( logseq_status != 0 )); then
-  if command -v notify-send &>/dev/null; then
-    notify-send "Theme applied with warnings" \
-      "Desktop theme: $THEME_NAME. Logseq customization was preserved; some Logseq theme updates were skipped." ||
-      echo "theme-set: Cannot display Logseq theme warning" >&2
-  fi
-  die "Theme '$THEME_NAME' applied to the desktop, but Logseq integration is incomplete; see errors above"
 fi
 echo "Theme set to: $THEME_NAME"

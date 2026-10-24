@@ -354,12 +354,12 @@ as_invoker() { "$@"; }
     def test_every_update_rechecks_commands_even_without_new_commits(self):
         main = (BIN / "smplos-os-update").read_text().split("# ── Main", 1)[1].split("\n", 1)[1]
         stubs = """
-CHECK_ONLY=0; MIGRATE_ONLY=0; SCRIPTS_ONLY=0; QUIET=1
+CHECK_ONLY=0; MIGRATE_ONLY=0; SCRIPTS_ONLY=0; DEPLOY_ONLY=0; FINALIZE_ONLY=0; QUIET=1
 SELF_UPDATED=1; SELF_CANONICAL="$HOME/not-installed"
 pull_updates() { return 1; }
 sync_scripts() { :; }; sync_configs() { :; }; sync_themes() { :; }
 sync_apps() { :; }; sync_user_units() { :; }; run_migrations() { :; }; cleanup_shadow_bins() { :; }
-sync_keypad_support() { :; }
+sync_keypad_support() { :; }; sync_mouse_support() { :; }; sync_plugins() { :; }
 post_deploy() { :; }; rebuild-app-cache() { :; }
 """
         script = self.sync_script() + stubs + main
@@ -389,12 +389,12 @@ post_deploy() { :; }; rebuild-app-cache() { :; }
         # Run the real migration runner twice: successful and unrelated failure.
         self.env["SMPLOS_PATH"] = str(self.root)
         stubs = f"""
-CHECK_ONLY=0; MIGRATE_ONLY=0; SCRIPTS_ONLY=0; QUIET=1
+CHECK_ONLY=0; MIGRATE_ONLY=0; SCRIPTS_ONLY=0; DEPLOY_ONLY=0; FINALIZE_ONLY=0; QUIET=1
 SELF_UPDATED=1; SELF_CANONICAL="$HOME/not-installed"
 pull_updates() {{ return 1; }}
 sync_scripts() {{ :; }}; sync_configs() {{ :; }}; sync_themes() {{ :; }}
 sync_apps() {{ :; }}; sync_user_units() {{ :; }}; cleanup_shadow_bins() {{ :; }}
-sync_keypad_support() {{ :; }}
+sync_keypad_support() {{ :; }}; sync_mouse_support() {{ :; }}; sync_plugins() {{ :; }}
 post_deploy() {{ :; }}; rebuild-app-cache() {{ :; }}
 run_migrations() {{ bash "{BIN / 'smplos-migrate'}"; }}
 """
@@ -405,7 +405,7 @@ run_migrations() {{ bash "{BIN / 'smplos-migrate'}"; }}
         self.config.write_text(CUSTOM)
         result = self.run_shell(script, check=False)
         self.assertNotEqual(result.returncode, 0)
-        self.assertIn("idle reconciliation was attempted", result.stderr)
+        self.assertIn("desktop reconciliation was attempted", result.stderr)
         self.assertEqual(self.config.read_text(), MIGRATE.migrate(CUSTOM))
         self.assertFalse(self.pending.exists())
 
@@ -442,13 +442,13 @@ run_migrations() {{ bash "{BIN / 'smplos-migrate'}"; }}
         self.env["LIB_DEST"] = str(self.root / "installed-libs")
         script = r"""
 set -euo pipefail
-ok() { :; }; warn() { echo "$*" >&2; }
+ok() { :; }; warn() { echo "$*" >&2; }; die() { echo "$*" >&2; exit 1; }
 sudo() {
-    [[ "$1" == mkdir || "$1" == install ]] || return 99
+    [[ "$1" == mkdir || "$1" == install || "$1" == mktemp || "$1" == mv || "$1" == rm ]] || return 99
     [[ "${@: -1}" == "$LIB_DEST" || "${@: -1}" == "$LIB_DEST/"* ]] || return 99
     "$@"
 }
-""" + function("sync_libs").replace(
+""" + function("install_system_file") + function("sync_libs").replace(
             'local dest_dir="/usr/local/lib/smplos"', 'local dest_dir="$LIB_DEST"'
         ) + "\nsync_libs\n"
         self.run_shell(script)
@@ -529,6 +529,212 @@ sudo() {
         self.assertIn("cannot parse", result.stderr)
 
 
+class IdleSettingsContractTests(unittest.TestCase):
+    """The shipped hypridle.conf must stay editable by Settings -> Power.
+
+    The editor (smpl-os/smpl-apps, settings/src/power.rs) rewrites this file in
+    place and refuses anything it cannot reason about, reporting only a generic
+    save failure. A stock change outside its grammar therefore breaks the Power
+    page on every install while both repositories' own tests stay green. The
+    rules below mirror the editor's (wake_chain() and classify()); change both
+    sides together.
+    """
+
+    STOCK = ROOT / "src/compositors/hyprland/hypr/hypridle.conf"
+    LOCK_PREFIX = "loginctl lock-session; sleep 0.5; "
+    LUA_ON = "hyprctl dispatch \"hl.dsp.dpms({state='on'})\""
+    LUA_OFF = "hyprctl dispatch \"hl.dsp.dpms({state='off'})\""
+    DPMS_ON = ("smplos-hypr-dpms on", "hyprctl dispatch dpms on", LUA_ON)
+    DPMS_OFF = ("smplos-hypr-dpms off", "hyprctl dispatch dpms off", LUA_OFF)
+    ROWS = {
+        "loginctl lock-session": "lock",
+        "hyprlock": "lock",
+        "pidof hyprlock || hyprlock": "lock",
+        "lock-screen": "lock",
+        "pidof hyprlock || lock-screen": "lock",
+        "systemctl suspend": "suspend",
+        "systemctl poweroff": "shutdown",
+    }
+    FIX = "extend wake_chain()/classify() in smpl-apps settings/src/power.rs and release Settings first"
+
+    @staticmethod
+    def blocks(text):
+        blocks, current = [], None
+        for raw in text.splitlines():
+            line = raw.split("#", 1)[0].strip()
+            if line.endswith("{"):
+                current = (line[:-1].strip(), {})
+                blocks.append(current)
+            elif line == "}":
+                current = None
+            elif current and "=" in line:
+                key, value = line.split("=", 1)
+                current[1][key.strip()] = value.strip()
+        return blocks
+
+    @classmethod
+    def editable_wake(cls, command):
+        steps = [step.strip() for step in command.split(";")]
+        known = lambda s: s in cls.DPMS_ON or s == "hyprctl reload" or re.fullmatch(r"sleep (?:\d+\.?\d*|\.\d+)", s)
+        return any(s in cls.DPMS_ON for s in steps) and all(known(s) for s in steps)
+
+    @classmethod
+    def settings_row(cls, command):
+        command = command.removeprefix("systemd-detect-virt -q || ")
+        return "screen off" if command in cls.DPMS_OFF else cls.ROWS.get(command)
+
+    def test_stock_general_block_is_editable(self):
+        general = [fields for name, fields in self.blocks(self.STOCK.read_text()) if name == "general"]
+        self.assertEqual(len(general), 1)
+        fields = general[0]
+        self.assertIn("lock_cmd", fields)
+        self.assertIn(fields.get("before_sleep_cmd", ""), ("", "loginctl lock-session"), self.FIX)
+        after = fields.get("after_sleep_cmd", "")
+        wake = after.removeprefix(self.LOCK_PREFIX)
+        self.assertTrue(not wake or self.editable_wake(wake), f"{after!r}: {self.FIX}")
+
+    def test_stock_listeners_each_map_to_one_settings_row(self):
+        rows = []
+        for name, fields in self.blocks(self.STOCK.read_text()):
+            if name == "listener":
+                self.assertGreater(int(fields.get("timeout", "0")), 0)
+                command = fields.get("on-timeout", "")
+                row = self.settings_row(command)
+                self.assertIsNotNone(row, f"{command!r}: {self.FIX}")
+                rows.append(row)
+        self.assertEqual(len(rows), len(set(rows)), rows)
+
+    def test_stock_comments_never_state_a_timeout(self):
+        stated = [
+            line for line in self.STOCK.read_text().splitlines()
+            if re.search(r"\d\s*min", line.partition("#")[2])
+        ]
+        self.assertEqual(stated, [], "Settings changes the timeouts but never the comments, so they go stale")
+
+    def test_every_shape_ever_shipped_stays_editable_through_migration(self):
+        chain = lambda on: f"{on}; sleep 0.2; hyprctl reload; sleep 0.2; {on}"
+        wakes = ("hyprctl dispatch dpms on", self.LUA_ON, chain(self.LUA_ON), "smplos-hypr-dpms on", chain("smplos-hypr-dpms on"))
+        for wake in wakes:
+            for prefix in ("", self.LOCK_PREFIX):
+                with self.subTest(wake=wake, relock=bool(prefix)):
+                    self.assertTrue(self.editable_wake(wake))
+                    migrated = MIGRATE.migrate(f"    after_sleep_cmd = {prefix}{wake}\n")
+                    value = migrated.split("=", 1)[1].strip().removeprefix(self.LOCK_PREFIX)
+                    self.assertTrue(self.editable_wake(value), migrated)
+
+    def test_custom_wake_steps_are_outside_the_editor_grammar(self):
+        for wake in (
+            "notify-send hi; smplos-hypr-dpms on",
+            "hyprctl reload",
+            "smplos-hypr-dpms on;",
+            "smplos-hypr-dpms on; sleep abc",
+            "smplos-hypr-dpms on && reboot",
+            "smplos-hypr-dpms on; sleep $(reboot)",
+        ):
+            with self.subTest(wake=wake):
+                self.assertFalse(self.editable_wake(wake))
+
+
+class LockScreenTests(unittest.TestCase):
+    """Locking must never wake a display that is asleep.
+
+    "Turn monitor off" shorter than the lock timeout used to be undone by
+    lock-screen: its unconditional pre-lock `dpms on` lit the monitors with only
+    the lock clock on them, and nothing switched them off again until the next
+    input. Hyprland locks DPMS-off outputs as they are and wakes them on the
+    next key press or mouse move, so the wake was never needed.
+
+    hyprctl, hyprlock, pidof and sleep are stubs and the Hyprland variables are
+    dropped, so nothing here can reach the real session.
+    """
+
+    SCRIPT = BIN / "lock-screen"
+    ON = "hl.dsp.dpms({state='on'})"
+    OFF = "hl.dsp.dpms({state='off'})"
+    STUBS = {
+        "hyprctl": textwrap.dedent("""\
+            #!/bin/bash
+            echo "hyprctl $*" >> "$CALLS"
+            if [[ $1 == monitors ]]; then
+                [[ -n $HANG ]] && exec tail -f /dev/null
+                cat "$MONITORS"
+                exit "${MONITORS_RC:-0}"
+            fi
+            echo ok
+            """),
+        "hyprlock": '#!/bin/bash\necho hyprlock >> "$CALLS"\n',
+        "pidof": '#!/bin/bash\nexit "${PIDOF_RC:-1}"\n',
+        "sleep": "#!/bin/bash\n",
+    }
+
+    @staticmethod
+    def monitors(power):
+        return "".join(
+            f"Monitor {name} (ID {i}):\n\t1920x1080@60.00 at 0x0\n\tdpmsStatus: {int(on)}\n\n"
+            for i, (name, on) in enumerate(power.items()))
+
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        root = Path(self.temp.name)
+        stubs = root / "bin"
+        stubs.mkdir()
+        for name, body in self.STUBS.items():
+            (stubs / name).write_text(body)
+            (stubs / name).chmod(0o755)
+        self.calls = root / "calls"
+        self.listing = root / "monitors"
+        self.log = root / "cache/smplos/lock-screen.log"
+        inherited = {k: v for k, v in os.environ.items() if k not in ("HYPRLAND_INSTANCE_SIGNATURE", "DISPLAY")}
+        self.env = dict(inherited, PATH=f"{stubs}:{os.environ['PATH']}", HOME=str(root / "home"),
+                        XDG_CACHE_HOME=str(root / "cache"), WAYLAND_DISPLAY="wayland-test",
+                        CALLS=str(self.calls), MONITORS=str(self.listing))
+
+    def lock(self, power, **env):
+        self.calls.write_text("")
+        self.listing.write_text(self.monitors(power))
+        result = subprocess.run(["bash", str(self.SCRIPT)], env=dict(self.env, **env),
+                                capture_output=True, text=True, timeout=30)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        return self.calls.read_text().splitlines()
+
+    def test_sleeping_displays_are_not_woken_before_the_lock(self):
+        for label, power, env in (
+            ("all asleep", {"HDMI-A-1": False, "DP-3": False}, {}),
+            ("one asleep", {"HDMI-A-1": True, "DP-3": False}, {}),
+            ("all awake", {"HDMI-A-1": True, "DP-3": True}, {}),
+            ("state unreadable", {}, {"MONITORS_RC": "1"}),
+        ):
+            with self.subTest(label):
+                calls = self.lock(power, **env)
+                self.assertEqual(calls.count("hyprlock"), 1, calls)
+                woken = [c for c in calls[:calls.index("hyprlock")] if "dpms" in c]
+                self.assertEqual(woken, [])
+
+    def test_unlock_recovery_still_cycles_the_display(self):
+        calls = self.lock({"DP-3": False})
+        self.assertEqual(calls[calls.index("hyprlock") + 1:], [
+            f"hyprctl dispatch {self.OFF}", f"hyprctl dispatch {self.ON}",
+            "hyprctl reload", f"hyprctl dispatch {self.ON}"])
+
+    def test_a_running_lock_is_not_launched_again(self):
+        self.assertNotIn("hyprlock", self.lock({"DP-3": False}, PIDOF_RC="0"))
+
+    def test_log_records_which_outputs_were_asleep(self):
+        self.lock({"HDMI-A-1": False, "DP-3": True})
+        self.assertIn("outputs at lock: HDMI-A-1=off DP-3=on", self.log.read_text())
+
+    def test_unreadable_output_state_is_logged_and_never_blocks_the_lock(self):
+        calls = self.lock({}, MONITORS_RC="1")
+        self.assertIn("outputs at lock: unknown", self.log.read_text())
+        self.assertIn("hyprlock", calls)
+
+    def test_a_hung_compositor_query_only_delays_the_lock_briefly(self):
+        calls = self.lock({"DP-3": False}, HANG="1")
+        self.assertIn("outputs at lock: unknown", self.log.read_text())
+        self.assertIn("hyprlock", calls)
+
+
 if __name__ == "__main__":
     unittest.main()
 
@@ -563,7 +769,8 @@ class SessionServicesTests(unittest.TestCase):
             json.dump(state, open(path, "w"))
         if args[0] == "is-active":
             if args[-1].endswith(".device"):
-                sys.exit(0 if state.get("keypad") else 3)
+                device = {"smplos-keypad.device": "keypad", "smplos-mouse.device": "mouse"}.get(args[-1])
+                sys.exit(0 if device and state.get(device) else 3)
             sys.exit(0 if state["graphical"] else 3)
         if args[0] == "stop":
             if args[1] == "graphical-session.target":
@@ -579,7 +786,7 @@ class SessionServicesTests(unittest.TestCase):
                 sys.exit(1)
             state["graphical"] = True
             for name, unit in units.items():
-                if name == "control-surface.service":
+                if name in ("control-surface.service", "mouse-remap.service"):
                     continue  # device-bound, not enabled for the target
                 if unit.get("oneshot"):
                     unit["completed"] = name not in broken
@@ -593,6 +800,14 @@ class SessionServicesTests(unittest.TestCase):
                     state["keypad"] = False
                 if state.get("keypad_failures", 0):
                     state["keypad_failures"] -= 1
+                    unit["active"] = False
+                    save()
+                    sys.exit(1)
+            if args[1] == "mouse-remap.service":
+                if os.environ.get("UNPLUG_MOUSE_ON_RESTART"):
+                    state["mouse"] = False
+                if state.get("mouse_failures", 0):
+                    state["mouse_failures"] -= 1
                     unit["active"] = False
                     save()
                     sys.exit(1)
@@ -639,12 +854,13 @@ class SessionServicesTests(unittest.TestCase):
                         SMPLOS_SESSION_SETTLE="0", SMPLOS_SESSION_RETRY="0")
 
     def run_login(self, graphical=False, start_fails=0, skip=(), extra_units=None,
-                  keypad=False, keypad_failures=0, **env):
+                  keypad=False, keypad_failures=0, mouse=False, mouse_failures=0, **env):
         units = {u: {"active": False, "skip": u in skip}
                  for u in ("hypridle.service", "voxtype.service", "xr-glasses.service")}
         units.update(extra_units or {})
         self.state.write_text(json.dumps({"graphical": graphical, "start_fails": start_fails, "units": units,
-                                         "keypad": keypad, "keypad_failures": keypad_failures}))
+                                         "keypad": keypad, "keypad_failures": keypad_failures,
+                                         "mouse": mouse, "mouse_failures": mouse_failures}))
         result = subprocess.run(["bash", str(self.SCRIPT)], env=dict(self.env, **env),
                                 capture_output=True, text=True, timeout=20)
         calls = self.calls.read_text().splitlines()
@@ -767,6 +983,62 @@ class SessionServicesTests(unittest.TestCase):
         result, calls = self.run_login()
         self.assertEqual(result.returncode, 0)
         self.assertFalse([call for call in calls if "control-surface.service" in call])
+        self.assertFalse([call for call in calls if "mouse-remap.service" in call])
+
+    def test_mouse_coldplug_is_separate_from_the_keypad_and_follows_environment_import(self):
+        result, calls = self.run_login(mouse=True, extra_units={
+            "mouse-remap.service": {"active": False}})
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertLess(calls.index("start smplos-session.target"),
+                        calls.index("reset-failed mouse-remap.service"))
+        self.assertEqual(calls.count("restart mouse-remap.service"), 1)
+        self.assertIn("show mouse-remap.service -p ActiveState --value", calls)
+        self.assertFalse([call for call in calls if "control-surface.service" in call])
+        self.assertFalse(self.notified.exists())
+
+    def test_mouse_and_keypad_are_each_recovered_when_both_are_present(self):
+        result, calls = self.run_login(mouse=True, keypad=True, extra_units={
+            "mouse-remap.service": {"active": False}, "control-surface.service": {"active": False}})
+        self.assertEqual(result.returncode, 0, result.stderr)
+        for service in ("mouse-remap.service", "control-surface.service"):
+            self.assertEqual(calls.count(f"restart {service}"), 1)
+
+    def test_mouse_failure_is_retried_and_reported_including_missing_binary(self):
+        for skip in (False, True):
+            with self.subTest(skip=skip):
+                self.calls.unlink(missing_ok=True)
+                self.notified.unlink(missing_ok=True)
+                (self.root / "state/smplos/session-services.failed").unlink(missing_ok=True)
+                result, calls = self.run_login(mouse=True, extra_units={
+                    "mouse-remap.service": {"active": False, "skip": skip}},
+                    BROKEN="mouse-remap.service")
+                self.assertEqual(result.returncode, 1)
+                self.assertIn("stop mouse-remap.service", calls)
+                self.assertIn("Mouse button remapping", self.notified.read_text())
+                if skip:
+                    self.assertIn("mouse remapper unavailable", self.notified.read_text())
+
+    def test_mouse_transient_failure_recovers_and_unplug_is_not_a_failure(self):
+        result, calls = self.run_login(mouse=True, mouse_failures=1, extra_units={
+            "mouse-remap.service": {"active": False}})
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(calls.count("restart mouse-remap.service"), 2)
+        self.calls.unlink()
+        result, calls = self.run_login(mouse=True, extra_units={
+            "mouse-remap.service": {"active": False}}, UNPLUG_MOUSE_ON_RESTART="1")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertNotIn("stop mouse-remap.service", calls)
+        self.assertFalse(self.notified.exists())
+
+    def test_verification_does_not_interrupt_the_running_mouse_remapper(self):
+        self.run_login(mouse=True, extra_units={"mouse-remap.service": {"active": True}})
+        self.calls.unlink()
+        result = subprocess.run(["bash", str(self.SCRIPT), "--verify"], env=self.env,
+                                capture_output=True, text=True, timeout=20)
+        calls = self.calls.read_text().splitlines()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("show mouse-remap.service -p ActiveState --value", calls)
+        self.assertNotIn("restart mouse-remap.service", calls)
 
     def test_transient_keypad_start_failure_recovers_but_persistent_failure_reports(self):
         result, calls = self.run_login(keypad=True, keypad_failures=1, extra_units={
