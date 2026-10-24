@@ -437,11 +437,16 @@ nearest built-in substitute. Light/dark variant follows `light.mode`;
 background-only opacity follows `app_background_opacity`, then explicit
 `popup_opacity`, then 1.0. Foreground colors stay opaque.
 
-This interface is currently verified only with the coordinated OpenChamber
-prototype; the installed stock app does not yet support it. Live background
-alpha additionally requires the compatible fork's Linux frameless desktop
-launcher to enable its native transparent window. The adapter neither restarts
-nor launches the app, and does not change that environment globally. Hyprland treats
+The compatible fork release is
+[OpenChamber 2.5.2](https://github.com/KonTy/openchamber/releases/tag/v2.5.2),
+with Linux packages for Arch, Ubuntu and Nobara. Its packaged two-window
+integration was verified with the actual bridge through Amber, Catppuccin and
+back, including native alpha 1.0, 0.5 and 1.0. Older/upstream builds without
+the protocol are rejected before file changes. Live background alpha requires
+the fork's Linux frameless desktop launcher to enable its native transparent
+window; framed and explicitly opaque launches cannot apply translucent themes.
+The adapter neither restarts nor launches the app, and does not change that
+environment globally. Hyprland treats
 `openchamber` as self-managed alpha so compositor fading cannot dim its text.
 
 Before backing up settings or publishing a theme file, the bridge requests

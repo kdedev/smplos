@@ -74,6 +74,19 @@ is rejected. Each HTTP request allows 15 seconds for the app's 10-second bound.
 Failure after publication can be partial and must remain explicitly unconfirmed.
 Do not infer compositor properties from renderer acknowledgment.
 
+The first compatible published app is
+[KonTy/openchamber v2.5.2](https://github.com/KonTy/openchamber/releases/tag/v2.5.2),
+source `506a35feeabd4dfb95917bf533cb1ceb6332aff9`, built and tested by
+[Linux release workflow 40133651791](https://github.com/KonTy/openchamber/actions/runs/40133651791).
+Its public `provenance.json` and `SHA256SUMS` identify the independent packages;
+the bridge does not download them. Packaged isolated two-window runs exercised
+the actual bridge through Amber, Catppuccin and Amber, checked exact palette,
+alpha, acknowledgments and durable selection, and rejected translucent themes
+before writes on framed/explicitly opaque launches. Bearer-only local control
+was verified with UI password authentication still enabled. Native readiness
+and renderer CSS were checked; compositor output remains unmeasured by these
+packaged tests.
+
 Normal script synchronization installs `theme-set-openchamber` alongside
 `theme-set`, and normal Hyprland config synchronization delivers the native-alpha
 tag in both `windows.lua` and `windows.conf`. The existing final opacity policy
