@@ -401,6 +401,42 @@ theme-set catppuccin     # or: dracula, nord, gruvbox, rose-pine, ...
 
 Or open the theme picker from the start menu's Settings tab.
 
+#### OpenChamber live themes (requires a compatible OpenChamber build)
+
+`theme-set-openchamber` translates the active `colors.toml` into an OpenChamber
+custom theme named `smplos-<theme>`, then uses the local `theme.set` control API
+to notify its windows. Amber keeps its actual black/orange palette, not a
+nearest built-in substitute. Light/dark variant follows `light.mode`;
+background-only opacity follows `app_background_opacity`, then explicit
+`popup_opacity`, then 1.0. Foreground colors stay opaque.
+
+This interface is currently verified only with the coordinated OpenChamber
+prototype; the installed stock app does not yet support it. Live background
+alpha additionally requires a Linux frameless window launched with
+`OPENCHAMBER_TRANSPARENT_WINDOW=1`. The adapter neither restarts nor launches
+the app, and does not change that environment globally. Hyprland treats
+`openchamber` as self-managed alpha so compositor fading cannot dim its text.
+
+The helper runs in `theme-set`'s optional app stage, including the existing
+**Super+Shift+T** picker path. It discovers the local port and optional client
+token read-only from `$OPENCHAMBER_DATA_DIR/settings.json`, defaulting to
+`~/.config/openchamber/settings.json`. No installed config means no work.
+For an isolated instance, `~/.config/smplos/openchamber-data-dirs` can list
+absolute data directories, one per line (blank lines and `#` comments allowed).
+That list **replaces** the default target, so a demo need not touch the real app.
+Remove the override after the demo.
+
+Only custom themes with the `smplos-` prefix are written. Existing matching
+files and settings receive verified, private backups under
+`~/.local/state/smplos/openchamber-theme-backups/` before publication or the
+API request. Other themes, sessions and settings are not edited by the helper;
+OpenChamber saves the selected theme through its own API. Generated themes
+remain visible in its Settings. API refusal, unsupported versions and missing
+windows warn without blocking other integrations. Delivery acknowledgment
+alone does not prove rendering; the app must understand both the custom-theme
+format and `config.backgroundOpacity`. Zero background opacity is unsupported
+by this interface and is reported rather than silently changed.
+
 #### Copilot desktop theme sync (experimental, opt-in)
 
 `theme-set-copilot` maps the active smplOS theme to a built-in GitHub Copilot

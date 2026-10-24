@@ -472,6 +472,12 @@ if [[ -n "${VSCODE_THEME_PATH:-}" && -f "$VSCODE_THEME_PATH/vscode.json" ]]; the
   _set_vscode_theme "cursor" "$HOME/.config/Cursor/User/settings.json"   "cursor"
 fi
 
+if command -v theme-set-openchamber &>/dev/null; then
+  if ! theme-set-openchamber; then
+    echo "theme-set: OpenChamber theme sync failed; other theme integrations will continue" >&2
+  fi
+fi
+
 # Copilot desktop uses its own Settings UI, only with explicit opt-in.
 if [[ -f "$HOME/.config/smplos/copilot-theme-sync.enabled" ]]; then
   if ! command -v theme-set-copilot &>/dev/null; then

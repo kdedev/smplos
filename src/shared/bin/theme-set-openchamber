@@ -1,0 +1,177 @@
+#!/usr/bin/env python3
+"""Publish the active smplOS palette through OpenChamber's custom-theme API."""
+
+import hashlib
+import http.client
+import json
+import math
+import os
+from pathlib import Path
+import re
+import sys
+import tempfile
+import tomllib
+
+
+ROLES = {
+    "primary": {"base": "accent"},
+    "surface": {
+        "background": "background", "foreground": "foreground", "muted": "surface",
+        "mutedForeground": "muted", "elevated": "bg_light",
+    },
+    "interactive": {"border": "bg_lighter"},
+    "status": {
+        "error": "danger", "warning": "warning", "success": "success", "info": "info",
+    },
+}
+SYNTAX = {
+    "comment": "autosuggestion", "keyword": "accent_alt", "string": "cursor",
+    "number": "warning", "function": "accent", "variable": "foreground",
+    "type": "info_bright", "operator": "cursor",
+}
+
+
+def warn(message):
+    print(f"theme-set-openchamber: {message}", file=sys.stderr)
+
+
+def palette(current):
+    name = (current / "theme.name").read_text().strip()
+    if not re.fullmatch(r"[a-z0-9]+(?:-[a-z0-9]+)*", name):
+        raise ValueError("Active theme name must be a lowercase hyphenated identifier")
+    theme = current / "theme"
+    with (theme / "colors.toml").open("rb") as source:
+        colors = tomllib.load(source)
+    colors.setdefault("autosuggestion", colors.get("muted"))
+    for key in {key for group in ROLES.values() for key in group.values()} | set(SYNTAX.values()):
+        if not isinstance(colors.get(key), str) or not re.fullmatch(r"#[0-9a-fA-F]{6}", colors[key]):
+            raise ValueError(f"Missing or invalid opaque theme color: {key}")
+    for key in ("app_background_opacity", "popup_opacity"):
+        if key not in colors:
+            continue
+        value = colors[key]
+        if isinstance(value, bool) or not re.fullmatch(r"(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+)", str(value)):
+            raise ValueError(f"{key} must be a finite decimal in [0,1]")
+        number = float(value)
+        if not math.isfinite(number) or not 0 <= number <= 1:
+            raise ValueError(f"{key} must be a finite decimal in [0,1]")
+    opacity = float(colors.get("app_background_opacity", colors.get("popup_opacity", 1)))
+    if opacity == 0:
+        raise ValueError("OpenChamber requires background opacity above zero")
+    mapped = {
+        group: {role: colors[key] for role, key in roles.items()}
+        for group, roles in ROLES.items()
+    }
+    mapped["syntax"] = {"base": {role: colors[key] for role, key in SYNTAX.items()}}
+    return {
+        "metadata": {
+            "id": f"smplos-{name}", "name": f"smplOS {name.replace('-', ' ').title()}",
+            "variant": "light" if (theme / "light.mode").exists() else "dark",
+        },
+        "colors": mapped,
+        "config": {"backgroundOpacity": opacity},
+    }
+
+
+def targets(home):
+    override = home / ".config/smplos/openchamber-data-dirs"
+    if override.exists():
+        paths = [Path(line.strip()) for line in override.read_text().splitlines()
+                 if line.strip() and not line.lstrip().startswith("#")]
+        if not paths:
+            raise ValueError("openchamber-data-dirs contains no targets")
+    else:
+        paths = [Path(os.environ.get("OPENCHAMBER_DATA_DIR", home / ".config/openchamber"))]
+    if any(not path.is_absolute() for path in paths):
+        raise ValueError("OpenChamber data directories must be absolute paths")
+    if not override.exists() and "OPENCHAMBER_DATA_DIR" not in os.environ and not (paths[0] / "settings.json").exists():
+        return []
+    return list(dict.fromkeys(paths))
+
+
+def backup(home, path, content):
+    root = home / ".local/state/smplos/openchamber-theme-backups"
+    directory = root / hashlib.sha256(str(path.parent).encode()).hexdigest()[:16]
+    directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+    target = directory / f"{path.name}.{hashlib.sha256(content).hexdigest()}"
+    if not target.exists():
+        with target.open("xb") as output:
+            os.chmod(target, 0o600)
+            output.write(content)
+    if target.read_bytes() != content:
+        raise OSError(f"Cannot verify configuration backup for {path}")
+
+
+def publish(home, directory, theme):
+    settings_path = directory / "settings.json"
+    saved = settings_path.read_bytes()
+    settings = json.loads(saved)
+    if not isinstance(settings, dict):
+        raise ValueError("OpenChamber settings must be a JSON object")
+    port = settings.get("desktopLocalPort")
+    if type(port) is not int or not 1 <= port <= 65535:
+        raise ValueError("OpenChamber desktopLocalPort must be an integer in [1,65535]")
+    headers = {"Content-Type": "application/json"}
+    if "desktopLocalClientToken" in settings:
+        token = settings["desktopLocalClientToken"]
+        if not isinstance(token, str) or not token or any(ord(char) < 33 or ord(char) > 126 for char in token):
+            raise ValueError("OpenChamber desktopLocalClientToken is invalid")
+        headers["Authorization"] = f"Bearer {token}"
+    backup(home, settings_path, saved)
+    theme_id = theme["metadata"]["id"]
+    folder = directory / "themes"
+    folder.mkdir(parents=True, exist_ok=True)
+    target = folder / f"{theme_id}.json"
+    content = (json.dumps(theme, separators=(",", ":")) + "\n").encode()
+    previous = target.read_bytes() if target.exists() else None
+    if previous != content:
+        if previous is not None:
+            backup(home, target, previous)
+        temporary = None
+        try:
+            with tempfile.NamedTemporaryFile(dir=folder, prefix=f"{theme_id}.", suffix=".tmp", delete=False) as output:
+                temporary = Path(output.name)
+                output.write(content)
+            temporary.replace(target)
+        finally:
+            if temporary is not None:
+                temporary.unlink(missing_ok=True)
+    connection = http.client.HTTPConnection("127.0.0.1", port, timeout=2)
+    try:
+        connection.request("POST", "/api/openchamber/control",
+                           json.dumps({"action": "theme.set", "input": {"id": theme_id}}), headers)
+        response = connection.getresponse()
+        if not 200 <= response.status < 300:
+            raise ValueError(f"OpenChamber control API returned HTTP {response.status}")
+        reply = json.loads(response.read(65537))
+        if not isinstance(reply, dict) or type(reply.get("delivered")) is not int or reply["delivered"] < 1:
+            raise ValueError("OpenChamber control API did not deliver the theme to a window")
+    finally:
+        connection.close()
+
+
+def main():
+    if len(sys.argv) != 1:
+        warn("Usage: theme-set-openchamber (syncs the active smplOS theme)")
+        return 1
+    home = Path.home()
+    try:
+        directories = targets(home)
+        if not directories:
+            return 0
+        theme = palette(home / ".config/smplos/current")
+    except (OSError, ValueError) as error:
+        warn(str(error))
+        return 1
+    failed = False
+    for directory in directories:
+        try:
+            publish(home, directory, theme)
+        except (OSError, ValueError, http.client.HTTPException) as error:
+            warn(f"{directory}: {error}")
+            failed = True
+    return int(failed)
+
+
+if __name__ == "__main__":
+    sys.exit(main())

@@ -28,6 +28,7 @@ case "$name" in
   bar-ctl) exit "${FAIL_RELOAD:-0}" ;;
   theme-set-st) exit "${FAIL_TERMINAL:-0}" ;;
   theme-set-copilot) exit "${FAIL_COPILOT:-0}" ;;
+  theme-set-openchamber) exit "${FAIL_OPENCHAMBER:-0}" ;;
   hyprctl)
     case "$1" in
       eval)
@@ -340,6 +341,27 @@ class ThemeSwitchingTests(unittest.TestCase):
         result = self.switch("new")
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertFalse((self.home / ".logseq").exists())
+
+    def test_openchamber_sync_runs_only_in_apps_stage_and_failure_is_nonfatal(self):
+        helper = self.bin / "theme-set-openchamber"
+        helper.write_text(MOCK_COMMAND)
+        helper.chmod(0o755)
+        core = subprocess.run(
+            ["bash", str(BIN / "theme-set"), "--core", "new"],
+            env=self.env, capture_output=True, text=True, timeout=15,
+        )
+        self.assertEqual(core.returncode, 0, core.stderr)
+        self.assertNotIn("theme-set-openchamber", self.log.read_text())
+        apps = subprocess.run(
+            ["bash", str(BIN / "theme-set"), "--apps"],
+            env={**self.env, "FAIL_OPENCHAMBER": "1"}, capture_output=True, text=True, timeout=15,
+        )
+        self.assertEqual(apps.returncode, 0, apps.stderr)
+        self.assertIn("OpenChamber theme sync failed", apps.stderr)
+        self.assertEqual(self.log.read_text().count("theme-set-openchamber \n"), 1)
+        self.assert_switched("new")
+        self.assertEqual(self.switch("old").returncode, 0)
+        self.assertEqual(self.log.read_text().count("theme-set-openchamber \n"), 2)
 
     def test_copilot_sync_is_opt_in_and_failure_does_not_abort_theme_switch(self):
         helper = self.bin / "theme-set-copilot"
