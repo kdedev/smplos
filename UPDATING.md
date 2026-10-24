@@ -65,6 +65,14 @@ independently released. Publish and verify the compatible OpenChamber release
 file on disk is not proof that a window applied the palette or background alpha.
 Keep the bridge unpublished until the app's capability and renderer-acknowledgment
 contract and per-app transparent-window launcher have been verified together.
+The bridge requires protocol 1 from authenticated `theme.capabilities`, live
+window probes, custom themes, background alpha in `(0,1]` and a bounded
+acknowledgment deadline. Translucent themes require each target's actual native
+transparent readiness. `theme.set` must return matching renderer-applied theme
+IDs and alpha for the same windows after persistence; broadcast delivery alone
+is rejected. Each HTTP request allows 15 seconds for the app's 10-second bound.
+Failure after publication can be partial and must remain explicitly unconfirmed.
+Do not infer compositor properties from renderer acknowledgment.
 
 Normal script synchronization installs `theme-set-openchamber` alongside
 `theme-set`, and normal Hyprland config synchronization delivers the native-alpha

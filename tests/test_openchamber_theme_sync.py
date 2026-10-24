@@ -24,20 +24,30 @@ loader.exec_module(sync)
 
 class Connection:
     status = 200
-    reply = {"id": "request-id", "delivered": 1}
+    probe = {
+        "protocolVersion": 1, "customThemes": True, "backgroundOpacity": True,
+        "opacityRange": {"minExclusive": 0, "max": 1}, "ackTimeoutMs": 10000,
+        "windows": [{"connectionId": "main", "transparentWindow": True}],
+    }
+    reply = {
+        "id": "request-id", "delivered": 1,
+        "applied": [{"connectionId": "main", "themeId": "smplos-amber",
+                     "backgroundOpacity": 1, "transparentWindow": True}],
+    }
     requests = []
 
     def __init__(self, host, port, timeout):
         self.endpoint = (host, port, timeout)
 
     def request(self, method, path, body, headers):
-        self.requests.append((self.endpoint, method, path, json.loads(body), headers))
+        self.payload = json.loads(body)
+        self.requests.append((self.endpoint, method, path, self.payload, headers))
 
     def getresponse(self):
         return self
 
     def read(self, limit):
-        return json.dumps(self.reply).encode()
+        return json.dumps(self.probe if self.payload["action"] == "theme.capabilities" else self.reply).encode()
 
     def close(self):
         pass
@@ -58,7 +68,16 @@ class OpenChamberThemeTests(unittest.TestCase):
         self.select("amber")
         Connection.requests = []
         Connection.status = 200
-        Connection.reply = {"id": "request-id", "delivered": 1}
+        Connection.probe = {
+            "protocolVersion": 1, "customThemes": True, "backgroundOpacity": True,
+            "opacityRange": {"minExclusive": 0, "max": 1}, "ackTimeoutMs": 10000,
+            "windows": [{"connectionId": "main", "transparentWindow": True}],
+        }
+        Connection.reply = {
+            "id": "request-id", "delivered": 1,
+            "applied": [{"connectionId": "main", "themeId": "smplos-amber",
+                         "backgroundOpacity": 1, "transparentWindow": True}],
+        }
         self.patch = patch.object(sync.http.client, "HTTPConnection", Connection)
         self.patch.start()
         self.addCleanup(self.patch.stop)
@@ -87,8 +106,9 @@ class OpenChamberThemeTests(unittest.TestCase):
     def test_publish_uses_loopback_token_and_id_only_and_preserves_settings(self):
         theme = sync.palette(self.current)
         sync.publish(self.home, self.data, theme)
-        endpoint, method, path, body, headers = Connection.requests[0]
-        self.assertEqual(endpoint, ("127.0.0.1", 48412, 2))
+        self.assertEqual(Connection.requests[0][3], {"action": "theme.capabilities"})
+        endpoint, method, path, body, headers = Connection.requests[1]
+        self.assertEqual(endpoint, ("127.0.0.1", 48412, 15))
         self.assertEqual((method, path), ("POST", "/api/openchamber/control"))
         self.assertEqual(body, {"action": "theme.set", "input": {"id": "smplos-amber"}})
         self.assertEqual(headers["Authorization"], "Bearer secret")
@@ -181,7 +201,7 @@ class OpenChamberThemeTests(unittest.TestCase):
         Connection.status = 200
         for reply in ({}, {"delivered": 0}, {"delivered": True}):
             Connection.reply = reply
-            with self.assertRaisesRegex(ValueError, "did not deliver"):
+            with self.assertRaises(ValueError):
                 sync.publish(self.home, self.data, sync.palette(self.current))
 
     def test_real_helper_posts_only_to_isolated_server_after_atomic_publication(self):
@@ -192,16 +212,25 @@ class OpenChamberThemeTests(unittest.TestCase):
         class Handler(BaseHTTPRequestHandler):
             def do_POST(self):
                 body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+                if body["action"] == "theme.capabilities":
+                    self.server.testcase.assertFalse((demo / "themes").exists())
+                    self.server.testcase.assertFalse(
+                        (self.server.testcase.home / ".local/state/smplos/openchamber-theme-backups").exists())
+                    self.send_response(200)
+                    self.end_headers()
+                    self.wfile.write(json.dumps(Connection.probe).encode())
+                    return
                 theme = json.loads((demo / "themes/smplos-amber.json").read_bytes())
                 requests.append((self.path, body, theme, self.headers.get("Authorization")))
                 self.send_response(200)
                 self.end_headers()
-                self.wfile.write(b'{"id":"request-id","delivered":1}')
+                self.wfile.write(json.dumps(Connection.reply).encode())
 
             def log_message(self, *_):
                 pass
 
         with HTTPServer(("127.0.0.1", 0), Handler) as server:
+            server.testcase = self
             thread = threading.Thread(target=server.serve_forever)
             thread.start()
             try:
@@ -225,6 +254,99 @@ class OpenChamberThemeTests(unittest.TestCase):
         self.assertIsNone(token)
         self.assertEqual(self.settings.read_bytes(), self.saved)
         self.assertFalse((self.data / "themes").exists())
+
+    def test_unsupported_capabilities_fail_before_backup_or_theme_write(self):
+        baseline = Connection.probe
+        invalid = [
+            {}, {**baseline, "protocolVersion": True},
+            {**baseline, "customThemes": False}, {**baseline, "backgroundOpacity": False},
+            {**baseline, "opacityRange": {"minExclusive": 0, "max": 0.9}},
+            {**baseline, "ackTimeoutMs": 15000}, {**baseline, "windows": []},
+            {**baseline, "windows": [{"connectionId": "main"}]},
+            {**baseline, "windows": baseline["windows"] * 2},
+        ]
+        for probe in invalid:
+            with self.subTest(probe=probe):
+                Connection.probe = probe
+                with self.assertRaises(ValueError):
+                    sync.publish(self.home, self.data, sync.palette(self.current))
+                self.assertFalse((self.data / "themes").exists())
+                self.assertFalse((self.home / ".local/state/smplos/openchamber-theme-backups").exists())
+        self.assertTrue(all(request[3]["action"] == "theme.capabilities" for request in Connection.requests))
+
+    def test_nontransparent_window_cannot_silently_ignore_theme_alpha(self):
+        self.select("catppuccin")
+        Connection.probe["windows"][0]["transparentWindow"] = False
+        with self.assertRaisesRegex(ValueError, "native transparent window"):
+            sync.publish(self.home, self.data, sync.palette(self.current))
+        self.assertFalse((self.data / "themes").exists())
+        self.assertFalse((self.home / ".local/state/smplos/openchamber-theme-backups").exists())
+
+    def test_render_acknowledgment_must_match_requested_id_alpha_and_window_set(self):
+        baseline = Connection.reply
+        window = baseline["applied"][0]
+        invalid = [
+            {"id": "broadcast-only", "delivered": 1},
+            {**baseline, "delivered": 2},
+            {**baseline, "applied": [{**window, "themeId": "wrong"}]},
+            {**baseline, "applied": [{**window, "backgroundOpacity": 0.5}]},
+            {**baseline, "applied": [{**window, "backgroundOpacity": True}]},
+            {**baseline, "applied": [{**window, "transparentWindow": False}]},
+            {**baseline, "applied": [{**window, "connectionId": "different"}]},
+            {**baseline, "applied": [window, window]},
+        ]
+        for reply in invalid:
+            with self.subTest(reply=reply):
+                Connection.reply = reply
+                with self.assertRaisesRegex(ValueError, "unconfirmed"):
+                    sync.publish(self.home, self.data, sync.palette(self.current))
+
+    def test_successful_translucent_and_opaque_roundtrip_and_all_window_acknowledgments(self):
+        for name in ("amber", "catppuccin", "amber"):
+            self.select(name)
+            theme = sync.palette(self.current)
+            Connection.probe["windows"] = [
+                {"connectionId": identity, "transparentWindow": True} for identity in ("main", "second")
+            ]
+            Connection.reply = {
+                "delivered": 2,
+                "applied": [
+                    {**window, "themeId": theme["metadata"]["id"],
+                     "backgroundOpacity": theme["config"]["backgroundOpacity"]}
+                    for window in Connection.probe["windows"]
+                ],
+            }
+            sync.publish(self.home, self.data, theme)
+        self.assertEqual(len(Connection.requests), 6)
+        for index in (1, 3, 5):
+            self.assertEqual(Connection.requests[index][3]["action"], "theme.set")
+
+    def test_refused_connection_does_not_write_and_set_timeout_reports_partial_unknown(self):
+        with patch.object(sync.http.client, "HTTPConnection", side_effect=ConnectionRefusedError("refused")):
+            with self.assertRaises(ConnectionRefusedError):
+                sync.publish(self.home, self.data, sync.palette(self.current))
+        self.assertFalse((self.data / "themes").exists())
+        self.assertFalse((self.home / ".local/state/smplos/openchamber-theme-backups").exists())
+        request = Connection.request
+
+        def timeout_on_set(connection, method, path, body, headers):
+            request(connection, method, path, body, headers)
+            if connection.payload["action"] == "theme.set":
+                raise TimeoutError("fixture timed out")
+
+        with patch.object(Connection, "request", timeout_on_set):
+            with self.assertRaisesRegex(ValueError, "unconfirmed and may be partial"):
+                sync.publish(self.home, self.data, sync.palette(self.current))
+        self.assertTrue((self.data / "themes/smplos-amber.json").exists())
+        self.assertEqual(self.settings.read_bytes(), self.saved)
+
+    def test_malformed_or_oversized_probe_is_rejected_before_writes(self):
+        for content in (b"invalid-json", b'[]', b'{"padding":"' + b"x" * 65536 + b'"}'):
+            with self.subTest(length=len(content)), patch.object(Connection, "read", return_value=content):
+                with self.assertRaises(ValueError):
+                    sync.publish(self.home, self.data, sync.palette(self.current))
+            self.assertFalse((self.data / "themes").exists())
+            self.assertFalse((self.home / ".local/state/smplos/openchamber-theme-backups").exists())
 
     def test_normal_os_delivery_installs_bridge_and_both_native_alpha_rules(self):
         project = self.home / "repo"

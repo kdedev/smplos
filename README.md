@@ -439,10 +439,17 @@ background-only opacity follows `app_background_opacity`, then explicit
 
 This interface is currently verified only with the coordinated OpenChamber
 prototype; the installed stock app does not yet support it. Live background
-alpha additionally requires a Linux frameless window launched with
-`OPENCHAMBER_TRANSPARENT_WINDOW=1`. The adapter neither restarts nor launches
-the app, and does not change that environment globally. Hyprland treats
+alpha additionally requires the compatible fork's Linux frameless desktop
+launcher to enable its native transparent window. The adapter neither restarts
+nor launches the app, and does not change that environment globally. Hyprland treats
 `openchamber` as self-managed alpha so compositor fading cannot dim its text.
+
+Before backing up settings or publishing a theme file, the bridge requests
+authenticated `theme.capabilities` on the control endpoint. Protocol 1 must
+confirm custom-theme and background-opacity support, the supported range
+`0 < opacity <= 1`, and freshly probed live windows. Translucent themes require
+every target window to report native transparency readiness. Unsupported apps,
+closed windows or an opaque launch warn without changing their files.
 
 The helper runs in `theme-set`'s optional app stage, including the existing
 **Super+Shift+T** picker path. It discovers the local port and optional client
@@ -459,9 +466,14 @@ files and settings receive verified, private backups under
 API request. Other themes, sessions and settings are not edited by the helper;
 OpenChamber saves the selected theme through its own API. Generated themes
 remain visible in its Settings. API refusal, unsupported versions and missing
-windows warn without blocking other integrations. Delivery acknowledgment
-alone does not prove rendering; the app must understand both the custom-theme
-format and `config.backgroundOpacity`. Zero background opacity is unsupported
+windows warn without blocking other integrations. `theme.set` must acknowledge
+successful persistence and renderer application for every probed window, with
+the exact theme ID and background opacity. A broadcast-only `delivered` count
+is rejected. Requests use a 15-second HTTP timeout for the app's at-most-10-second
+acknowledgment deadline; timeouts, window-set changes or mismatched responses
+report application as unconfirmed and potentially partial, never success.
+These acknowledgments do not measure compositor output; visual/native-alpha
+verification remains a separate release check. Zero background opacity is unsupported
 by this interface and is reported rather than silently changed.
 
 #### Copilot desktop theme sync (experimental, opt-in)

@@ -106,6 +106,77 @@ def backup(home, path, content):
         raise OSError(f"Cannot verify configuration backup for {path}")
 
 
+def control(port, headers, action, input_value=None):
+    payload = {"action": action}
+    if input_value is not None:
+        payload["input"] = input_value
+    connection = http.client.HTTPConnection("127.0.0.1", port, timeout=15)
+    try:
+        connection.request("POST", "/api/openchamber/control", json.dumps(payload), headers)
+        response = connection.getresponse()
+        if not 200 <= response.status < 300:
+            raise ValueError(
+                f"OpenChamber {action} returned HTTP {response.status}; application is unconfirmed")
+        content = response.read(65537)
+        if len(content) > 65536:
+            raise ValueError(f"OpenChamber {action} response exceeds 64 KiB")
+        reply = json.loads(content)
+        if not isinstance(reply, dict):
+            raise ValueError(f"OpenChamber {action} response must be an object")
+        return reply
+    finally:
+        connection.close()
+
+
+def window_states(windows):
+    if not isinstance(windows, list) or not windows:
+        raise ValueError("OpenChamber has no acknowledged theme windows")
+    states = {}
+    for window in windows:
+        if not isinstance(window, dict):
+            raise ValueError("OpenChamber window acknowledgment must be an object")
+        identity = window.get("connectionId")
+        if not isinstance(identity, str) or not identity or identity in states:
+            raise ValueError("OpenChamber connection IDs must be nonempty and unique")
+        if type(window.get("transparentWindow")) is not bool:
+            raise ValueError("OpenChamber native transparency readiness is unknown")
+        states[identity] = window
+    return states
+
+
+def capabilities(port, headers, opacity):
+    reply = control(port, headers, "theme.capabilities")
+    if (type(reply.get("protocolVersion")) is not int or reply["protocolVersion"] != 1
+            or reply.get("customThemes") is not True or reply.get("backgroundOpacity") is not True):
+        raise ValueError("OpenChamber does not support the required theme protocol")
+    bounds = reply.get("opacityRange")
+    if (not isinstance(bounds, dict) or type(bounds.get("minExclusive")) not in (int, float)
+            or bounds["minExclusive"] != 0 or type(bounds.get("max")) not in (int, float)
+            or bounds["max"] != 1):
+        raise ValueError("OpenChamber background opacity range is unsupported")
+    timeout = reply.get("ackTimeoutMs")
+    if type(timeout) is not int or not 0 < timeout <= 10000:
+        raise ValueError("OpenChamber acknowledgment timeout is unsupported")
+    windows = window_states(reply.get("windows"))
+    if opacity < 1 and any(not window["transparentWindow"] for window in windows.values()):
+        raise ValueError("OpenChamber requires a native transparent window for this theme; reopen a compatible desktop build")
+    return windows
+
+
+def confirm_application(reply, expected, theme):
+    applied = window_states(reply.get("applied"))
+    if (set(applied) != set(expected) or type(reply.get("delivered")) is not int
+            or reply["delivered"] != len(expected)):
+        raise ValueError("OpenChamber window set changed; theme application is unconfirmed")
+    for identity, window in applied.items():
+        opacity = window.get("backgroundOpacity")
+        if (window.get("themeId") != theme["metadata"]["id"]
+                or type(opacity) not in (int, float)
+                or opacity != theme["config"]["backgroundOpacity"]
+                or window["transparentWindow"] != expected[identity]["transparentWindow"]):
+            raise ValueError("OpenChamber renderer did not acknowledge the requested theme and alpha")
+
+
 def publish(home, directory, theme):
     settings_path = directory / "settings.json"
     saved = settings_path.read_bytes()
@@ -121,6 +192,7 @@ def publish(home, directory, theme):
         if not isinstance(token, str) or not token or any(ord(char) < 33 or ord(char) > 126 for char in token):
             raise ValueError("OpenChamber desktopLocalClientToken is invalid")
         headers["Authorization"] = f"Bearer {token}"
+    windows = capabilities(port, headers, theme["config"]["backgroundOpacity"])
     backup(home, settings_path, saved)
     theme_id = theme["metadata"]["id"]
     folder = directory / "themes"
@@ -140,18 +212,11 @@ def publish(home, directory, theme):
         finally:
             if temporary is not None:
                 temporary.unlink(missing_ok=True)
-    connection = http.client.HTTPConnection("127.0.0.1", port, timeout=2)
     try:
-        connection.request("POST", "/api/openchamber/control",
-                           json.dumps({"action": "theme.set", "input": {"id": theme_id}}), headers)
-        response = connection.getresponse()
-        if not 200 <= response.status < 300:
-            raise ValueError(f"OpenChamber control API returned HTTP {response.status}")
-        reply = json.loads(response.read(65537))
-        if not isinstance(reply, dict) or type(reply.get("delivered")) is not int or reply["delivered"] < 1:
-            raise ValueError("OpenChamber control API did not deliver the theme to a window")
-    finally:
-        connection.close()
+        reply = control(port, headers, "theme.set", {"id": theme_id})
+        confirm_application(reply, windows, theme)
+    except (OSError, ValueError, http.client.HTTPException) as error:
+        raise ValueError(f"Theme application is unconfirmed and may be partial: {error}") from error
 
 
 def main():
