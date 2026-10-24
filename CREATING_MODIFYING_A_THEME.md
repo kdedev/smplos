@@ -67,6 +67,18 @@ These are app-specific preset payloads used by selectors in `colors.toml`:
 - `backgrounds/`
 - `preview.png`
 
+### Bundled wallpapers
+
+Put wallpaper images directly in `backgrounds/` (`.png`, `.jpg`, `.jpeg`, or
+`.webp`). They are bundled automatically; adding images alone does not require
+regenerating theme configs. Amber HUD includes 18 wallpapers, Neon 16, and
+Matrix HUD 4.
+
+`theme-set <name>` copies the selected theme into the active theme directory
+and picks a wallpaper. Press **Super+Shift+W** (`theme-bg-next`) to randomly
+choose another without repeating the current image. An empty `backgrounds/`
+directory intentionally uses the theme's solid background color instead.
+
 ---
 
 ## Step-by-Step: Create a New Theme

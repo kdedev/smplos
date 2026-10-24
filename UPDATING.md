@@ -310,14 +310,15 @@ Write a migration. See section 5 below.
 
 Normal OS updates reconcile keypad integration on every run, not only once
 per migration: the canonical `control-surface.service`, udev rules and pinned
-`control-surface` package from **smpl-apps v0.8.29** must all be available.
+`control-surface` package from **smpl-apps v0.8.35** must all be available.
 That release builds the keypad daemon on its Qt 6.11 baseline, compatible with
 the installed Qt 6.11.2 runtime; v0.8.27 incorrectly required Qt 6.12.
 The catch-up migration `20261009-010000-keypad-login-recovery.sh` covers
 already-marked installs. Package/build/privilege failures remain explicit
 and retryable; a missing recipe is an error, not a pending placeholder.
-The package smoke-tests `control-surfaced features --json` against the build
-host's runtime. Updates also check the installed binary before replacing a
+The package smoke-tests both `control-surfaced features --json` and
+`mouse-remapperd features --json` against the build host's runtime. Updates also
+check the installed binary before replacing a
 working unit or retiring its login helper. Offline or ABI-incompatible delivery
 retains those units and leaves the update incomplete.
 
@@ -336,6 +337,59 @@ keypad during an update. Existing running daemons adopt changed unit paths
 on the next login or plug-in. Fresh ISOs carry the same unit and hook and
 install the daemon from their offline mirror; rebuilding smpl-apps is not
 required for this OS-only fix. See [keypad lifecycle](KEYPAD.md#lifecycle-and-footprint).
+
+### Mouse remapping delivery
+
+The Razer Naga V2 HyperSpeed (`1532:00b4`) backend lives alongside the keypad
+backend in **smpl-apps**, sharing remapping infrastructure rather than a second
+OS-local implementation. Its executable is `mouse-remapperd`, not
+`control-surfaced`. It reads the existing `$HOME/.config/smplos/mouse.json`
+(the legacy Settings location, independent of `XDG_CONFIG_HOME`) and
+exposes a separate `org.smplos.MouseRemapper1` session D-Bus API for Settings.
+Learn/Identify require the matching native Settings release; other mouse models
+remain preview-only. Global mappings work through uinput; per-app selection
+currently requires the Hyprland focus tracker.
+Mouse and keypad assignments must share the action catalog and execution
+engine, including Kdenlive API discovery, availability and dispatch. An API
+action must never silently fall back to a keyboard shortcut.
+
+`70-smplos-mice.rules` grants the seated user access only to this USB device's
+input interfaces and starts `mouse-remap.service` through `smplos-mouse.device`.
+The service has no enablement link or keypad/EWW dependency. Unplug stops it;
+the shared login hook recovers coldplug after importing the graphical
+environment. Verification never restarts a healthy running remapper.
+The existing backed-up unit reconciliation also handles the mouse unit, with a
+separate `mouse-units` ownership stamp. Custom units, links, drop-ins and saved
+mouse/keypad profiles are preserved.
+
+**Native delivery:** the pinned **control-surface v0.8.35** package includes
+`mouse-remapperd`, and the matching published **smpl-apps v0.8.35** bundle
+delivers Settings with complete guided setup. Both archives were built and
+validated on the pinned Qt 6.11.2/glibc 2.44 baseline. The package checksum pins
+the actual published archive, not a local development build.
+The mouse migration and
+every normal update probe `mouse-remapperd features --json` in an isolated home,
+requiring learning, identify (including wheel/tilt), guided side-grid
+calibration, complete guided setup (`guidedSetup`), single-gesture tilt
+navigation (`tiltNavigationGestures`), Kdenlive API and passthrough capabilities,
+before replacing the unit or granting device access. Missing, incompatible or
+broken binaries explicitly defer integration; an ordinary OS update reports
+the missing delivery instead of silently claiming remapping is installed.
+Local development deployment can install the validated build directly.
+
+Horizontal tilt resolved to mouse Back/Forward emits one navigation action
+per gesture, including when held. A 100 ms quiet gap re-arms it because this
+mouse reports repeated scroll events rather than a tilt release; very fast
+consecutive tilts can merge, while reversing direction acts immediately.
+Other mapped actions and ordinary scrolling remain detent-based.
+
+The backend also provides guarded, explicitly confirmed onboard DPI-button
+backup/apply/restore commands. These are one-shot operations, not a resident
+vendor service or firmware flashing. Normal OS updates never run them or
+rewrite onboard assignments. Users opting into F23/F24 emission must retain
+their verified original backup; the receiver's independent Hypershift
+assignments cannot be verified. See the native release's
+`control-surface/docs/mouse-remapping.md` for the command and restore contract.
 
 ### Power preferences and command compatibility
 

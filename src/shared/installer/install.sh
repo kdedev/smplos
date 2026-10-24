@@ -56,6 +56,8 @@ fi
 source "$SMPLOS_PATH/lib/smplos-keypad-units.sh"
 smplos_keypad_sync_units "$SMPLOS_PATH/config/systemd/user" \
   "$HOME/.config/systemd/user" "$HOME/.local/state/smplos/keypad-units"
+smplos_mouse_sync_units "$SMPLOS_PATH/config/systemd/user" \
+  "$HOME/.config/systemd/user" "$HOME/.local/state/smplos/mouse-units"
 
 # smplOS fonts (keypad cheatsheet icons: Tabler Icons subset, MIT; see KEYPAD.md)
 if compgen -G "$SMPLOS_PATH/fonts/*.ttf" >/dev/null; then

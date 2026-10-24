@@ -786,6 +786,67 @@ sync_apps
         self.assertNotIn(CALENDAR_SERVICE, (self.home / "binary-installs").read_text())
         self.assert_service(self.home / ".config/systemd/user")
 
+    def test_os_update_delivers_launcher_scripts_cache_and_volume_widget(self):
+        scripts = ("smplos-settings", "rebuild-app-cache")
+        for relative in (*(f"bin/{name}" for name in scripts),
+                         "eww/eww.yuck", "eww/eww.scss"):
+            target = self.project / "src/shared" / relative
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(ROOT / "src/shared" / relative, target)
+        installed = self.base / "installed-bin"
+        installed.mkdir()
+        for name in scripts:
+            (installed / name).write_text("#!/bin/bash\nexit 97\n")
+        eww = self.home / ".config/eww/eww.yuck"
+        eww.parent.mkdir(parents=True)
+        eww.write_text("old widget\n")
+        cache = self.home / ".cache/smplos/app_index"
+        cache.parent.mkdir(parents=True)
+        cache.write_text("old cache\n")
+        self.mock("find", """#!/bin/bash
+[[ "$1" == /var/lib/flatpak/* ]] && exit 0
+exec /usr/bin/find "$@"
+""")
+        updater = ROOT / "src/shared/bin/smplos-os-update"
+        sync = function(updater, "sync_scripts")
+        self.assertIn('dest="/usr/local/bin/$name"', sync)
+        sync = sync.replace('dest="/usr/local/bin/$name"', 'dest="$FIXTURE_BIN/$name"')
+        script = """
+SMPLOS_REPO="$PROJECT_ROOT"
+header() { :; }; ok() { echo "$*"; }; die() { echo "$*" >&2; exit 1; }
+as_invoker() { "$@"; }
+sudo() {
+    [[ "$1" == install || "$1" == mktemp || "$1" == mv || "$1" == rm ]] || return 99
+    [[ "${@: -1}" == "$FIXTURE_BIN/"* ]] || return 99
+    "$@"
+}
+sync_libs() { :; }; sync_config_defaults() { :; }
+"""
+        script += "\n".join((function(updater, "install_system_file"), sync,
+                              function(updater, "copy_user_config"),
+                              function(updater, "sync_configs")))
+        script += "\nsync_scripts\nsync_configs\nrebuild-app-cache\n" * 2
+        result = self.shell(
+            script, FIXTURE_BIN=str(installed), PATH=f"{installed}:{self.env['PATH']}",
+            XDG_DATA_HOME=str(self.base / "data-home"),
+            XDG_DATA_DIRS=str(self.base / "data-dirs"),
+        )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        script_count = len(list((self.project / "src/shared/bin").iterdir()))
+        self.assertIn(f"All {script_count} scripts are current", result.stdout)
+        self.assertIn("All configs are current", result.stdout)
+        for name in scripts:
+            self.assertEqual((installed / name).read_bytes(),
+                             (ROOT / "src/shared/bin" / name).read_bytes())
+            self.assertEqual((installed / name).stat().st_mode & 0o777, 0o755)
+        self.assertEqual(eww.read_bytes(), (ROOT / "src/shared/eww/eww.yuck").read_bytes())
+        self.assertEqual(eww.stat().st_mode & 0o777, 0o644)
+        rows = {row[0]: row for row in
+                (line.split(";") for line in cache.read_text().splitlines())}
+        for name in ("Volume", "Sound", "Speakers", "Output Device", "Input Device"):
+            self.assertEqual(rows[name][1], "smplos-settings audio")
+            self.assertEqual(rows[name][-1], "1")
+
     def test_update_mains_refresh_even_without_new_binaries_and_report_failure(self):
         for name in ("smplos-os-update", "smplos-update-apps"):
             path = ROOT / "src/shared/bin" / name
@@ -801,10 +862,11 @@ SELF_UPDATED=1; SELF_CANONICAL="$HOME/no-installed-script"
 header() { :; }; ok() { :; }; warn() { echo "$*" >&2; }
 die() { echo "$*" >&2; exit 1; }
 pull_updates() { return 1; }
-sync_scripts() { :; }; sync_configs() { :; }; sync_themes() { :; }
+sync_scripts() { echo scripts-synced; }; sync_configs() { echo configs-synced; }; sync_themes() { :; }
 sync_apps() { :; }; sync_hypr_configs() { :; }; sync_user_units() { :; }; run_migrations() { :; }
 sync_plugins() { :; }
 sync_keypad_support() { :; }
+sync_mouse_support() { :; }
 sync_hypridle_config() { :; }
 cleanup_shadow_bins() { :; }; post_deploy() { :; }
 update_smpl_apps() { :; }; update_st_smpl() { :; }; update_nemo_smpl() { :; }
@@ -816,6 +878,9 @@ rebuild-app-cache() { echo refreshed; return "$CACHE_STATUS"; }
                     result = self.shell(stubs + main, CACHE_STATUS=status)
                     self.assertEqual(result.stdout.count("refreshed"), 1)
                     self.assertEqual(result.returncode, int(status), result.stderr)
+                    if name == "smplos-os-update":
+                        self.assertEqual(result.stdout.count("scripts-synced"), 1)
+                        self.assertEqual(result.stdout.count("configs-synced"), 1)
             if name == "smplos-os-update":
                 result = self.shell(stubs + "\nSCRIPTS_ONLY=1\n" + main, CACHE_STATUS="0")
                 self.assertEqual(result.stdout.count("refreshed"), 1)

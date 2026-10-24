@@ -1,5 +1,5 @@
 # shellcheck shell=bash
-# Canonical keypad units for OS updates, live ISO users and installed users.
+# Canonical input-device units for OS updates, live ISO and installed users.
 
 smplos_keypad_check_runtime() {
     local daemon="$1" home rc
@@ -11,6 +11,34 @@ smplos_keypad_check_runtime() {
         rc=1
     fi
     # The read-only features command should leave its isolated home empty.
+    rmdir "$home" || return 1
+    return "$rc"
+}
+
+smplos_mouse_check_runtime() {
+    local daemon="$1" home rc features
+    home=$(mktemp -d "${TMPDIR:-/tmp}/smplos-mouse-runtime.XXXXXX") || return 1
+    if features=$(env HOME="$home" XDG_CONFIG_HOME="$home/config" XDG_STATE_HOME="$home/state" \
+        XDG_CACHE_HOME="$home/cache" "$daemon" features --json) &&
+        python3 -c '
+import json, sys
+features = json.load(sys.stdin)
+if not (type(features.get("apiVersion")) is int and features.get("apiVersion") == 1
+        and features.get("vendor") == "1532"
+        and features.get("product") == "00b4" and features.get("learning") is True
+        and features.get("identify") is True
+        and features.get("identifyWheels") is True
+        and features.get("guidedCalibration") is True
+        and features.get("guidedSetup") is True
+        and features.get("tiltNavigationGestures") is True
+        and features.get("kdenliveApi") is True
+        and features.get("passthrough") is True):
+    sys.exit("mouse-remapperd does not support the required mouse remapping API")
+' <<< "$features"; then
+        rc=0
+    else
+        rc=1
+    fi
     rmdir "$home" || return 1
     return "$rc"
 }
@@ -30,7 +58,7 @@ smplos_keypad_known_unit() {
     return 1
 }
 
-smplos_keypad_backup() {
+smplos_input_backup() {
     local file="$1" state="$2" backup
     mkdir -p "$state"
     backup=$(mktemp -d "$state/backup.XXXXXX") || return 1
@@ -44,24 +72,23 @@ smplos_keypad_backup() {
     echo "  Backed up $file to $backup"
 }
 
-smplos_keypad_drop_links() {
+smplos_input_drop_links() {
     local dir="$1" name="$2" state="$3" link
     for link in "$dir"/*.wants/"$name"; do
         [[ -L "$link" ]] || continue
         # Never remove an enablement link to somebody else's unit.
         [[ "$(readlink -m "$link")" == "$(readlink -m "$dir/$name")" ]] || continue
-        smplos_keypad_backup "$link" "$state" || return 1
+        smplos_input_backup "$link" "$state" || return 1
         rm "$link" || return 1
-        SMPLOS_KEYPAD_UNITS_CHANGED=1
-        echo "  Removed obsolete keypad login link $link"
+        SMPLOS_INPUT_UNITS_CHANGED=1
+        echo "  Removed obsolete device-service login link $link"
     done
 }
 
-smplos_keypad_sync_units() {
-    local src="$1" dir="$2" state="$3"
-    local name=control-surface.service unit="$2/control-surface.service"
+smplos_input_sync_unit() {
+    local src="$1" dir="$2" state="$3" name="$4" unit="$2/$4"
     local stamp="$state/last-installed.service" tmp owned=1
-    SMPLOS_KEYPAD_UNITS_CHANGED=0
+    SMPLOS_INPUT_UNITS_CHANGED=0
     [[ -f "$src/$name" ]] || { echo "  ERROR: $src/$name missing" >&2; return 1; }
     mkdir -p "$dir" "$state" || return 1
     if [[ -L "$unit" ]]; then
@@ -75,26 +102,37 @@ smplos_keypad_sync_units() {
     else
         if ! cmp -s "$src/$name" "$unit"; then
             if [[ -e "$unit" ]]; then
-                smplos_keypad_backup "$unit" "$state" || return 1
+                smplos_input_backup "$unit" "$state" || return 1
             fi
             tmp=$(mktemp "$dir/.$name.XXXXXX") || return 1
             install -m644 "$src/$name" "$tmp" && mv -f "$tmp" "$unit" || return 1
-            SMPLOS_KEYPAD_UNITS_CHANGED=1
+            SMPLOS_INPUT_UNITS_CHANGED=1
             echo "  Installed $name (device-triggered; recovered by the session login hook)"
         fi
         install -m644 "$src/$name" "$stamp" || return 1
-        smplos_keypad_drop_links "$dir" "$name" "$state" || return 1
+        smplos_input_drop_links "$dir" "$name" "$state" || return 1
     fi
+}
 
+smplos_keypad_sync_units() {
+    local src="$1" dir="$2" state="$3" unit
+    SMPLOS_KEYPAD_UNITS_CHANGED=0
+    smplos_input_sync_unit "$src" "$dir" "$state" control-surface.service || return 1
     unit="$dir/smplos-keypad-login.service"
     if smplos_keypad_known_unit "$unit" \
         && ! compgen -G "$unit.d/*.conf" >/dev/null; then
-        smplos_keypad_drop_links "$dir" smplos-keypad-login.service "$state" || return 1
-        smplos_keypad_backup "$unit" "$state" || return 1
+        smplos_input_drop_links "$dir" smplos-keypad-login.service "$state" || return 1
+        smplos_input_backup "$unit" "$state" || return 1
         rm "$unit" || return 1
-        SMPLOS_KEYPAD_UNITS_CHANGED=1
+        SMPLOS_INPUT_UNITS_CHANGED=1
         echo "  Retired the temporary keypad login helper; smplos-session-services owns coldplug startup"
     elif [[ -e "$unit" || -L "$unit" ]]; then
         echo "  $unit is a custom login helper; left as is"
     fi
+    SMPLOS_KEYPAD_UNITS_CHANGED=$SMPLOS_INPUT_UNITS_CHANGED
+}
+
+smplos_mouse_sync_units() {
+    smplos_input_sync_unit "$1" "$2" "$3" mouse-remap.service || return 1
+    SMPLOS_MOUSE_UNITS_CHANGED=$SMPLOS_INPUT_UNITS_CHANGED
 }

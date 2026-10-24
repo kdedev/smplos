@@ -853,6 +853,15 @@ sync_keypad_support() {
     fi
 }
 
+sync_mouse_support() {
+    if as_invoker bash "$SMPLOS_REPO/migrations/20261021-210000-razer-mouse-remapping.sh"; then
+        return 0
+    else
+        warn "Mouse remapping integration is incomplete; resolve the reported error and retry Update OS."
+        return 1
+    fi
+}
+
 # Run even without new commits: older Settings releases can reintroduce direct
 # dispatcher syntax after a one-shot migration has already completed.
 sync_hypridle_config() {
@@ -1108,6 +1117,7 @@ if [[ $SCRIPTS_ONLY -eq 0 ]]; then
     # Reconcile even when migrations were already marked done. Verify only
     # after units and the published keypad package have been delivered.
     sync_keypad_support || migrations_failed=1
+    sync_mouse_support || migrations_failed=1
     sync_user_units || migrations_failed=1
     sync_hypridle_config || migrations_failed=1
 

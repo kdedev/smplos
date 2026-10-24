@@ -482,7 +482,22 @@ never sits pending. The lab is the one check left to run by hand before a releas
 
 ## Adding a Settings Entry
 
-The start menu has a **Settings** category. Each entry there launches a system tool -- Appearance opens the theme picker, Audio opens pavucontrol, etc. Here's how to add a new one.
+The start menu has a **Settings** category. Each entry there launches a system tool -- Appearance opens the theme picker, Audio opens an installed mixer, etc. Here's how to add a new one.
+
+Audio prefers `pavucontrol`, `pwvucontrol`, `pavucontrol-qt`, `qasmixer`, then
+`alsamixergui`. Without a graphical mixer, it opens `wiremix`, `pulsemixer`,
+`ncpamixer`, `pamix`, or finally `alsamixer` through `terminal -e`.
+No package installation or audio configuration changes happen on launch.
+ALSA mixers expose hardware controls such as microphone boost; PipeWire and
+PulseAudio mixers additionally expose device and application-stream routing.
+Missing mixers or a missing terminal launcher produce an actionable error;
+a selected tool's launch/runtime failure is not concealed by opening another.
+Focused headless checks: `python -m unittest discover -s tests -p 'test_audio_settings.py' -v`.
+
+Searching for Volume, Sound, Speakers, Output Device or Input Device and
+right-clicking the bar's volume icon use this same Audio dispatcher. The aliases
+are search-only; Audio remains the browsable Settings entry. Normal Update OS
+syncs both scripts and the EWW widget, then rebuilds the app cache.
 
 ### Overview
 
@@ -570,10 +585,14 @@ Open `src/shared/bin/smplos-settings` and add a `case` branch for your new categ
 
 ```bash
   my-entry)
-    command -v my-tui &>/dev/null && exec term my-tui
+    command -v my-tui &>/dev/null && term my-tui
     die "my-tui not found"
     ;;
 ```
+
+`term` is a shell function that execs `terminal -e`; do not write `exec term`.
+Display's Wayland `wlr-randr`, Network's `nmtui` and Bluetooth's `bluetuith`
+fallbacks use this helper when their preferred graphical tool is unavailable.
 
 Don't forget to update the usage string at the bottom of the file:
 
