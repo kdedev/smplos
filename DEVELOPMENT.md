@@ -494,6 +494,11 @@ Missing mixers or a missing terminal launcher produce an actionable error;
 a selected tool's launch/runtime failure is not concealed by opening another.
 Focused headless checks: `python -m unittest discover -s tests -p 'test_audio_settings.py' -v`.
 
+Searching for Volume, Sound, Speakers, Output Device or Input Device and
+right-clicking the bar's volume icon use this same Audio dispatcher. The aliases
+are search-only; Audio remains the browsable Settings entry. Normal Update OS
+syncs both scripts and the EWW widget, then rebuilds the app cache.
+
 ### Overview
 
 Settings entries involve two pieces:
@@ -584,6 +589,10 @@ Open `src/shared/bin/smplos-settings` and add a `case` branch for your new categ
     die "my-tui not found"
     ;;
 ```
+
+`term` is a shell function that execs `terminal -e`; do not write `exec term`.
+Display's Wayland `wlr-randr`, Network's `nmtui` and Bluetooth's `bluetuith`
+fallbacks use this helper when their preferred graphical tool is unavailable.
 
 Don't forget to update the usage string at the bottom of the file:
 
