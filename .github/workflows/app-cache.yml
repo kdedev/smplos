@@ -17,6 +17,7 @@ on:
       - 'src/build-iso.sh'
       - 'src/builder/build.sh'
       - 'tests/test_app_*.py'
+      - 'tests/test_audio_settings.py'
       - '.github/workflows/app-cache.yml'
   pull_request:
     paths:
@@ -33,6 +34,7 @@ on:
       - 'src/build-iso.sh'
       - 'src/builder/build.sh'
       - 'tests/test_app_*.py'
+      - 'tests/test_audio_settings.py'
       - '.github/workflows/app-cache.yml'
 
 permissions:
@@ -57,3 +59,5 @@ jobs:
           bash -n src/builder/build.sh
       - name: Exercise isolated cache and update fixtures
         run: python3 -m unittest discover -s tests -p 'test_app_*.py' -v
+      - name: Exercise isolated Audio mixer launchers
+        run: python3 -m unittest discover -s tests -p 'test_audio_settings.py' -v

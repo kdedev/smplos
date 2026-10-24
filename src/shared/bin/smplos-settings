@@ -46,9 +46,20 @@ case "${1:-}" in
     ;;
 
   audio)
-    command -v pavucontrol &>/dev/null && exec pavucontrol
-    command -v pulsemixer &>/dev/null && exec term pulsemixer
-    die "No audio manager found (install pavucontrol)"
+    for mixer in pavucontrol pwvucontrol pavucontrol-qt qasmixer alsamixergui; do
+      command -v "$mixer" &>/dev/null && exec "$mixer"
+    done
+    # ALSA controls hardware gain; PipeWire/PulseAudio mixers also expose streams.
+    for mixer in wiremix pulsemixer ncpamixer pamix alsamixer; do
+      command -v "$mixer" &>/dev/null || continue
+      command -v terminal &>/dev/null || {
+        echo "smplos-settings: terminal launcher is missing (needed for $mixer)" >&2
+        die "Terminal launcher not found (needed for $mixer)"
+      }
+      term "$mixer"
+    done
+    echo "smplos-settings: no supported audio mixer found" >&2
+    die "No audio mixer found (install pavucontrol, pwvucontrol, pulsemixer or alsa-utils)"
     ;;
 
   keyboard)
