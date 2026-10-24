@@ -310,7 +310,7 @@ Write a migration. See section 5 below.
 
 Normal OS updates reconcile keypad integration on every run, not only once
 per migration: the canonical `control-surface.service`, udev rules and pinned
-`control-surface` package from **smpl-apps v0.8.34** must all be available.
+`control-surface` package from **smpl-apps v0.8.35** must all be available.
 That release builds the keypad daemon on its Qt 6.11 baseline, compatible with
 the installed Qt 6.11.2 runtime; v0.8.27 incorrectly required Qt 6.12.
 The catch-up migration `20261009-010000-keypad-login-recovery.sh` covers
@@ -362,19 +362,26 @@ The existing backed-up unit reconciliation also handles the mouse unit, with a
 separate `mouse-units` ownership stamp. Custom units, links, drop-ins and saved
 mouse/keypad profiles are preserved.
 
-**Native delivery:** the pinned **control-surface v0.8.34** package includes
-`mouse-remapperd`, and the matching published **smpl-apps v0.8.34** bundle
+**Native delivery:** the pinned **control-surface v0.8.35** package includes
+`mouse-remapperd`, and the matching published **smpl-apps v0.8.35** bundle
 delivers Settings with complete guided setup. Both archives were built and
 validated on the pinned Qt 6.11.2/glibc 2.44 baseline. The package checksum pins
 the actual published archive, not a local development build.
 The mouse migration and
 every normal update probe `mouse-remapperd features --json` in an isolated home,
 requiring learning, identify (including wheel/tilt), guided side-grid
-calibration, complete guided setup (`guidedSetup`), Kdenlive API and passthrough capabilities,
+calibration, complete guided setup (`guidedSetup`), single-gesture tilt
+navigation (`tiltNavigationGestures`), Kdenlive API and passthrough capabilities,
 before replacing the unit or granting device access. Missing, incompatible or
 broken binaries explicitly defer integration; an ordinary OS update reports
 the missing delivery instead of silently claiming remapping is installed.
 Local development deployment can install the validated build directly.
+
+Horizontal tilt resolved to mouse Back/Forward emits one navigation action
+per gesture, including when held. A 100 ms quiet gap re-arms it because this
+mouse reports repeated scroll events rather than a tilt release; very fast
+consecutive tilts can merge, while reversing direction acts immediately.
+Other mapped actions and ordinary scrolling remain detent-based.
 
 The backend also provides guarded, explicitly confirmed onboard DPI-button
 backup/apply/restore commands. These are one-shot operations, not a resident
