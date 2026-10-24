@@ -91,13 +91,17 @@ def targets(home):
 
 def backup(home, path, content):
     root = home / ".local/state/smplos/openchamber-theme-backups"
+    root.mkdir(mode=0o700, parents=True, exist_ok=True)
+    root.chmod(0o700)
     directory = root / hashlib.sha256(str(path.parent).encode()).hexdigest()[:16]
     directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+    directory.chmod(0o700)
     target = directory / f"{path.name}.{hashlib.sha256(content).hexdigest()}"
     if not target.exists():
-        with target.open("xb") as output:
-            os.chmod(target, 0o600)
+        descriptor = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(descriptor, "wb") as output:
             output.write(content)
+    target.chmod(0o600)
     if target.read_bytes() != content:
         raise OSError(f"Cannot verify configuration backup for {path}")
 

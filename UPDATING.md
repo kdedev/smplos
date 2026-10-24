@@ -57,6 +57,37 @@ automatic rollback or boot recovery are provided by this flow.
 OS-owned changes reach users after merging to `main` and running the updater.
 Changes to independently built apps also require a release in their own repo.
 
+### OpenChamber theme bridge delivery
+
+The bridge is OS-owned; OpenChamber's renderer and local control API are
+independently released. Publish and verify the compatible OpenChamber release
+**before** publishing the OS bridge. A successful broadcast or a custom JSON
+file on disk is not proof that a window applied the palette or background alpha.
+Keep the bridge unpublished until the app's capability and renderer-acknowledgment
+contract and per-app transparent-window launcher have been verified together.
+
+Normal script synchronization installs `theme-set-openchamber` alongside
+`theme-set`, and normal Hyprland config synchronization delivers the native-alpha
+tag in both `windows.lua` and `windows.conf`. The existing final opacity policy
+must remain last. The ISO copies the same script and compositor trees; no
+separate migration or hardcoded installer list is necessary. The optional app
+phase invokes `theme-set --apps`; the core-only phase does not contact
+OpenChamber. Bridge errors are visible but do not abort other theme consumers.
+
+This does not enroll OpenChamber as a core OS binary or install an app package.
+Its independent compatible release must already be installed and running.
+Never launch/restart it from `theme-set`, rewrite personal desktop launchers,
+set transparent-window environment flags globally, or point production users
+at a temporary demo data directory. Package/release installation is separate
+from bridge delivery. Test delivery against an isolated HOME and local server,
+not the maintainer's real settings or sessions.
+
+Settings backups can contain the local API bearer token. Keep backup roots
+and target directories mode 0700 and files mode 0600; never include their
+contents in logs, CI artifacts or release uploads. Preserve backups and
+custom-only themes. Remove only the temporary demo target override after a
+demo, not the app's settings or session data.
+
 ### Completion receipts and App Center
 
 The coordinator explicitly unlocks the stable `update.lock` file before its

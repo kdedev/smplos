@@ -25,6 +25,7 @@ on:
       - 'src/compositors/hyprland/hypr/**'
       - 'src/compositors/hyprland/plugins/**'
       - 'tests/test_theme*.py'
+      - 'tests/test_openchamber_theme_sync.py'
       - '.github/workflows/themes.yml'
   pull_request:
     paths:
@@ -49,6 +50,7 @@ on:
       - 'src/compositors/hyprland/hypr/**'
       - 'src/compositors/hyprland/plugins/**'
       - 'tests/test_theme*.py'
+      - 'tests/test_openchamber_theme_sync.py'
       - '.github/workflows/themes.yml'
 
 permissions:
@@ -81,6 +83,8 @@ jobs:
         run: bash src/regen-all-themes.sh --check
       - name: Exercise isolated theme fixtures
         run: python3 -m unittest discover -s tests -p 'test_theme*.py' -v
+      - name: Exercise OpenChamber bridge and OS delivery without a running app
+        run: python3 -m unittest discover -s tests -p 'test_openchamber_theme_sync.py' -v
       - name: Unit-test the Hyprland plugins without a compositor
         run: |
           make -C src/compositors/hyprland/plugins/smpl-hud test

@@ -11,6 +11,8 @@ import threading
 import unittest
 from unittest.mock import patch
 
+from test_app_delivery import function
+
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "src/shared/bin/theme-set-openchamber"
@@ -111,6 +113,19 @@ class OpenChamberThemeTests(unittest.TestCase):
         self.assertEqual(len(backups), 1)
         self.assertEqual(backups[0].read_bytes(), previous)
 
+    def test_existing_backup_permissions_are_repaired_without_losing_data(self):
+        sync.backup(self.home, self.settings, self.saved)
+        root = self.home / ".local/state/smplos/openchamber-theme-backups"
+        target = next(root.rglob("settings.json.*"))
+        root.chmod(0o755)
+        target.parent.chmod(0o755)
+        target.chmod(0o644)
+        sync.backup(self.home, self.settings, self.saved)
+        for path in (root, target.parent):
+            self.assertEqual(path.stat().st_mode & 0o777, 0o700)
+        self.assertEqual(target.stat().st_mode & 0o777, 0o600)
+        self.assertEqual(target.read_bytes(), self.saved)
+
     def test_demo_override_replaces_default_and_never_changes_real_app(self):
         demo = self.home / "demo"
         demo.mkdir()
@@ -210,6 +225,54 @@ class OpenChamberThemeTests(unittest.TestCase):
         self.assertIsNone(token)
         self.assertEqual(self.settings.read_bytes(), self.saved)
         self.assertFalse((self.data / "themes").exists())
+
+    def test_normal_os_delivery_installs_bridge_and_both_native_alpha_rules(self):
+        project = self.home / "repo"
+        scripts = project / "src/shared/bin"
+        scripts.mkdir(parents=True)
+        for name in ("theme-set", "theme-set-openchamber"):
+            shutil.copyfile(ROOT / "src/shared/bin" / name, scripts / name)
+        rules = project / "src/compositors/hyprland/hypr"
+        rules.mkdir(parents=True)
+        for name in ("windows.lua", "windows.conf"):
+            shutil.copyfile(ROOT / "src/compositors/hyprland/hypr" / name, rules / name)
+        destination = self.home / "installed-bin"
+        destination.mkdir()
+        personal = self.home / ".config/hypr/bindings.conf"
+        personal.parent.mkdir(parents=True)
+        personal.write_text("my bindings\n")
+        (rules / "bindings.conf").write_text("stock bindings\n")
+        updater = ROOT / "src/shared/bin/smplos-os-update"
+        sync_scripts = function(updater, "sync_scripts").replace(
+            'dest="/usr/local/bin/$name"', 'dest="$FIXTURE_BIN/$name"')
+        script = """
+set -e
+header() { :; }; ok() { :; }; log() { :; }; die() { echo "$*" >&2; exit 1; }
+as_invoker() { "$@"; }; sync_libs() { :; }
+install_system_file() { install -m"$3" "$1" "$2"; }
+copy_user_config() { install -m644 "$1" "$2"; }
+"""
+        script += sync_scripts + "\n" + function(updater, "sync_hypr_configs")
+        script += "\nsync_scripts\nsync_hypr_configs\nsync_scripts\nsync_hypr_configs\n"
+        result = subprocess.run(
+            ["bash", "-c", script],
+            env={**os.environ, "HOME": str(self.home), "SMPLOS_REPO": str(project),
+                 "FIXTURE_BIN": str(destination)},
+            capture_output=True, text=True, timeout=10,
+        )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        for name in ("theme-set", "theme-set-openchamber"):
+            self.assertEqual((destination / name).read_bytes(), (scripts / name).read_bytes())
+            self.assertEqual((destination / name).stat().st_mode & 0o777, 0o755)
+        for name in ("windows.lua", "windows.conf"):
+            self.assertEqual((personal.parent / name).read_bytes(), (rules / name).read_bytes())
+            self.assertIn("openchamber", (personal.parent / name).read_text())
+        self.assertEqual(personal.read_text(), "my bindings\n")
+        optional = updater.read_text().split('if [[ ${OPTIONAL_ONLY:-0} -eq 1 ]]; then', 1)[1]
+        self.assertIn("as_invoker theme-set --apps || optional_failed=1", optional)
+        builder = (ROOT / "src/builder/build.sh").read_text()
+        self.assertIn('cp -r "$SRC_DIR/shared/bin/"* "$airootfs/usr/local/bin/"', builder)
+        self.assertIn('cp -r "$compositor_dir/hypr/"* "$skel/.config/hypr/"', builder)
 
 
 if __name__ == "__main__":
